@@ -14,7 +14,6 @@ import {
   createCipheriv,
   createDecipheriv,
   hkdfSync,
-  randomBytes,
   diffieHellman,
 } from 'node:crypto';
 import { sign as _sign, verify as _verify } from 'node:crypto';
@@ -23,10 +22,6 @@ import { sign as _sign, verify as _verify } from 'node:crypto';
 const AES_GCM_KEY_LEN = 32;    // AES-256
 const AES_GCM_IV_LEN = 12;     // GCM 推荐 nonce 长度
 const AES_GCM_TAG_LEN = 16;    // GCM 认证标签
-const X25519_PUB_LEN = 32;
-const ED25519_PUB_LEN = 32;
-const ED25519_SIG_LEN = 64;
-const COUNTER_LEN = 11;
 const DIRECTION_BIT = { CLIENT_TO_SERVER: 0, SERVER_TO_CLIENT: 1 };
 
 // ---- 长期身份密钥 ----

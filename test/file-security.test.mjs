@@ -1,7 +1,7 @@
 // test/file-security.test.mjs —— 文件安全模块单元测试。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync, lstatSync, symlinkSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync, lstatSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {

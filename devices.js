@@ -1,5 +1,5 @@
 // devices.js —— 管理受信任和等待确认的设备指纹列表。
-import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeOwnerOnlyFile } from './file-security.js';

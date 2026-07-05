@@ -3,7 +3,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   generateIdentityKeyPair,
-  generateEphemeralKeyPair,
   E2EEHandshake,
   encrypt,
   decrypt,

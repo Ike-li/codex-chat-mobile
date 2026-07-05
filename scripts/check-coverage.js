@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 // scripts/check-coverage.js —— CI 覆盖率门禁检查。
 // 从 c8 报告中提取覆盖率，检查是否达到阈值。
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 
 const THRESHOLDS = {
@@ -12,16 +10,9 @@ const THRESHOLDS = {
   lines: 80,
 };
 
-const summary = {
-  statements: { total: 0, covered: 0 },
-  branches: { total: 0, covered: 0 },
-  functions: { total: 0, covered: 0 },
-  lines: { total: 0, covered: 0 },
-};
-
 // Run coverage and parse output
 try {
-  const output = execSync('node --test test/*.test.mjs 2>&1', {
+  execSync('node --test test/*.test.mjs 2>&1', {
     encoding: 'utf8',
     timeout: 60000,
   });

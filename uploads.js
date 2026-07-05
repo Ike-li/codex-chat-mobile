@@ -14,6 +14,7 @@ const MAX_TOTAL_BYTES = 20 * 1024 * 1024;  // 总量 20MB
 
 // 文件名收敛：只取 basename，去路径分隔/控制/危险字符，去前导点
 function sanitizeName(name) {
+  // eslint-disable-next-line no-control-regex -- 过滤文件名中的控制字符属安全收敛
   const base = basename(String(name ?? '')).replace(/[\x00-\x1f\x7f]/g, '');
   const safe = base.replace(/[/\\:*?"<>|]/g, '_').replace(/^\.+/, '').trim();
   return safe || 'file';
