@@ -1,0 +1,7 @@
+# gitleaks allowlist — false positives only.
+# These are intentionally fake, secret-shaped strings used as fixtures in the
+# sanitizer redaction tests. Each test feeds the fake value into sanitize() and
+# asserts it is replaced with '***'. No real credentials are present.
+test/sanitizer.test.mjs:generic-api-key:78
+test/sanitizer.test.mjs:stripe-access-token:79
+test/sanitizer.test.mjs:jwt:89
