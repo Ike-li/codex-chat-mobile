@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Secrets & runtime state
+.env
+*.log
+data/
+workdirs.json
+
+# Generated test/coverage artifacts
+coverage/
+test-results/
+playwright-report/
+
+# Local editor/tool state
+.claude/settings.local.json
+reasonix.toml
+.reasonix
