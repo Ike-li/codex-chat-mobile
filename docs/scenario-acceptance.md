@@ -27,7 +27,7 @@
   - `node scripts/smoke-server.js` 通过：真实 Express + Socket.IO + CodexAppServerSession 全栈输出 `PONG`。
   - `node scripts/smoke-approval.js` 通过：真实审批请求出现，批准后 tool_result `ok:true exitCode:0 status:completed`，`/tmp/codex-ccm-approval/approve-me.txt` 内容为 `hi`。
   - `node scripts/smoke-approval-decline.js` 通过：真实审批请求出现，拒绝后 tool_result `ok:false status:declined`，无成功工具执行，`/tmp/codex-ccm-decline/decline-me.txt` 不存在。
-- 自动测试：`npm test` 通过 42/42。
+- 自动测试：`npm test` 通过 178/178，Playwright E2E 10/10（2026-06-29 首轮为 42/42，套件后续扩充）。
 
 ## 案例 1：创建任务 + 恢复会话 + 审核结果
 

@@ -7,7 +7,7 @@ Goal: Terminal-equivalent Codex CLI access from mobile phone.
 - Frontend: single-file SPA in public/index.html (~1400 lines), PWA-ready
 - Core bridge: codex app-server JSON-RPC 2.0 over stdio
 - Session model: agents Map (multi-instance parallel) with instanceId routing
-- Test framework: node:test (native), 69 tests
+- Test framework: node:test (native), 178 tests; Playwright E2E (10 flows)
 
 ## Key files
 - server.js — HTTP + Socket.IO + agents Map routing (~700 lines)

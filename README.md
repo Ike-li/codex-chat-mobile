@@ -17,7 +17,7 @@ Phone-friendly web UI for controlling a local Codex CLI session — terminal-equ
 - **Web Push** — turn-completion notifications via VAPID (optional).
 - **PWA** — installable to home screen with standalone display.
 - Interrupt, reconnect catch-up, device approval, token auth, E2EE, owner-only state files.
-- 69 unit + integration + acceptance tests.
+- 178 unit + integration + acceptance tests, plus 10 Playwright E2E tests.
 
 ## Setup
 
