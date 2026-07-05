@@ -9,6 +9,14 @@ import { sanitize } from './sanitizer.js';
 const BUFFER_CAP = 500;
 const TOOL_SUMMARY_CAP = 600;
 const DEFAULT_INPUT_QUEUE_LIMIT = 20;
+const DEFAULT_INTERRUPT_TIMEOUT_MS = 2000;
+const APPROVAL_REQUEST_METHODS = new Set([
+  'item/commandExecution/requestApproval',
+  'item/fileChange/requestApproval',
+  'item/permissions/requestApproval',
+  'applyPatchApproval',
+  'execCommandApproval',
+]);
 
 let instanceCounter = 0;
 function nextEpoch() {
@@ -45,6 +53,8 @@ export class CodexAppServerSession {
     this.pendingApprovals = new Set(); // 等待手机 decision 的 server→client 请求 id
     this.inputQueue = [];
     this.inputQueueLimit = numberFromEnv('CODEX_INPUT_QUEUE_LIMIT', DEFAULT_INPUT_QUEUE_LIMIT);
+    this.interruptTimeoutMs = numberFromEnv('CODEX_INTERRUPT_TIMEOUT_MS', DEFAULT_INTERRUPT_TIMEOUT_MS);
+    this.currentTurnId = null;
     this.drainScheduled = false;
     // 审批/沙箱（仅 app-server 后端）：默认 on-request + workspace-write，可经环境变量覆盖。
     this.approvalPolicy = process.env.CODEX_APPROVAL_POLICY || 'on-request';
@@ -123,7 +133,7 @@ export class CodexAppServerSession {
 
   // server→client 请求处理。审批类透传给手机；其余安全兜底回应，避免 agent 挂起。
   handleServerRequest(rpcId, method, params) {
-    if (/requestApproval/i.test(method)) {
+    if (APPROVAL_REQUEST_METHODS.has(method)) {
       this.pendingApprovals.add(rpcId);
       this.emit('approval_request', {
         approvalId: rpcId,
@@ -134,15 +144,35 @@ export class CodexAppServerSession {
         availableDecisions: params.availableDecisions || ['accept', 'decline'],
       });
       this.emitStatus('approval_requested');
+    } else if (method === 'item/tool/requestUserInput') {
+      this.respondError(rpcId, -32601, `Unsupported server request: ${method}`);
+      this.emit('system', {
+        message: `Tool user input server request is not supported in Phase 1: ${method}`,
+        isError: true
+      });
+    } else if (method === 'account/chatgptAuthTokens/refresh') {
+      this.respondError(rpcId, -32601, `Unsupported server request: ${method}`);
+      this.emit('system', {
+        message: `ChatGPT auth token refresh is not supported by this bridge; no credentials were stored or forwarded: ${method}`,
+        isError: true
+      });
     } else {
-      // 未知 server 请求：回空，避免挂起。
-      this.respond(rpcId, {});
+      this.respondError(rpcId, -32601, `Unsupported server request: ${method}`);
+      this.emit('system', {
+        message: `Unsupported server request from Codex app-server: ${method}`,
+        isError: true
+      });
     }
   }
 
   respond(rpcId, result) {
     if (!this.child) return;
     this.child.stdin.write(JSON.stringify({ id: rpcId, result }) + '\n');
+  }
+
+  respondError(rpcId, code, message) {
+    if (!this.child) return;
+    this.child.stdin.write(JSON.stringify({ id: rpcId, error: { code, message } }) + '\n');
   }
 
   // 手机回传 decision（accept|acceptForSession|decline|cancel）。
@@ -155,12 +185,30 @@ export class CodexAppServerSession {
     return true;
   }
 
-  request(method, params) {
+  request(method, params, options = {}) {
     this.spawnIfNeeded();
     const id = ++this.rpcId;
+    const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 0;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.child.stdin.write(JSON.stringify({ method, id, params }) + '\n');
+      let timer = null;
+      const settle = fn => value => {
+        if (timer) clearTimeout(timer);
+        fn(value);
+      };
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          this.pending.delete(id);
+          reject(new Error(`${method} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }
+      this.pending.set(id, { resolve: settle(resolve), reject: settle(reject) });
+      try {
+        this.child.stdin.write(JSON.stringify({ method, id, params }) + '\n');
+      } catch (err) {
+        if (timer) clearTimeout(timer);
+        this.pending.delete(id);
+        reject(err);
+      }
     });
   }
 
@@ -239,11 +287,12 @@ export class CodexAppServerSession {
     try {
       await this.ensureReady();
       // turn/start 立即返回 inProgress；完成经 turn/completed 通知。
-      await this.request('turn/start', {
+      const turnStart = await this.request('turn/start', {
         threadId: this.sessionId,
         cwd: this.cwd,
         input: [{ type: 'text', text: promptText }]
       });
+      this.recordCurrentTurn(turnStart);
       this.emitStatus('turn_submitted');
     } catch (err) {
       this.busy = false;
@@ -295,25 +344,14 @@ export class CodexAppServerSession {
       case 'item/commandExecution/outputDelta':
         this.handleCommandOutputDelta(params);
         break;
+      case 'serverRequest/resolved':
+        this.handleServerRequestResolved(params);
+        break;
       case 'item/started':
         this.handleItem(params.item, false);
         break;
       case 'item/completed':
         this.handleItem(params.item, true);
-        break;
-      case 'turn/completed':
-        this.busy = false;
-        this.pendingApprovals.clear();
-        this.emit('result', { ok: params.turn?.status === 'completed', status: params.turn?.status });
-        this.emitStatus('turn_completed');
-        this.scheduleDrain();
-        break;
-      case 'turn/failed':
-        this.busy = false;
-        this.pendingApprovals.clear();
-        this.emit('error', { message: params.turn?.error?.message || params.error?.message || '任务失败', recoverable: true });
-        this.emitStatus('turn_failed');
-        this.scheduleDrain();
         break;
       case 'thread/tokenUsage/updated':
         this.lastUsage = params.tokenUsage?.last ?? params.tokenUsage;
@@ -322,14 +360,75 @@ export class CodexAppServerSession {
       case 'turn/plan/updated':
         this.emit('plan', { plan: params.plan || [], explanation: params.explanation });
         break;
+      case 'turn/started':
+        this.recordCurrentTurn(params);
+        break;
       case 'turn/diff/updated':
         if (params.diff) this.emit('diff', { diff: truncate(params.diff, TOOL_SUMMARY_CAP * 2) });
         break;
       case 'item/reasoning/summaryTextDelta':
         if (params.delta) this.emit('reasoning', { text: params.delta });
         break;
+      case 'error':
+        this.handleErrorNotification(params);
+        break;
+      case 'turn/completed':
+        this.clearCurrentTurn(params);
+        this.handleTurnCompleted(params);
+        break;
+      case 'turn/failed':
+        this.clearCurrentTurn(params);
+        this.finishTurnFailure(turnErrorMessage(params), 'turn_failed');
+        break;
       // 忽略：thread/started、thread/status/changed、mcpServer/*、skills/changed、account/*、remoteControl/* 等。
     }
+  }
+
+  handleErrorNotification(params) {
+    const message = protocolErrorMessage(params, 'codex app-server error');
+    const willRetry = params.willRetry === true;
+    this.emit('system', {
+      message: willRetry ? `Codex 正在重试：${message}` : message,
+      isError: !willRetry,
+      willRetry,
+      threadId: params.threadId || null,
+      turnId: params.turnId || null
+    });
+    this.emitStatus(willRetry ? 'turn_retrying' : 'server_error');
+  }
+
+  handleTurnCompleted(params) {
+    const status = params.turn?.status || params.status || 'completed';
+    if (status === 'completed') {
+      this.busy = false;
+      this.pendingApprovals.clear();
+      this.emit('result', { ok: true, status });
+      this.emitStatus('turn_completed');
+      this.scheduleDrain();
+      return;
+    }
+    if (status === 'failed') {
+      this.finishTurnFailure(turnErrorMessage(params), 'turn_failed');
+      return;
+    }
+    if (status === 'interrupted') {
+      this.finishTurnFailure(turnErrorMessage(params, '任务已中断'), 'turn_interrupted');
+      return;
+    }
+
+    this.busy = false;
+    this.pendingApprovals.clear();
+    this.emit('result', { ok: false, status });
+    this.emitStatus('turn_completed');
+    this.scheduleDrain();
+  }
+
+  finishTurnFailure(message, statusReason) {
+    this.busy = false;
+    this.pendingApprovals.clear();
+    this.emit('error', { message, recoverable: true });
+    this.emitStatus(statusReason);
+    this.scheduleDrain();
   }
 
   handleCommandOutputDelta(params) {
@@ -340,6 +439,36 @@ export class CodexAppServerSession {
       text,
       stream: params.stream || params.channel || 'stdout'
     });
+  }
+
+  handleServerRequestResolved(params) {
+    const approvalId = this.deletePendingApproval(params.requestId);
+    if (approvalId === null) return;
+    this.emit('approval_revoked', {
+      approvalId,
+      requestId: params.requestId,
+      threadId: params.threadId || null
+    });
+  }
+
+  deletePendingApproval(requestId) {
+    for (const approvalId of this.pendingApprovals) {
+      if (String(approvalId) === String(requestId)) {
+        this.pendingApprovals.delete(approvalId);
+        return approvalId;
+      }
+    }
+    return null;
+  }
+
+  recordCurrentTurn(source) {
+    const turnId = source?.turn?.id ?? source?.turnId ?? source?.id;
+    if (typeof turnId === 'string' && turnId) this.currentTurnId = turnId;
+  }
+
+  clearCurrentTurn(source) {
+    const turnId = source?.turn?.id ?? source?.turnId ?? source?.id;
+    if (!turnId || turnId === this.currentTurnId) this.currentTurnId = null;
   }
 
   // app-server item（camelCase）：
@@ -421,13 +550,24 @@ export class CodexAppServerSession {
     }
   }
 
-  abort() {
-    if (this.child && this.sessionId) {
-      try { this.notify('turn/interrupt', { threadId: this.sessionId }); } catch { /* noop */ }
+  async abort() {
+    if (this.child && this.sessionId && this.currentTurnId) {
+      try {
+        await this.request('turn/interrupt', {
+          threadId: this.sessionId,
+          turnId: this.currentTurnId
+        }, { timeoutMs: this.interruptTimeoutMs });
+      } catch (err) {
+        this.emit('system', {
+          message: `turn/interrupt 请求失败，已执行本地中断复位：${sanitize(String(err?.message || err))}`,
+          isError: true
+        });
+      }
     }
     const dropped = this.clearQueue('interrupt');
     this.busy = false;
     this.pendingApprovals.clear();
+    this.currentTurnId = null;
     this.emitStatus(dropped ? 'interrupt_cleared_queue' : 'interrupt');
   }
 
@@ -506,6 +646,18 @@ export class CodexAppServerSession {
 function truncate(s, cap) {
   if (typeof s !== 'string') return '';
   return s.length > cap ? s.slice(0, cap) + ' …（已截断）' : s;
+}
+
+function turnErrorMessage(params, fallback = '任务失败') {
+  return protocolErrorMessage(params?.turn, null)
+    || protocolErrorMessage(params, null)
+    || fallback;
+}
+
+function protocolErrorMessage(source, fallback) {
+  return source?.error?.message
+    || source?.message
+    || fallback;
 }
 
 function numberFromEnv(name, fallback) {

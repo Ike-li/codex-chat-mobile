@@ -334,7 +334,7 @@ test('spawnIfNeeded: 子进程退出 → busy 复位、child 置空、onExit 触
 
 test('审批请求缺少可选字段 → command/cwd/reason 为 null,decisions 用默认', () => {
   const { session, events } = makeSession();
-  session.handleLine(JSON.stringify({ method: 'item/x/requestApproval', id: 1 })); // 无 params
+  session.handleLine(JSON.stringify({ method: 'item/commandExecution/requestApproval', id: 1 })); // 无 params
   const ar = byType(events, 'approval_request')[0];
   assert.equal(ar.payload.command, null);
   assert.equal(ar.payload.cwd, null);

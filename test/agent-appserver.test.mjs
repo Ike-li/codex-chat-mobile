@@ -132,7 +132,10 @@ test('未知 server 请求被安全兜底回应（不挂起 agent）', () => {
   session.handleLine(JSON.stringify({ method: 'some/unknownRequest', id: 5, params: {} }));
   const sent = JSON.parse(writes[0]);
   assert.equal(sent.id, 5);
-  assert.deepEqual(sent.result, {});
+  assert.deepEqual(sent.error, {
+    code: -32601,
+    message: 'Unsupported server request: some/unknownRequest'
+  });
 });
 
 test('item/completed(fileChange): → file_change（文件列表 + kind + diff）', () => {
@@ -263,16 +266,22 @@ test('abort: interrupts active turn and clears queued phone input', async () => 
   const { session, events } = makeSession();
   session.sessionId = 'thr_abort';
   session.ensureReady = async () => {};
-  session.request = async () => ({});
-  const notifications = [];
-  session.notify = (method, params) => notifications.push({ method, params });
+  const requests = [];
+  session.request = async (method, params) => {
+    requests.push({ method, params });
+    if (method === 'turn/start') return { turn: { id: 'turn_abort', status: 'inProgress' } };
+    return {};
+  };
   session.child = { stdin: { write: () => {} } };
 
   await session.send('long task');
   await session.send('queued after long task');
-  session.abort();
+  await session.abort();
 
-  assert.deepEqual(notifications, [{ method: 'turn/interrupt', params: { threadId: 'thr_abort' } }]);
+  assert.deepEqual(requests.at(-1), {
+    method: 'turn/interrupt',
+    params: { threadId: 'thr_abort', turnId: 'turn_abort' }
+  });
   assert.equal(session.busy, false);
   assert.equal(session.inputQueue.length, 0);
   assert.equal(byType(events, 'queue_cleared').at(-1).payload.dropped, 1);
@@ -377,7 +386,10 @@ test('handleServerRequest: 非审批请求被安全兜底回应', () => {
   session.handleLine(JSON.stringify({ method: 'thread/unknownMethod', id: 99, params: {} }));
   const sent = JSON.parse(writes[0]);
   assert.equal(sent.id, 99);
-  assert.deepEqual(sent.result, {});
+  assert.deepEqual(sent.error, {
+    code: -32601,
+    message: 'Unsupported server request: thread/unknownMethod'
+  });
 });
 
 // ---- 未覆盖路径补充 ----

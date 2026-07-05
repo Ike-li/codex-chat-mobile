@@ -1565,6 +1565,7 @@
   let sessions = [];
   let codexSessions = []; // Codex 原生会话（来自 ~/.codex/sessions/）
   let pendingToolCards = {}; // toolUseId -> element
+  let pendingApprovalCards = {}; // approvalId -> element
   let queuedUserBubbles = [];
   let seenEvents = new Set();
   let sessionStatus = null;
@@ -1963,6 +1964,9 @@
         break;
       case 'approval_request':
         handleApprovalRequest(ev.payload);
+        break;
+      case 'approval_revoked':
+        handleApprovalRevoked(ev.payload);
         break;
       case 'file_change':
         handleFileChange(ev.payload);
@@ -2455,13 +2459,24 @@
       + `<button class="approve-btn" data-d="accept">批准</button>`
       + `<button class="deny-btn" data-d="${deny}">拒绝</button></div>`;
     appendRaw(card, 'codex');
+    pendingApprovalCards[String(payload.approvalId)] = card;
     const btns = card.querySelector('.approval-btns');
     btns.querySelectorAll('button').forEach(b => {
       b.onclick = () => {
         socket.emit('user:approval', { approvalId: payload.approvalId, decision: b.dataset.d });
+        delete pendingApprovalCards[String(payload.approvalId)];
         btns.innerHTML = `<span class="tool-output tool-ok" style="background:transparent;padding:0;">已${b.dataset.d === 'accept' ? '批准' : '拒绝'}</span>`;
       };
     });
+    scrollBottom();
+  }
+
+  function handleApprovalRevoked(payload) {
+    const key = String(payload?.approvalId ?? payload?.requestId ?? '');
+    const card = pendingApprovalCards[key];
+    if (!card) return;
+    delete pendingApprovalCards[key];
+    card.remove();
     scrollBottom();
   }
 
@@ -2689,6 +2704,7 @@
     messagesEl.innerHTML = '';
     finalizeStream();
     pendingToolCards = {};
+    pendingApprovalCards = {};
     queuedUserBubbles = [];
     latestOutputText = '';
     setBusy(false);
