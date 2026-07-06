@@ -63,13 +63,15 @@
 - **ApprovalBroker（FR-06/07）**：S→C request 到达 → 按 method 精确分类（命令/文件/权限/工具输入/旧式兜底）→ 生成 approvalId 登记 pending 表 → 信封推送 + Web Push → 前端决议 `user:approval` → 回填 JSON-RPC response → 清表并广播 `approval:resolved`；同时监听服务端 `serverRequest/resolved` 撤销他端已决弹窗。超时策略：不自动决议（安全默认），仅提醒。
 - **事件映射表（FR-05）**：以 pin 版本 `codex app-server generate-ts --out .protocol/stable` 导出为唯一映射源（实测校正：`generate-ts` 无 `--experimental` flag，stable 产物已含 EXPERIMENTAL 类型；CI `protocol:check` 校验桥消费方法均在产物中）；未知 **item** → `raw_item` 信封（NFR-5），未知**通知**安全忽略；删除对 `turn/failed` 的依赖，终态取 `turn/completed.status`（completed/failed/interrupted）+ `error` 通知（`turn/failed` 保留一版本周期双轨兼容）。
 - **登录状态机（FR-03）**：`account:loginStart` → 桥层 `account/login/start({type:"chatgptDeviceCode"})` → `account_login` 信封透出 `userCode` / `verificationUrl` / pending 状态 → `account/login/completed` 与 `account/updated` 映射为前端登录完成和账号状态。`account:loginCancel` 调用 `account/login/cancel`。实测校正：`account/chatgptAuthTokens/refresh`（S→C）本桥**显式拒绝**（`-32601`，不落盘/不透传凭证），非静默应答。自动化已用 mock app-server 覆盖；真实账号 device-code smoke 需人工完成。
-- **P1 原生能力桥（FR-11–FR-18）**：桥层仅暴露稳定 app-server 方法：thread 管理、compact/rollback、model/capability read、只读 fs、account/usage/rate limit、只读 MCP/Skills、externalAgentConfig detect/import。所有入参在桥层收敛（threadId 必填、fs path 必须绝对路径、空字段剔除），通知映射为 `thread_event` / `compact` / `rate_limits` / `mcp_status` / `skills_changed` / `external_agent_config_import` 信封；P2 写文件、配置写、插件安装、MCP tool call、logout 不在普通会话面暴露。
+- **P1 原生能力桥（FR-11–FR-18）**：桥层仅暴露稳定 app-server 方法：thread 管理、compact/rollback、model/capability read、只读 fs、account/usage/rate limit、只读 MCP/Skills、externalAgentConfig detect/import。所有入参在桥层收敛（threadId 必填、fs path 必须绝对路径、空字段剔除），通知映射为 `thread_event` / `compact` / `rate_limits` / `mcp_status` / `skills_changed` / `external_agent_config_import` 信封。
+- **P2 Admin 能力桥（FR-21–FR-25）**：配置写、插件/市场、文件写/删/拷贝、MCP tool call、account logout 都封装为显式桥层方法，并继续使用 `.protocol/stable` 的稳定请求名。桥层只做协议参数收敛和基本校验（绝对路径、必填字符串、mergeStrategy、threadId），是否允许执行由 server.js 的 Admin gate 决定。
 - **JSON-RPC 可观测（NFR-8）**：所有 client request/response、server request/response、notification 进入统一脱敏 JSONL 日志，默认落到会话 cwd 下 `.codex-chat-rpc.jsonl`，目录/文件 owner-only；同时 `statusPayload()` 暴露 `rpcStats` 计数，便于前端/日志侧定位请求量、通知量和错误数。敏感 key、正文、base64/data、token、路径均按 sanitizer 规则裁剪或脱敏。
 
 ### 4.2 网关路由层（server.js）
 - agents Map 多实例不变；fork 路由：`session:fork` → `thread/fork` → 新 `instanceId` 挂载并切换 `viewingInstanceId`，广播 `init` / `instances` / `session_list`（FR-02 已实现）。
 - steer 语义（FR-01）：turn 运行中且有 `currentTurnId` 时收到 `user:message` 发 `turn/steer`；无活跃 turn 或无法 steer 的边界保留队列。steer 失败发 recoverable error，不复位当前 turn。队列深度透出到状态栏（现有 `q:n`）。
 - P1 Socket.IO contract：`thread:*`、`models:read`、`fs:*`、`account:read`、`mcp:read`、`skills:read`、`externalAgentConfig:*` 均返回 `{ok:true,...}` / `{ok:false,error}` ack；路由层只做语义化参数归一、实例选择和信封转发，协议细节仍集中在 `agent-appserver.js`。
+- P2 Admin contract：`admin:unlock` 需要固定短语 `ENABLE ADMIN`，每个 `admin:*` 危险 action 还必须带 `adminConfirm === eventName`，未 unlock 或缺少逐 action 确认时直接 `{ok:false}` 并写 denied 审计；成功/失败同样写 owner-only Admin 审计。审计摘要只保留目标和计数字段，文件正文、base64、MCP arguments 不落明文。
 - 重放缓冲：按 (instanceId, seq) 环形缓冲，`catch-up` 按客户端最后 seq 增量下发（现有机制，容量参数化）。
 
 ### 4.3 前端 SPA
@@ -77,7 +79,8 @@
 - 渲染注册表：item type → 卡片组件；未注册 type → raw JSON 卡片（NFR-5）。
 - 审批卡片携 approvalId 幂等：重复决议、已撤销决议均无副作用。
 - Reasoning 渲染（FR-04）：继续使用向后兼容的 `reasoning` 信封，`payload.text` 保留；新增 `channel` / `kind` / index 元数据，将 summary 与 full reasoning 分区渲染，不混入普通 assistant 文本。
-- P1 控制面（FR-11–FR-18）：顶部原生控制条提供 Threads/Compact/Rollback/Models/Files/Account/MCP/Skills/Import；会话抽屉合并 app-server 原生 threads 与历史兜底列表，原生 thread 行内提供 rename/archive/unarchive/delete；P1 面板均为普通用户只读或低风险操作，危险 Admin 操作留在 P2。
+- P1 控制面（FR-11–FR-18）：顶部原生控制条提供 Threads/Compact/Rollback/Models/Files/Account/MCP/Skills/Import；会话抽屉合并 app-server 原生 threads 与历史兜底列表，原生 thread 行内提供 rename/archive/unarchive/delete。
+- P2 Admin 控制面（FR-21–FR-25）：同一原生控制条增加 Admin 入口；前端先手输 `ENABLE ADMIN` unlock，再由统一 `runAdminAction` 要求手输 action name 后提交 `adminConfirm`。破坏性 action 使用 Admin-only Socket.IO 事件，不把 `config/value/write`、`fs/writeFile`、`mcpServer/tool/call` 等协议方法直接暴露给普通 UI。
 
 ## 5. 状态与存储
 
@@ -88,6 +91,7 @@
 | 历史列表兜底 | history.js 解析 JSONL | P3 FR-32 用 `thread/turns/list` 替代后降级为 fallback |
 | 审批 pending 表 | 网关内存 + 审计日志落盘 | NFR-8：审批请求/决议 owner-only 留痕 |
 | JSON-RPC 观测日志 | 会话 cwd 下 `.codex-chat-rpc.jsonl` | NFR-8：通用出入 JSON-RPC 脱敏 JSONL，owner-only 落盘；`rpcStats` 进入状态信封 |
+| Admin 审计日志 | `CODEX_DATA_DIR/admin-audit.jsonl` | P2：unlock/lock/denied/success/error 均 owner-only 留痕；正文、base64、MCP arguments 不落明文 |
 | 上传文件 | uploads.js 安全落盘 | 传绝对路径给 `turn/start` |
 | 前端 | 内存 + PWA 缓存壳 | 不缓存会话内容，避免多端不一致 |
 

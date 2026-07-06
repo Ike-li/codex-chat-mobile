@@ -948,6 +948,112 @@ export class CodexAppServerSession {
     });
   }
 
+  async writeConfigValue(options = {}) {
+    await this.ensureInitialized();
+    const keyPath = requireString(options.keyPath, 'config keyPath');
+    const mergeStrategy = requireMergeStrategy(options.mergeStrategy);
+    return this.request('config/value/write', definedParams({
+      keyPath,
+      value: options.value,
+      mergeStrategy,
+      filePath: options.filePath,
+      expectedVersion: options.expectedVersion,
+    }));
+  }
+
+  async writeConfigBatch(options = {}) {
+    await this.ensureInitialized();
+    if (!Array.isArray(options.edits) || options.edits.length === 0) throw new Error('config edits are required');
+    return this.request('config/batchWrite', definedParams({
+      edits: options.edits.map(edit => ({
+        keyPath: requireString(edit?.keyPath, 'config edit keyPath'),
+        value: edit?.value,
+        mergeStrategy: requireMergeStrategy(edit?.mergeStrategy),
+      })),
+      filePath: options.filePath,
+      expectedVersion: options.expectedVersion,
+      reloadUserConfig: options.reloadUserConfig,
+    }));
+  }
+
+  async installPlugin(options = {}) {
+    await this.ensureInitialized();
+    const params = definedParams({
+      marketplacePath: options.marketplacePath === undefined || options.marketplacePath === null
+        ? options.marketplacePath
+        : requireAbsolutePath(options.marketplacePath, 'marketplace path'),
+      remoteMarketplaceName: options.remoteMarketplaceName,
+      pluginName: requireString(options.pluginName, 'pluginName'),
+    });
+    return this.request('plugin/install', params);
+  }
+
+  async uninstallPlugin(pluginId) {
+    await this.ensureInitialized();
+    return this.request('plugin/uninstall', { pluginId: requireString(pluginId, 'pluginId') });
+  }
+
+  async marketplaceAdd(options = {}) {
+    await this.ensureInitialized();
+    return this.request('marketplace/add', definedParams({
+      source: requireString(options.source, 'marketplace source'),
+      refName: options.refName,
+      sparsePaths: options.sparsePaths,
+    }));
+  }
+
+  async marketplaceRemove(marketplaceName) {
+    await this.ensureInitialized();
+    return this.request('marketplace/remove', { marketplaceName: requireString(marketplaceName, 'marketplaceName') });
+  }
+
+  async marketplaceUpgrade(marketplaceName = null) {
+    await this.ensureInitialized();
+    return this.request('marketplace/upgrade', definedParams({ marketplaceName }));
+  }
+
+  async writeFile(path, dataBase64) {
+    await this.ensureInitialized();
+    return this.request('fs/writeFile', {
+      path: requireAbsolutePath(path, 'file path'),
+      dataBase64: requireString(dataBase64, 'dataBase64'),
+    });
+  }
+
+  async removePath(path, options = {}) {
+    await this.ensureInitialized();
+    return this.request('fs/remove', definedParams({
+      path: requireAbsolutePath(path, 'remove path'),
+      recursive: options.recursive,
+      force: options.force,
+    }));
+  }
+
+  async copyPath(options = {}) {
+    await this.ensureInitialized();
+    return this.request('fs/copy', definedParams({
+      sourcePath: requireAbsolutePath(options.sourcePath, 'source path'),
+      destinationPath: requireAbsolutePath(options.destinationPath, 'destination path'),
+      recursive: options.recursive,
+    }));
+  }
+
+  async callMcpTool(options = {}) {
+    await this.ensureInitialized();
+    return this.request('mcpServer/tool/call', definedParams({
+      threadId: requireThreadId(options.threadId || this.sessionId, 'call MCP tool'),
+      server: requireString(options.server, 'MCP server'),
+      tool: requireString(options.tool, 'MCP tool'),
+      arguments: options.arguments,
+      _meta: options._meta,
+    }));
+  }
+
+  async logoutAccount() {
+    await this.ensureInitialized();
+    return this.request('account/logout', undefined);
+  }
+
   dispose() {
     this.disposed = true;
     clearInterval(this.idleTimer); this.idleTimer = null;
@@ -1121,6 +1227,16 @@ function requireThreadId(threadId, action) {
 function requireAbsolutePath(path, label) {
   if (typeof path === 'string' && (/^\//.test(path) || /^[A-Za-z]:\\/.test(path))) return path;
   throw new Error(`无效 ${label}`);
+}
+
+function requireString(value, label) {
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  throw new Error(`${label} is required`);
+}
+
+function requireMergeStrategy(value) {
+  if (value === 'replace' || value === 'upsert') return value;
+  throw new Error('mergeStrategy must be replace or upsert');
 }
 
 function rpcError(error) {

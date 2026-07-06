@@ -1,5 +1,5 @@
 import { once } from 'node:events';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -316,6 +316,95 @@ test('server exposes P1 native app-server controls over Socket.IO', async () => 
   }
 });
 
+test('server gates P2 admin app-server controls with unlock, per-action confirmation, and audit log', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ccm-p2-admin-test-'));
+  const rpcLog = join(root, 'rpc.jsonl');
+  const codexBin = createFakeCodexBin(root);
+  const fixture = await startIsolatedServer({ codexBin, rpcLog });
+  try {
+    const socket = await connectSocket(fixture.url, fixture.authToken);
+    try {
+      await waitForAgentEvent(socket, 'init');
+
+      const filePath = join(fixture.workDir, 'admin.txt');
+      const denied = await emitWithAck(socket, 'admin:fsWriteFile', {
+        path: filePath,
+        dataBase64: Buffer.from('secret file body').toString('base64'),
+        adminConfirm: 'admin:fsWriteFile',
+      });
+      assert.equal(denied.ok, false);
+      assert.match(denied.error, /Admin/);
+
+      const badUnlock = await emitWithAck(socket, 'admin:unlock', { confirmText: 'yes' });
+      assert.equal(badUnlock.ok, false);
+
+      const unlock = await emitWithAck(socket, 'admin:unlock', { confirmText: 'ENABLE ADMIN' });
+      assert.equal(unlock.ok, true);
+      assert.equal(unlock.adminMode, true);
+
+      const missingActionConfirm = await emitWithAck(socket, 'admin:fsWriteFile', {
+        path: filePath,
+        dataBase64: Buffer.from('secret file body').toString('base64'),
+      });
+      assert.equal(missingActionConfirm.ok, false);
+      assert.match(missingActionConfirm.error, /confirm/i);
+
+      const actions = [
+        ['admin:configWrite', { keyPath: 'model', value: 'gpt-5.5', mergeStrategy: 'replace' }],
+        ['admin:configBatchWrite', { edits: [{ keyPath: 'approval_policy', value: 'on-request', mergeStrategy: 'upsert' }], reloadUserConfig: true }],
+        ['admin:pluginInstall', { pluginName: 'gh', remoteMarketplaceName: 'official' }],
+        ['admin:pluginUninstall', { pluginId: 'plugin_gh' }],
+        ['admin:marketplaceAdd', { source: 'https://example.com/market.git', refName: 'main' }],
+        ['admin:marketplaceRemove', { marketplaceName: 'community' }],
+        ['admin:marketplaceUpgrade', { marketplaceName: 'community' }],
+        ['admin:fsWriteFile', { path: filePath, dataBase64: Buffer.from('secret file body').toString('base64') }],
+        ['admin:fsRemove', { path: filePath, recursive: false, force: true }],
+        ['admin:fsCopy', { sourcePath: join(fixture.workDir, 'a.txt'), destinationPath: join(fixture.workDir, 'b.txt'), recursive: false }],
+        ['admin:mcpToolCall', { threadId: 'thr_fake', server: 'github', tool: 'search', arguments: { secret: 'should-not-log' } }],
+        ['admin:accountLogout', {}],
+      ];
+      for (const [event, payload] of actions) {
+        const ack = await emitWithAck(socket, event, { ...payload, adminConfirm: event });
+        assert.equal(ack.ok, true, `${event}: ${ack.error || ''}`);
+      }
+
+      const calls = readFileSync(rpcLog, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      const methods = calls.map(call => call.method).filter(Boolean);
+      for (const method of [
+        'config/value/write',
+        'config/batchWrite',
+        'plugin/install',
+        'plugin/uninstall',
+        'marketplace/add',
+        'marketplace/remove',
+        'marketplace/upgrade',
+        'fs/writeFile',
+        'fs/remove',
+        'fs/copy',
+        'mcpServer/tool/call',
+        'account/logout',
+      ]) {
+        assert.ok(methods.includes(method), `expected ${method}`);
+      }
+
+      const auditPath = join(fixture.dataDir, 'admin-audit.jsonl');
+      assert.equal(statSync(auditPath).mode & 0o777, 0o600);
+      const audit = readFileSync(auditPath, 'utf8');
+      assert.match(audit, /"event":"unlock"/);
+      assert.match(audit, /"event":"success"/);
+      assert.match(audit, /"event":"denied"/);
+      assert.match(audit, /"action":"admin:mcpToolCall"/);
+      assert.doesNotMatch(audit, /secret file body/);
+      assert.doesNotMatch(audit, /should-not-log/);
+    } finally {
+      socket.disconnect();
+    }
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 async function startIsolatedServer({ codexBin, rpcLog } = {}) {
   const previous = snapshotEnv();
   const root = mkdtempSync(join(tmpdir(), 'ccm-server-test-'));
@@ -352,6 +441,7 @@ async function startIsolatedServer({ codexBin, rpcLog } = {}) {
     url,
     workDir,
     altWorkDir,
+    dataDir,
     authToken: process.env.AUTH_TOKEN,
     async close() {
       await new Promise(resolve => serverModule.stopServer(resolve));
@@ -496,6 +586,18 @@ rl.on('line', line => {
 	  if (message.method === 'skills/list') return send({ id: message.id, result: { data: [{ cwd: process.env.WORK_DIR, skills: [], errors: [] }] } });
 	  if (message.method === 'externalAgentConfig/detect') return send({ id: message.id, result: { items: [{ itemType: { type: 'agentsMd' }, description: 'AGENTS.md', cwd: process.env.WORK_DIR, details: null }] } });
 	  if (message.method === 'externalAgentConfig/import') return send({ id: message.id, result: { importId: 'import_fake' } });
+	  if (message.method === 'config/value/write') return send({ id: message.id, result: {} });
+	  if (message.method === 'config/batchWrite') return send({ id: message.id, result: {} });
+	  if (message.method === 'plugin/install') return send({ id: message.id, result: {} });
+	  if (message.method === 'plugin/uninstall') return send({ id: message.id, result: {} });
+	  if (message.method === 'marketplace/add') return send({ id: message.id, result: {} });
+	  if (message.method === 'marketplace/remove') return send({ id: message.id, result: {} });
+	  if (message.method === 'marketplace/upgrade') return send({ id: message.id, result: {} });
+	  if (message.method === 'fs/writeFile') return send({ id: message.id, result: {} });
+	  if (message.method === 'fs/remove') return send({ id: message.id, result: {} });
+	  if (message.method === 'fs/copy') return send({ id: message.id, result: {} });
+	  if (message.method === 'mcpServer/tool/call') return send({ id: message.id, result: { result: { ok: true } } });
+	  if (message.method === 'account/logout') return send({ id: message.id, result: {} });
 	  if (message.method === 'thread/fork') {
     send({ id: message.id, result: { thread: { id: 'thr_forked', forkedFromId: threadId } } });
     setTimeout(() => process.exit(0), 20);

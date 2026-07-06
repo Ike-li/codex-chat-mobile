@@ -12,7 +12,7 @@
 | 架构同构性 | ✅ 与架构文档 §2 完全同构：统一信封+seq/epoch 续传、agents Map 多实例、stdio 子进程、协议桥分层 |
 | 安全边界 | ✅ 符合 §7：loopback-only 默认、timingSafeEqual、CSP、owner-only 落盘、设备审批 |
 | 工程卫生 | ✅ node:test 覆盖桥层、Socket.IO、前端静态契约、协议 drift 与安全边界；Playwright 10 流程保留 |
-| 债务分布 | ⚠️ P0/P1/NFR-8 功能债务已收敛；剩余主要是真机 smoke、P2 Admin 设计和 P3 feature flag |
+| 债务分布 | ⚠️ P0/P1/P2/NFR-8 功能债务已收敛；剩余主要是真机 smoke 和 P3 feature flag |
 | 重写理由 | ❌ 无。骨架正确、卫生良好、债务定向可修 |
 
 ## 2. 债务清单（(Impact+Risk)×(6−Effort) 打分）
@@ -34,7 +34,7 @@
 
 ## 3. PRD 对账（功能与非功能）
 
-**状态（2026-07-06 更新）：P0 FR-01–FR-07、P1 FR-11–FR-18 与 NFR-8 已实现并有自动化验证；P2/P3 仍是后续阶段。**
+**状态（2026-07-06 更新）：P0 FR-01–FR-07、P1 FR-11–FR-18、P2 FR-21–FR-25 与 NFR-8 已实现并有自动化验证；P3 仍是后续阶段。**
 
 | FR | 结果 | 自动化验证 | 残留 smoke |
 |---|---|---|---|
@@ -53,6 +53,11 @@
 | FR-16 账号/用量 | `account/read`、`account/usage/read`、`account/rateLimits/read` 与限流通知已映射 | agent-appserver + server socket + public UI tests | 真实账号限流数据 smoke |
 | FR-17 MCP/Skills | `mcpServerStatus/list`、`skills/list` 只读面板与通知已映射 | agent-appserver + server socket + public UI tests | 真实 MCP/skills 配置 smoke |
 | FR-18 配置导入 | `externalAgentConfig/detect/import` 与 progress/completed 通知已映射；导入前前端确认 | agent-appserver + server socket + public UI tests | 真实 CLAUDE/AGENTS 迁移项 smoke |
+| FR-21 配置写入 | `config/value/write`、`config/batchWrite` 经 Admin unlock + per-action confirm 暴露 | agent-appserver + server socket + public UI tests | 真实配置文件写入/回滚 smoke |
+| FR-22 插件/市场管理 | `plugin/install/uninstall`、`marketplace/add/remove/upgrade` 经 Admin-only contract 暴露 | agent-appserver + server socket + public UI tests | 真实 marketplace/plugin install smoke |
+| FR-23 文件写操作 | `fs/writeFile/remove/copy` 要求绝对路径、Admin 二次确认并审计摘要 | agent-appserver + server socket + public UI tests | 真实文件破坏性操作 smoke |
+| FR-24 MCP 直调 | `mcpServer/tool/call` 要求显式 threadId/server/tool，arguments 不进审计明文 | agent-appserver + server socket + public UI tests | 真实 MCP 工具权限 smoke |
+| FR-25 登出 | `account/logout` 经 Admin-only contract 暴露并审计 | agent-appserver + server socket + public UI tests | 真实账号 logout smoke |
 
 | NFR | 对账结果 | 残留 |
 |---|---|---|
@@ -65,7 +70,7 @@
 | NFR-7 移动体验 | PWA/长日志/键盘布局已有验收资产 | 真机弱网体验仍需人工验证 |
 | NFR-8 可观测 | 审批审计 + 通用 JSON-RPC 脱敏 JSONL owner-only 落盘，`rpcStats` 进入 status | 日志保留/轮转策略后续按运维需要补充 |
 
-**非本期交付：** PRD P2（FR-21–FR-25）与 P3（FR-31–FR-35）仍未按产品功能开放。P2 涉及配置写入、插件安装、文件写、MCP 直调、登出，必须先完成 Admin 二次确认与审计流；P3 仍保持 feature-flag future 范围。
+**非本期交付：** PRD P3（FR-31–FR-35）仍未按产品功能开放，继续保持 feature-flag future 范围。P2 已开放但限定在 Admin unlock + per-action confirm + owner-only 审计路径下；真实破坏性操作仍需人工 smoke。
 
 ## 4. 对齐良好、无需改动的部分
 

@@ -14,7 +14,7 @@ import compression from 'compression';
 import { Server } from 'socket.io';
 import { CodexAppServerSession } from './agent-appserver.js';
 import * as sessions from './sessions.js';
-import { maskToken } from './sanitizer.js';
+import { maskToken, sanitizePath } from './sanitizer.js';
 import { writeOwnerOnlyFile } from './file-security.js';
 import { validateAttachments, saveAttachments, pruneExpiredUploads } from './uploads.js';
 import { buildStatusLine } from './statusline.js';
@@ -61,6 +61,8 @@ try {
 const idleTimeoutMs = Number(IDLE_TIMEOUT_MS) > 0 ? Number(IDLE_TIMEOUT_MS) : 600000;
 const HERE = import.meta.dirname;
 const DATA_DIR = process.env.CODEX_DATA_DIR || join(HERE, 'data');
+const ADMIN_UNLOCK_PHRASE = 'ENABLE ADMIN';
+const ADMIN_AUDIT_FILE = join(DATA_DIR, 'admin-audit.jsonl');
 
 // ---- Web Push ----
 const VAPID_PUBLIC_KEY  = process.env.VAPID_PUBLIC_KEY  || '';
@@ -602,6 +604,113 @@ function emitServerEnvelope(socket, type, payload) {
   });
 }
 
+function appendAdminAudit(entry) {
+  try {
+    mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+    const previous = existsSync(ADMIN_AUDIT_FILE) ? readFileSync(ADMIN_AUDIT_FILE, 'utf8') : '';
+    writeOwnerOnlyFile(ADMIN_AUDIT_FILE, previous + JSON.stringify({ ts: Date.now(), ...entry }) + '\n');
+  } catch {
+    // Admin audit failures should not leak details or crash the socket handler.
+  }
+}
+
+function adminSummary(action, payload = {}) {
+  if (action === 'admin:configWrite') {
+    return {
+      keyPath: payload.keyPath || null,
+      mergeStrategy: payload.mergeStrategy || null,
+      filePath: payload.filePath ? sanitizePath(payload.filePath) : null,
+    };
+  }
+  if (action === 'admin:configBatchWrite') {
+    return {
+      edits: Array.isArray(payload.edits) ? payload.edits.length : 0,
+      keyPaths: Array.isArray(payload.edits) ? payload.edits.map(edit => edit?.keyPath).filter(Boolean).slice(0, 20) : [],
+      filePath: payload.filePath ? sanitizePath(payload.filePath) : null,
+    };
+  }
+  if (action === 'admin:pluginInstall') {
+    return {
+      pluginName: payload.pluginName || null,
+      remoteMarketplaceName: payload.remoteMarketplaceName || null,
+      marketplacePath: payload.marketplacePath ? sanitizePath(payload.marketplacePath) : null,
+    };
+  }
+  if (action === 'admin:pluginUninstall') return { pluginId: payload.pluginId || null };
+  if (action === 'admin:marketplaceAdd') return { source: payload.source || null, refName: payload.refName || null };
+  if (action === 'admin:marketplaceRemove' || action === 'admin:marketplaceUpgrade') {
+    return { marketplaceName: payload.marketplaceName || null };
+  }
+  if (action === 'admin:fsWriteFile') {
+    return {
+      path: payload.path ? sanitizePath(payload.path) : null,
+      dataBase64: '<redacted>',
+      approxBytes: typeof payload.dataBase64 === 'string' ? Math.floor(payload.dataBase64.length * 0.75) : 0,
+    };
+  }
+  if (action === 'admin:fsRemove') {
+    return { path: payload.path ? sanitizePath(payload.path) : null, recursive: payload.recursive, force: payload.force };
+  }
+  if (action === 'admin:fsCopy') {
+    return {
+      sourcePath: payload.sourcePath ? sanitizePath(payload.sourcePath) : null,
+      destinationPath: payload.destinationPath ? sanitizePath(payload.destinationPath) : null,
+      recursive: payload.recursive,
+    };
+  }
+  if (action === 'admin:mcpToolCall') {
+    return { server: payload.server || null, tool: payload.tool || null, arguments: '<redacted>' };
+  }
+  if (action === 'admin:accountLogout') return {};
+  return {};
+}
+
+function denyAdmin(socket, ack, action, payload, error) {
+  appendAdminAudit({
+    event: 'denied',
+    action,
+    socketId: socket.id,
+    error,
+    summary: adminSummary(action, payload),
+  });
+  ackError(ack, new Error(error));
+}
+
+function requireAdmin(socket, ack, action, payload = {}) {
+  if (socket.adminMode !== true) {
+    denyAdmin(socket, ack, action, payload, 'Admin mode is locked');
+    return false;
+  }
+  if (payload.adminConfirm !== action) {
+    denyAdmin(socket, ack, action, payload, `Missing per-action confirm: ${action}`);
+    return false;
+  }
+  return true;
+}
+
+async function runAdminAction(socket, ack, action, payload, operation) {
+  if (!requireAdmin(socket, ack, action, payload)) return;
+  try {
+    const result = await operation();
+    appendAdminAudit({
+      event: 'success',
+      action,
+      socketId: socket.id,
+      summary: adminSummary(action, payload),
+    });
+    ackOk(ack, { result: result ?? null });
+  } catch (err) {
+    appendAdminAudit({
+      event: 'error',
+      action,
+      socketId: socket.id,
+      error: err.message,
+      summary: adminSummary(action, payload),
+    });
+    ackError(ack, err);
+  }
+}
+
 // ---- Socket.IO 连接处理 ----
 io.on('connection', socket => {
   console.log(`[conn] ${socket.id} 已连接（来自 ${clientIp(socket.handshake.address)}）`);
@@ -933,6 +1042,92 @@ io.on('connection', socket => {
     } catch (err) {
       ackError(ack, err);
     }
+  });
+
+  on(socket, 'admin:unlock', async (payload = {}, ack) => {
+    if (payload?.confirmText !== ADMIN_UNLOCK_PHRASE) {
+      denyAdmin(socket, ack, 'admin:unlock', payload, 'Invalid admin unlock phrase');
+      return;
+    }
+    socket.adminMode = true;
+    appendAdminAudit({ event: 'unlock', action: 'admin:unlock', socketId: socket.id, summary: {} });
+    ackOk(ack, { adminMode: true });
+  });
+
+  on(socket, 'admin:lock', async (_payload = {}, ack) => {
+    socket.adminMode = false;
+    appendAdminAudit({ event: 'lock', action: 'admin:lock', socketId: socket.id, summary: {} });
+    ackOk(ack, { adminMode: false });
+  });
+
+  on(socket, 'admin:configWrite', async (payload = {}, ack) => {
+    await runAdminAction(socket, ack, 'admin:configWrite', payload, () =>
+      ensureControlAgent(payload?.cwd).writeConfigValue(payload));
+  });
+
+  on(socket, 'admin:configBatchWrite', async (payload = {}, ack) => {
+    await runAdminAction(socket, ack, 'admin:configBatchWrite', payload, () =>
+      ensureControlAgent(payload?.cwd).writeConfigBatch(payload));
+  });
+
+  on(socket, 'admin:pluginInstall', async (payload = {}, ack) => {
+    await runAdminAction(socket, ack, 'admin:pluginInstall', payload, () =>
+      ensureControlAgent(payload?.cwd).installPlugin(payload));
+  });
+
+  on(socket, 'admin:pluginUninstall', async (payload = {}, ack) => {
+    await runAdminAction(socket, ack, 'admin:pluginUninstall', payload, () =>
+      ensureControlAgent(payload?.cwd).uninstallPlugin(payload?.pluginId));
+  });
+
+  on(socket, 'admin:marketplaceAdd', async (payload = {}, ack) => {
+    await runAdminAction(socket, ack, 'admin:marketplaceAdd', payload, () =>
+      ensureControlAgent(payload?.cwd).marketplaceAdd(payload));
+  });
+
+  on(socket, 'admin:marketplaceRemove', async (payload = {}, ack) => {
+    await runAdminAction(socket, ack, 'admin:marketplaceRemove', payload, () =>
+      ensureControlAgent(payload?.cwd).marketplaceRemove(payload?.marketplaceName));
+  });
+
+  on(socket, 'admin:marketplaceUpgrade', async (payload = {}, ack) => {
+    await runAdminAction(socket, ack, 'admin:marketplaceUpgrade', payload, () =>
+      ensureControlAgent(payload?.cwd).marketplaceUpgrade(payload?.marketplaceName ?? null));
+  });
+
+  on(socket, 'admin:fsWriteFile', async (payload = {}, ack) => {
+    await runAdminAction(socket, ack, 'admin:fsWriteFile', payload, () =>
+      ensureControlAgent(payload?.cwd).writeFile(payload?.path, payload?.dataBase64));
+  });
+
+  on(socket, 'admin:fsRemove', async (payload = {}, ack) => {
+    await runAdminAction(socket, ack, 'admin:fsRemove', payload, () =>
+      ensureControlAgent(payload?.cwd).removePath(payload?.path, { recursive: payload?.recursive, force: payload?.force }));
+  });
+
+  on(socket, 'admin:fsCopy', async (payload = {}, ack) => {
+    await runAdminAction(socket, ack, 'admin:fsCopy', payload, () =>
+      ensureControlAgent(payload?.cwd).copyPath({
+        sourcePath: payload?.sourcePath,
+        destinationPath: payload?.destinationPath,
+        recursive: payload?.recursive,
+      }));
+  });
+
+  on(socket, 'admin:mcpToolCall', async (payload = {}, ack) => {
+    await runAdminAction(socket, ack, 'admin:mcpToolCall', payload, () =>
+      ensureControlAgent(payload?.cwd).callMcpTool({
+        threadId: payload?.threadId,
+        server: payload?.server,
+        tool: payload?.tool,
+        arguments: payload?.arguments,
+        _meta: payload?._meta,
+      }));
+  });
+
+  on(socket, 'admin:accountLogout', async (payload = {}, ack) => {
+    await runAdminAction(socket, ack, 'admin:accountLogout', payload, () =>
+      ensureControlAgent(payload?.cwd).logoutAccount());
   });
 
   on(socket, 'session:new', (payload, maybeAck) => {

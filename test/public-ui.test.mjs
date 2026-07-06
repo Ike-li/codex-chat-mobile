@@ -160,3 +160,51 @@ test('client exposes P1 native app-server controls and readonly status panels', 
   }
   assert.match(html, /\$\('native-files-btn'\)\.onclick = \(\) => openFileBrowser\(serverCwd\)/);
 });
+
+test('client exposes P2 admin controls behind unlock and per-action confirmation', () => {
+  for (const id of [
+    'native-admin-btn',
+    'admin-unlock-btn',
+    'admin-config-write-btn',
+    'admin-config-batch-btn',
+    'admin-plugin-install-btn',
+    'admin-plugin-uninstall-btn',
+    'admin-marketplace-add-btn',
+    'admin-marketplace-remove-btn',
+    'admin-marketplace-upgrade-btn',
+    'admin-fs-write-btn',
+    'admin-fs-remove-btn',
+    'admin-fs-copy-btn',
+    'admin-mcp-call-btn',
+    'admin-logout-btn',
+  ]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+
+  assert.match(html, /function openAdminPanel/);
+  assert.match(html, /function unlockAdminMode/);
+  assert.match(html, /function runAdminAction/);
+  assert.match(html, /promptRequired\('Unlock phrase', 'ENABLE ADMIN'\)/);
+  assert.match(html, /promptRequired\('Confirm action', eventName\)/);
+  assert.match(html, /adminConfirm: confirmation/);
+
+  for (const event of [
+    'admin:unlock',
+    'admin:configWrite',
+    'admin:configBatchWrite',
+    'admin:pluginInstall',
+    'admin:pluginUninstall',
+    'admin:marketplaceAdd',
+    'admin:marketplaceRemove',
+    'admin:marketplaceUpgrade',
+    'admin:fsWriteFile',
+    'admin:fsRemove',
+    'admin:fsCopy',
+    'admin:mcpToolCall',
+    'admin:accountLogout',
+  ]) {
+    assert.match(html, new RegExp(`socket\\.emit\\('${event.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
+  }
+
+  assert.match(html, /\$\('native-admin-btn'\)\.onclick = openAdminPanel/);
+});

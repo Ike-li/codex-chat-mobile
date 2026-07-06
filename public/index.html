@@ -1383,6 +1383,7 @@
   <button id="native-mcp-btn" class="native-control-btn" title="MCP 状态">MCP</button>
   <button id="native-skills-btn" class="native-control-btn" title="Skills 状态">Skills</button>
   <button id="native-import-btn" class="native-control-btn" title="导入 AGENTS/CLAUDE 配置">Import</button>
+  <button id="native-admin-btn" class="native-control-btn native-danger" title="Admin 管理">Admin</button>
 </div>
 <div id="native-panel" hidden></div>
 
@@ -1712,6 +1713,7 @@
   let codexSessions = []; // Codex 原生会话（来自 ~/.codex/sessions/）
   let appThreads = [];
   let showArchivedThreads = false;
+  let adminUnlocked = false;
   let pendingToolCards = {}; // toolUseId -> element
   let pendingApprovalCards = {}; // approvalId -> element
   let queuedUserBubbles = [];
@@ -2815,6 +2817,197 @@
     });
   }
 
+  function openAdminPanel() {
+    renderNativePanel('Admin', `
+      <div class="native-list-row">
+        <div class="native-row-title">${adminUnlocked ? 'Unlocked' : 'Locked'}</div>
+        <div class="native-row-actions"><button id="admin-unlock-btn" class="native-mini-btn" type="button">Unlock</button></div>
+      </div>
+      <div class="native-list-row">
+        <div class="native-row-title">Config</div>
+        <div class="native-row-actions">
+          <button id="admin-config-write-btn" class="native-mini-btn" type="button">Write</button>
+          <button id="admin-config-batch-btn" class="native-mini-btn" type="button">Batch</button>
+        </div>
+      </div>
+      <div class="native-list-row">
+        <div class="native-row-title">Plugins</div>
+        <div class="native-row-actions">
+          <button id="admin-plugin-install-btn" class="native-mini-btn" type="button">Install</button>
+          <button id="admin-plugin-uninstall-btn" class="native-mini-btn" type="button">Uninstall</button>
+          <button id="admin-marketplace-add-btn" class="native-mini-btn" type="button">Add Market</button>
+          <button id="admin-marketplace-remove-btn" class="native-mini-btn" type="button">Remove Market</button>
+          <button id="admin-marketplace-upgrade-btn" class="native-mini-btn" type="button">Upgrade Market</button>
+        </div>
+      </div>
+      <div class="native-list-row">
+        <div class="native-row-title">Files</div>
+        <div class="native-row-actions">
+          <button id="admin-fs-write-btn" class="native-mini-btn native-danger" type="button">Write</button>
+          <button id="admin-fs-remove-btn" class="native-mini-btn native-danger" type="button">Remove</button>
+          <button id="admin-fs-copy-btn" class="native-mini-btn" type="button">Copy</button>
+        </div>
+      </div>
+      <div class="native-list-row">
+        <div class="native-row-title">MCP / Account</div>
+        <div class="native-row-actions">
+          <button id="admin-mcp-call-btn" class="native-mini-btn native-danger" type="button">Tool Call</button>
+          <button id="admin-logout-btn" class="native-mini-btn native-danger" type="button">Logout</button>
+        </div>
+      </div>
+    `);
+    $('admin-unlock-btn').onclick = unlockAdminMode;
+    $('admin-config-write-btn').onclick = adminConfigWrite;
+    $('admin-config-batch-btn').onclick = adminConfigBatchWrite;
+    $('admin-plugin-install-btn').onclick = adminPluginInstall;
+    $('admin-plugin-uninstall-btn').onclick = adminPluginUninstall;
+    $('admin-marketplace-add-btn').onclick = adminMarketplaceAdd;
+    $('admin-marketplace-remove-btn').onclick = adminMarketplaceRemove;
+    $('admin-marketplace-upgrade-btn').onclick = adminMarketplaceUpgrade;
+    $('admin-fs-write-btn').onclick = adminFsWrite;
+    $('admin-fs-remove-btn').onclick = adminFsRemove;
+    $('admin-fs-copy-btn').onclick = adminFsCopy;
+    $('admin-mcp-call-btn').onclick = adminMcpCall;
+    $('admin-logout-btn').onclick = adminAccountLogout;
+  }
+
+  function unlockAdminMode() {
+    let confirmText;
+    try {
+      confirmText = promptRequired('Unlock phrase', 'ENABLE ADMIN');
+    } catch (err) {
+      appendSystem(err.message, true);
+      return;
+    }
+    if (confirmText === null) return;
+    if (confirmText !== 'ENABLE ADMIN') return appendSystem('Admin unlock phrase mismatch', true);
+    socket.emit('admin:unlock', { confirmText }, ack => {
+      if (!ack?.ok) return appendSystem(ack?.error || 'Admin unlock failed', true);
+      adminUnlocked = true;
+      appendSystem('Admin mode enabled', false);
+      openAdminPanel();
+    });
+  }
+
+  const adminEmitters = {
+    'admin:configWrite': (payload, ack) => socket.emit('admin:configWrite', payload, ack),
+    'admin:configBatchWrite': (payload, ack) => socket.emit('admin:configBatchWrite', payload, ack),
+    'admin:pluginInstall': (payload, ack) => socket.emit('admin:pluginInstall', payload, ack),
+    'admin:pluginUninstall': (payload, ack) => socket.emit('admin:pluginUninstall', payload, ack),
+    'admin:marketplaceAdd': (payload, ack) => socket.emit('admin:marketplaceAdd', payload, ack),
+    'admin:marketplaceRemove': (payload, ack) => socket.emit('admin:marketplaceRemove', payload, ack),
+    'admin:marketplaceUpgrade': (payload, ack) => socket.emit('admin:marketplaceUpgrade', payload, ack),
+    'admin:fsWriteFile': (payload, ack) => socket.emit('admin:fsWriteFile', payload, ack),
+    'admin:fsRemove': (payload, ack) => socket.emit('admin:fsRemove', payload, ack),
+    'admin:fsCopy': (payload, ack) => socket.emit('admin:fsCopy', payload, ack),
+    'admin:mcpToolCall': (payload, ack) => socket.emit('admin:mcpToolCall', payload, ack),
+    'admin:accountLogout': (payload, ack) => socket.emit('admin:accountLogout', payload, ack),
+  };
+
+  function runAdminAction(eventName, buildPayload) {
+    if (!adminUnlocked) return appendSystem('Admin mode is locked', true);
+    let confirmation;
+    try {
+      confirmation = promptRequired('Confirm action', eventName);
+    } catch (err) {
+      appendSystem(err.message, true);
+      return;
+    }
+    if (confirmation === null) return;
+    if (confirmation !== eventName) return appendSystem(`${eventName} confirmation mismatch`, true);
+    let payload;
+    try {
+      payload = buildPayload();
+    } catch (err) {
+      appendSystem(err.message, true);
+      return;
+    }
+    if (!payload) return;
+    adminEmitters[eventName]({ ...payload, cwd: serverCwd, adminConfirm: confirmation }, ack => {
+      if (!ack?.ok) return appendSystem(ack?.error || `${eventName} failed`, true);
+      appendSystem(`${eventName} completed`, false);
+    });
+  }
+
+  function promptRequired(label, initial = '') {
+    const value = prompt(label, initial);
+    if (value === null) return null;
+    const trimmed = value.trim();
+    if (!trimmed) throw new Error(`${label} required`);
+    return trimmed;
+  }
+
+  function adminConfigWrite() {
+    runAdminAction('admin:configWrite', () => ({
+      keyPath: promptRequired('Config keyPath', 'model'),
+      value: promptRequired('Config value', 'gpt-5.5'),
+      mergeStrategy: 'replace',
+    }));
+  }
+
+  function adminConfigBatchWrite() {
+    runAdminAction('admin:configBatchWrite', () => ({
+      edits: [{
+        keyPath: promptRequired('Config keyPath', 'approval_policy'),
+        value: promptRequired('Config value', 'on-request'),
+        mergeStrategy: 'upsert',
+      }],
+      reloadUserConfig: true,
+    }));
+  }
+
+  function adminPluginInstall() {
+    runAdminAction('admin:pluginInstall', () => ({ pluginName: promptRequired('Plugin name') }));
+  }
+
+  function adminPluginUninstall() {
+    runAdminAction('admin:pluginUninstall', () => ({ pluginId: promptRequired('Plugin id') }));
+  }
+
+  function adminMarketplaceAdd() {
+    runAdminAction('admin:marketplaceAdd', () => ({ source: promptRequired('Marketplace source') }));
+  }
+
+  function adminMarketplaceRemove() {
+    runAdminAction('admin:marketplaceRemove', () => ({ marketplaceName: promptRequired('Marketplace name') }));
+  }
+
+  function adminMarketplaceUpgrade() {
+    runAdminAction('admin:marketplaceUpgrade', () => ({ marketplaceName: promptRequired('Marketplace name') }));
+  }
+
+  function adminFsWrite() {
+    runAdminAction('admin:fsWriteFile', () => ({
+      path: promptRequired('File path', serverCwd ? `${serverCwd}/admin.txt` : ''),
+      dataBase64: btoa(unescape(encodeURIComponent(promptRequired('File text')))),
+    }));
+  }
+
+  function adminFsRemove() {
+    runAdminAction('admin:fsRemove', () => ({ path: promptRequired('Path'), recursive: true, force: false }));
+  }
+
+  function adminFsCopy() {
+    runAdminAction('admin:fsCopy', () => ({
+      sourcePath: promptRequired('Source path'),
+      destinationPath: promptRequired('Destination path'),
+      recursive: true,
+    }));
+  }
+
+  function adminMcpCall() {
+    runAdminAction('admin:mcpToolCall', () => ({
+      threadId: promptRequired('Thread id', currentSessionId || ''),
+      server: promptRequired('MCP server'),
+      tool: promptRequired('MCP tool'),
+      arguments: JSON.parse(prompt('Arguments JSON', '{}') || '{}'),
+    }));
+  }
+
+  function adminAccountLogout() {
+    runAdminAction('admin:accountLogout', () => ({}));
+  }
+
   function joinPath(base, name) {
     return `${String(base || '/').replace(/\/+$/, '')}/${name}`.replace(/^\/\//, '/');
   }
@@ -3458,6 +3651,7 @@
   $('native-mcp-btn').onclick = loadMcpPanel;
   $('native-skills-btn').onclick = loadSkillsPanel;
   $('native-import-btn').onclick = detectExternalAgentConfig;
+  $('native-admin-btn').onclick = openAdminPanel;
   document.querySelectorAll('#quick-actions [data-command]').forEach(btn => {
     btn.onclick = () => {
       inputEl.value = btn.dataset.command;

@@ -59,7 +59,15 @@
 
 ### P2 管理面（Admin 模式，二次确认 + 审计日志）
 
-对账状态（2026-07-06）：⚪ 未实现。FR-21 配置写入（`config/value/write|batchWrite`）；FR-22 插件/市场管理（`plugin/install|uninstall`、`marketplace/*`）；FR-23 文件写操作（`fs/writeFile|remove|copy`）；FR-24 MCP 工具直调（`mcpServer/tool/call`）；FR-25 登出（`account/logout`）仍需 Admin 二次确认与审计流设计后实施。
+对账状态（2026-07-06）：✅ 已实现。P2 统一走 Admin unlock（`ENABLE ADMIN`）+ 每次 action 精确确认（`adminConfirm` 必须等于事件名）+ owner-only `admin-audit.jsonl` 审计日志；普通会话面不直接暴露危险协议方法。
+
+| ID | 需求 | 接口 | 对账状态（2026-07-06） |
+|---|---|---|---|
+| FR-21 | 配置写入 | `config/value/write\|config/batchWrite` | ✅ 已实现；Admin-only Socket.IO contract、bridge 参数和审计覆盖，真实配置文件 smoke 待跑 |
+| FR-22 | 插件/市场管理 | `plugin/install\|uninstall`、`marketplace/add\|remove\|upgrade` | ✅ 已实现；Admin-only 操作与审计覆盖，真实 marketplace/plugin smoke 待跑 |
+| FR-23 | 文件写操作 | `fs/writeFile\|remove\|copy` | ✅ 已实现；绝对路径校验、Admin 二次确认和审计覆盖，真实文件破坏性操作需人工 smoke |
+| FR-24 | MCP 工具直调 | `mcpServer/tool/call` | ✅ 已实现；要求显式 threadId/server/tool，参数不写入审计明文，真实 MCP 工具权限 smoke 待跑 |
+| FR-25 | 登出 | `account/logout` | ✅ 已实现；Admin-only 登出入口和审计覆盖，真实账号 logout smoke 待跑 |
 
 ### P3 实验区（feature flag，默认关闭）
 
@@ -96,4 +104,4 @@
 
 延续 `docs/scenario-acceptance.md` 四维度判定（功能等价 / 状态可见 / 失败可恢复 / 权限可控）：每个 FR 必须给出 mock 浏览器 + 真机双证据；P0 完成时新增场景案例：S4 纠偏（steer 后 agent 输出反映新指令）、FR-03 登录（无桌面前置条件冷启动）、FR-07 多端（两浏览器并发审批一次决议）。
 
-**P0/P1 自动化验证状态（2026-07-06）：** FR-01–FR-07、FR-11–FR-18 已通过 agent/socket/public-ui/protocol focused tests；NFR-6 背压退避、NFR-8 JSON-RPC 脱敏观测已补充 focused test。完整门禁以本地最终执行结果为准。FR-03 的真实 ChatGPT device-code 账号流程、P1 原生 app-server 真机操作、真机多端审批撤销、真机弱网/PWA smoke 未由自动化替代，仍需人工输入设备码或连接真实 Codex 环境后验证。
+**P0/P1/P2 自动化验证状态（2026-07-06）：** FR-01–FR-07、FR-11–FR-18、FR-21–FR-25 已通过 agent/socket/public-ui/protocol focused tests；NFR-6 背压退避、NFR-8 JSON-RPC 脱敏观测已补充 focused test。完整门禁以本地最终执行结果为准。FR-03 的真实 ChatGPT device-code 账号流程、P1/P2 原生 app-server 真机操作、真机多端审批撤销、真机弱网/PWA smoke 未由自动化替代，仍需人工输入设备码或连接真实 Codex 环境后验证。

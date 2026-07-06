@@ -563,6 +563,77 @@ test('P1 notifications map native app-server state to frontend envelopes', () =>
   assert.deepEqual(byType(events, 'external_agent_config_import').map(e => e.payload.status), ['progress', 'completed']);
 });
 
+test('P2 admin controls call stable app-server methods with protocol params', async () => {
+  const { session } = makeSession();
+  session.sessionId = 'thr_admin';
+  const calls = [];
+  session.request = async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'mcpServer/tool/call') return { result: { ok: true } };
+    return {};
+  };
+  session.notify = method => calls.push({ method, params: null });
+
+  await session.writeConfigValue({
+    keyPath: 'model',
+    value: 'gpt-5.5',
+    mergeStrategy: 'replace',
+    filePath: '/tmp/config.toml',
+    expectedVersion: 'v1',
+  });
+  await session.writeConfigBatch({
+    edits: [{ keyPath: 'profiles.mobile.approval_policy', value: 'on-request', mergeStrategy: 'upsert' }],
+    reloadUserConfig: true,
+  });
+  await session.installPlugin({ pluginName: 'gh', remoteMarketplaceName: 'official' });
+  await session.uninstallPlugin('plugin_gh');
+  await session.marketplaceAdd({ source: 'https://example.com/market.git', refName: 'main', sparsePaths: ['plugins'] });
+  await session.marketplaceRemove('community');
+  await session.marketplaceUpgrade('community');
+  await session.writeFile('/tmp/work/admin.txt', Buffer.from('hello').toString('base64'));
+  await session.removePath('/tmp/work/admin.txt', { recursive: false, force: true });
+  await session.copyPath({ sourcePath: '/tmp/work/a.txt', destinationPath: '/tmp/work/b.txt', recursive: false });
+  await session.callMcpTool({ server: 'github', tool: 'search', arguments: { q: 'repo' } });
+  await session.logoutAccount();
+
+  assert.deepEqual(calls.map(c => c.method), [
+    'initialize', 'initialized',
+    'config/value/write',
+    'config/batchWrite',
+    'plugin/install',
+    'plugin/uninstall',
+    'marketplace/add',
+    'marketplace/remove',
+    'marketplace/upgrade',
+    'fs/writeFile',
+    'fs/remove',
+    'fs/copy',
+    'mcpServer/tool/call',
+    'account/logout',
+  ]);
+  assert.deepEqual(calls[2].params, {
+    keyPath: 'model',
+    value: 'gpt-5.5',
+    mergeStrategy: 'replace',
+    filePath: '/tmp/config.toml',
+    expectedVersion: 'v1',
+  });
+  assert.deepEqual(calls[3].params, {
+    edits: [{ keyPath: 'profiles.mobile.approval_policy', value: 'on-request', mergeStrategy: 'upsert' }],
+    reloadUserConfig: true,
+  });
+  assert.deepEqual(calls[4].params, { pluginName: 'gh', remoteMarketplaceName: 'official' });
+  assert.deepEqual(calls[5].params, { pluginId: 'plugin_gh' });
+  assert.deepEqual(calls[6].params, { source: 'https://example.com/market.git', refName: 'main', sparsePaths: ['plugins'] });
+  assert.deepEqual(calls[7].params, { marketplaceName: 'community' });
+  assert.deepEqual(calls[8].params, { marketplaceName: 'community' });
+  assert.deepEqual(calls[9].params, { path: '/tmp/work/admin.txt', dataBase64: Buffer.from('hello').toString('base64') });
+  assert.deepEqual(calls[10].params, { path: '/tmp/work/admin.txt', recursive: false, force: true });
+  assert.deepEqual(calls[11].params, { sourcePath: '/tmp/work/a.txt', destinationPath: '/tmp/work/b.txt', recursive: false });
+  assert.deepEqual(calls[12].params, { threadId: 'thr_admin', server: 'github', tool: 'search', arguments: { q: 'repo' } });
+  assert.equal(calls[13].params, undefined);
+});
+
 test('item/commandExecution/outputDelta: streams raw terminal output including ANSI', () => {
   const { session, events } = makeSession();
   session.handleNotification('item/commandExecution/outputDelta', {
