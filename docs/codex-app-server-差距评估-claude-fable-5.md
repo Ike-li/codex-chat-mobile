@@ -1,7 +1,7 @@
 # 代码库 vs 设计文档 差距评估
 
 > 生成模型：`claude-fable-5` ｜ 日期：2026-07-05 ｜ 版本：v1.0
-> 评估对象：`server.js`(772行)、`agent-appserver.js`(514行)、`public/index.html`(2995行) @ commit 2af5ab1
+> 评估对象：`server.js`(1192行)、`agent-appserver.js`(1187行)、`public/index.html`(3699行) @ 当前工作树
 > 对照基准：《需求文档 PRD v1.0》《架构设计文档 v1.0》
 > 结论：**继续开发 + 三处定向重构；不重写**
 
@@ -11,8 +11,8 @@
 |---|---|
 | 架构同构性 | ✅ 与架构文档 §2 完全同构：统一信封+seq/epoch 续传、agents Map 多实例、stdio 子进程、协议桥分层 |
 | 安全边界 | ✅ 符合 §7：loopback-only 默认、timingSafeEqual、CSP、owner-only 落盘、设备审批 |
-| 工程卫生 | ✅ 9 个测试文件 230 用例 + Playwright 10 流程、ESLint 9、近期提交在补分支覆盖率 |
-| 债务分布 | ⚠️ 集中在 agent-appserver.js 协议桥一层的健壮性细节，改动面小 |
+| 工程卫生 | ✅ node:test 覆盖桥层、Socket.IO、前端静态契约、协议 drift 与安全边界；Playwright 10 流程保留 |
+| 债务分布 | ⚠️ P0/P1/NFR-8 功能债务已收敛；剩余主要是真机 smoke、P2 Admin 设计和 P3 feature flag |
 | 重写理由 | ❌ 无。骨架正确、卫生良好、债务定向可修 |
 
 ## 2. 债务清单（(Impact+Risk)×(6−Effort) 打分）
@@ -32,9 +32,9 @@
 
 **状态（2026-07-06 更新）：D1–D8 全部关闭。** 落点见上表状态列；实测协议事实以 `.protocol/stable`（codex 0.142.5）为准，CI 协议防线（`npm run protocol:check`）拦截后续协议漂移。详见《重构计划》与三阶段提交 e1d4e00 / bdcff9f / 4e9fac9。
 
-## 3. 功能缺口（非债务，按 PRD P0 排期）
+## 3. PRD 对账（功能与非功能）
 
-**状态（2026-07-06 更新）：FR-01–FR-04 已实现。**
+**状态（2026-07-06 更新）：P0 FR-01–FR-07、P1 FR-11–FR-18 与 NFR-8 已实现并有自动化验证；P2/P3 仍是后续阶段。**
 
 | FR | 结果 | 自动化验证 | 残留 smoke |
 |---|---|---|---|
@@ -42,10 +42,34 @@
 | FR-02 fork | `session:fork` 调 `thread/fork`，创建新 instance 并切换 viewing，广播 init/instances/session_list | agent-appserver + server socket + public UI 字符串测试 | 真机多实例切换体验 |
 | FR-03 chatgptDeviceCode | `account/login/start`、`account/login/completed`、`account/updated`、取消路径已映射；token refresh 仍显式拒绝 | agent-appserver + mock app-server socket + public UI 字符串测试 | 真实 ChatGPT 账号输入 device code 后的登录完成 smoke |
 | FR-04 reasoning 全量流 | `summaryTextDelta`、`textDelta`、`summaryPartAdded` 均映射到兼容 `reasoning` 信封，前端分 summary/full 渲染 | agent-appserver + public UI + protocol check | 真实模型输出 full reasoning 时的视觉 smoke |
+| FR-05 协议版本适配 | 终态以 `turn/completed.status` + `error` 通知为准；`turn/failed` 只保留 legacy 双轨兼容 | protocol-adaptation + protocol-check tests | 升级下一版 Codex CLI 时观察 drift 报告 |
+| FR-06 审批精确分派 | ApprovalBroker 按 method 分类命令/文件/权限/工具输入，并保留旧式审批兜底 | approval-broker + protocol-adaptation + server-push tests | 真实文件审批 diff 卡片视觉 smoke |
+| FR-07 多端审批一致性 | `serverRequest/resolved` 清 pending 并发 `approval_revoked`，前端幂等移除待审批卡片 | protocol-adaptation + public-ui tests | 两个真实浏览器并发审批一次决议 smoke |
+| FR-11 会话管理 | `thread:list/select/archive/unarchive/delete/rename` 走原生 app-server 方法，抽屉合并原生 threads 与历史兜底 | agent-appserver + server socket + public UI tests | 真机原生 thread 批量操作 smoke |
+| FR-12 compact/usage | `thread/compact/start`、`thread/compacted`、usage/rate limit 信封与前端提示已接入 | agent-appserver + server socket + public UI tests | 真实长上下文压缩 smoke |
+| FR-13 rollback | `thread:rollback` Socket.IO 入口与前端按钮已接入 | agent-appserver + server socket + public UI tests | 真实回退语义 smoke |
+| FR-14 模型能力 | `model/list` + `modelProvider/capabilities/read` 聚合展示并可写入本地 `/model` 快捷输入 | agent-appserver + server socket + public UI tests | 真实账号模型能力矩阵 smoke |
+| FR-15 只读文件选择 | `fs/readDirectory/readFile` 仅接受绝对路径，文件读取后注入 `@path` 并显示预览 | agent-appserver + server socket + public UI tests | 大目录/权限拒绝 smoke |
+| FR-16 账号/用量 | `account/read`、`account/usage/read`、`account/rateLimits/read` 与限流通知已映射 | agent-appserver + server socket + public UI tests | 真实账号限流数据 smoke |
+| FR-17 MCP/Skills | `mcpServerStatus/list`、`skills/list` 只读面板与通知已映射 | agent-appserver + server socket + public UI tests | 真实 MCP/skills 配置 smoke |
+| FR-18 配置导入 | `externalAgentConfig/detect/import` 与 progress/completed 通知已映射；导入前前端确认 | agent-appserver + server socket + public UI tests | 真实 CLAUDE/AGENTS 迁移项 smoke |
+
+| NFR | 对账结果 | 残留 |
+|---|---|---|
+| NFR-1 流式延迟 | 流式通道已实现 | P95≤300ms 尚缺计时报告 |
+| NFR-2 断线恢复 | seq/epoch catch-up 自动化覆盖 | 真机弱网≤2s 恢复 smoke 待跑 |
+| NFR-3 审批时效 | Web Push 覆盖审批和工具输入 | 在线≤3s / Push≤30s 尚缺计时 smoke |
+| NFR-4 安全边界 | loopback/token/拒绝路径自动化与 smoke 脚本覆盖 | 真实发布前仍需跑拒绝 smoke |
+| NFR-5 兼容性 | `.protocol/stable` + `protocol:check` + `raw_item` 降级覆盖 | 每次升级 CLI 需重新生成并审查 drift |
+| NFR-6 背压 | `-32001` request 层指数退避、UI 拥塞提示、超限失败提示已实现 | 真实 app-server overload 场景 smoke 待跑 |
+| NFR-7 移动体验 | PWA/长日志/键盘布局已有验收资产 | 真机弱网体验仍需人工验证 |
+| NFR-8 可观测 | 审批审计 + 通用 JSON-RPC 脱敏 JSONL owner-only 落盘，`rpcStats` 进入 status | 日志保留/轮转策略后续按运维需要补充 |
+
+**非本期交付：** PRD P2（FR-21–FR-25）与 P3（FR-31–FR-35）仍未按产品功能开放。P2 涉及配置写入、插件安装、文件写、MCP 直调、登出，必须先完成 Admin 二次确认与审计流；P3 仍保持 feature-flag future 范围。
 
 ## 4. 对齐良好、无需改动的部分
 
-信封契约（27 个 type 前端已消费）、eventsSince 续传语义、输入队列与背压上限、idle 看门狗、附件安全落盘链路、会话懒开与 resume、TTY/远程双通道设备审批、statusline 4s 轮询、history.js JSONL 兜底（P3 前按设计保留）。
+信封契约（含 P0/P1 原生 app-server 事件）、eventsSince 续传语义、输入队列、JSON-RPC `-32001` 退避、idle 看门狗、附件安全落盘链路、会话懒开与 resume、TTY/远程双通道设备审批、statusline 4s 轮询、history.js JSONL 兜底（P3 前按设计保留）。
 
 ## 5. 判定依据小结
 

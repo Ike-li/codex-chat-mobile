@@ -4,6 +4,9 @@
 // 失败恢复、resume vs 新建、队列满、进程死亡、附件路径不外泄等。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { CodexAppServerSession } from '../agent-appserver.js';
 
 function makeSession(overrides = {}) {
@@ -22,10 +25,19 @@ function makeSession(overrides = {}) {
   return { session, events };
 }
 const byType = (events, type) => events.filter(e => e.type === type);
+const readJsonl = path => readFileSync(path, 'utf8').trim().split('\n').map(line => JSON.parse(line));
 // 注入假子进程,拦截写往 app-server stdin 的 JSON-RPC(外部边界)。
 function fakeChild() {
   const writes = [];
   return { writes, child: { stdin: { write: s => writes.push(s) } } };
+}
+
+async function waitFor(predicate, timeoutMs = 100) {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) throw new Error('waitFor timeout');
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
 }
 
 // ---- 构造默认值 ----
@@ -61,6 +73,170 @@ test('request: 响应带 error 时 reject', async () => {
   session.handleLine(JSON.stringify({ id, error: { message: '越权' } }));
   await assert.rejects(p, /越权/);
   assert.equal(session.pending.size, 0);
+});
+
+test('rpc observability: logs redacted client requests, responses, and errors with counters', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ccm-rpc-observe-'));
+  const rpcLogPath = join(dir, 'rpc-observe.jsonl');
+  try {
+    const { session } = makeSession({ cwd: dir, rpcLogPath });
+    const { writes, child } = fakeChild();
+    session.child = child;
+    const fakeProjectKey = ['sk', 'proj', '1234567890abcdefghijkl'].join('-');
+    const fakeProjectKeyInError = ['sk', 'proj', 'abcdefghijklmno'].join('-');
+
+    const p = session.request('turn/start', {
+      cwd: '/Users/raylee/private-project',
+      apiKey: fakeProjectKey,
+      input: [{ type: 'text', text: 'prompt secret should not be logged' }],
+    });
+    const sent = JSON.parse(writes[0]);
+    session.handleLine(JSON.stringify({
+      id: sent.id,
+      result: {
+        thread: { id: 'thr_1' },
+        dataBase64: 'YWJjZA==',
+        refreshToken: 'refresh-secret-1234567890',
+      },
+    }));
+
+    assert.deepEqual(await p, {
+      thread: { id: 'thr_1' },
+      dataBase64: 'YWJjZA==',
+      refreshToken: 'refresh-secret-1234567890',
+    });
+
+    const failing = session.request('account/read', {});
+    const failingId = JSON.parse(writes[1]).id;
+    session.handleLine(JSON.stringify({
+      id: failingId,
+      error: { code: -32603, message: `bad token ${fakeProjectKeyInError}` },
+    }));
+    await assert.rejects(failing, /bad token/);
+
+    const mode = statSync(rpcLogPath).mode & 0o777;
+    assert.equal(mode, 0o600);
+
+    const raw = readFileSync(rpcLogPath, 'utf8');
+    assert.doesNotMatch(raw, /sk-proj-/);
+    assert.doesNotMatch(raw, /prompt secret should not be logged/);
+    assert.doesNotMatch(raw, /refresh-secret/);
+    assert.doesNotMatch(raw, /YWJjZA==/);
+    assert.doesNotMatch(raw, /raylee/);
+
+    const lines = readJsonl(rpcLogPath);
+    assert.deepEqual(lines.map(line => line.frame), ['request', 'response', 'request', 'response']);
+    assert.deepEqual(lines.map(line => line.method), ['turn/start', 'turn/start', 'account/read', 'account/read']);
+    assert.equal(lines[3].error.code, -32603);
+
+    const stats = session.statusPayload('rpc_observe').rpcStats;
+    assert.equal(stats.clientRequests, 2);
+    assert.equal(stats.clientResponses, 2);
+    assert.equal(stats.errors, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('rpc observability: logs notifications and server requests without sensitive fields', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ccm-rpc-observe-'));
+  const rpcLogPath = join(dir, 'rpc-observe.jsonl');
+  try {
+    const { session } = makeSession({ cwd: dir, rpcLogPath });
+    const { child } = fakeChild();
+    session.child = child;
+
+    session.handleLine(JSON.stringify({
+      method: 'thread/compacted',
+      params: { threadId: 'thr_1', turnId: 'turn_1' },
+    }));
+    session.handleLine(JSON.stringify({
+      method: 'item/tool/requestUserInput',
+      id: 99,
+      params: {
+        threadId: 'thr_1',
+        questions: [{ id: 'q1', question: 'Paste the password', isSecret: true }],
+        accessToken: 'secret-token-1234567890',
+      },
+    }));
+
+    const raw = readFileSync(rpcLogPath, 'utf8');
+    assert.doesNotMatch(raw, /secret-token/);
+    assert.match(raw, /thread\/compacted/);
+    assert.match(raw, /item\/tool\/requestUserInput/);
+
+    const lines = readJsonl(rpcLogPath);
+    assert.deepEqual(lines.map(line => line.frame), ['notification', 'server_request']);
+    assert.equal(lines[1].id, 99);
+
+    const stats = session.statusPayload('rpc_observe').rpcStats;
+    assert.equal(stats.serverNotifications, 1);
+    assert.equal(stats.serverRequests, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('request: app-server -32001 背压错误会退避重试并透出拥塞状态', async () => {
+  const { session, events } = makeSession();
+  const { writes, child } = fakeChild();
+  session.child = child;
+
+  const p = session.request('thread/list', {}, {
+    maxBackpressureRetries: 2,
+    backpressureBaseMs: 1,
+  });
+
+  const first = JSON.parse(writes[0]);
+  session.handleLine(JSON.stringify({
+    id: first.id,
+    error: { code: -32001, message: 'Server overloaded; retry later.' },
+  }));
+
+  await waitFor(() => writes.length === 2);
+  const retryNotice = byType(events, 'system').at(-1);
+  assert.equal(retryNotice.payload.isError, false);
+  assert.match(retryNotice.payload.message, /app-server 拥塞/);
+  assert.equal(retryNotice.payload.code, -32001);
+  assert.equal(byType(events, 'status').at(-1).payload.reason, 'backpressure_retry');
+
+  const second = JSON.parse(writes[1]);
+  assert.equal(second.method, 'thread/list');
+  session.handleLine(JSON.stringify({ id: second.id, result: { threads: [] } }));
+
+  assert.deepEqual(await p, { threads: [] });
+  assert.equal(session.pending.size, 0);
+});
+
+test('request: app-server -32001 超过退避上限后 reject 并提示拥塞失败', async () => {
+  const { session, events } = makeSession();
+  const { writes, child } = fakeChild();
+  session.child = child;
+
+  const p = session.request('thread/list', {}, {
+    maxBackpressureRetries: 1,
+    backpressureBaseMs: 1,
+  });
+
+  const first = JSON.parse(writes[0]);
+  session.handleLine(JSON.stringify({
+    id: first.id,
+    error: { code: -32001, message: 'Server overloaded; retry later.' },
+  }));
+  await waitFor(() => writes.length === 2);
+
+  const second = JSON.parse(writes[1]);
+  session.handleLine(JSON.stringify({
+    id: second.id,
+    error: { code: -32001, message: 'Server overloaded; retry later.' },
+  }));
+
+  await assert.rejects(p, /Server overloaded/);
+  const congestionError = byType(events, 'system').at(-1);
+  assert.equal(congestionError.payload.isError, true);
+  assert.match(congestionError.payload.message, /超过重试上限/);
+  assert.equal(congestionError.payload.code, -32001);
+  assert.equal(byType(events, 'status').at(-1).payload.reason, 'backpressure_failed');
 });
 
 test('handleLine: 未知 id 的响应被安全忽略', () => {

@@ -1126,6 +1126,89 @@
       cursor: pointer;
     }
 
+    #native-controls {
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      flex-shrink: 0;
+      padding: 6px 12px;
+      border-bottom: 1px solid var(--border-light);
+      background: rgba(255,255,255,0.78);
+      scrollbar-width: none;
+    }
+    #native-controls::-webkit-scrollbar { display: none; }
+    .native-control-btn, .native-mini-btn {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      border-radius: 8px;
+      height: 30px;
+      padding: 0 10px;
+      font: inherit;
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    .native-control-btn:active, .native-mini-btn:active {
+      background: var(--border-light);
+      transform: scale(0.98);
+    }
+    #native-panel {
+      flex-shrink: 0;
+      max-height: 34vh;
+      overflow-y: auto;
+      border-bottom: 1px solid var(--border-light);
+      background: var(--surface);
+      padding: 10px 12px;
+      font-size: 12px;
+    }
+    #native-panel[hidden] { display: none; }
+    .native-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-weight: 700;
+    }
+    .native-list-row {
+      border: 1px solid var(--border-light);
+      border-radius: 8px;
+      padding: 8px;
+      margin-bottom: 6px;
+      background: var(--bg);
+      overflow-wrap: anywhere;
+    }
+    .native-row-title {
+      font-weight: 650;
+      margin-bottom: 3px;
+    }
+    .native-row-meta {
+      color: var(--text-muted);
+      font-size: 11px;
+    }
+    .native-row-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 7px;
+    }
+    .native-danger {
+      color: var(--error);
+      border-color: #f3c5c5;
+    }
+    .native-input {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 7px 8px;
+      font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: var(--text);
+      background: var(--surface);
+      margin-bottom: 8px;
+    }
+
     /* Instance Tabs */
     #instance-tabs {
       display: none;
@@ -1288,6 +1371,20 @@
 
 <!-- ChatGPT device-code login panel -->
 <div id="account-login-panel" hidden></div>
+
+<!-- Native app-server P1 controls -->
+<div id="native-controls">
+  <button id="native-thread-refresh" class="native-control-btn" title="刷新原生会话">Threads</button>
+  <button id="native-compact-btn" class="native-control-btn" title="压缩当前上下文">Compact</button>
+  <button id="native-rollback-btn" class="native-control-btn" title="回退当前会话">Rollback</button>
+  <button id="native-models-btn" class="native-control-btn" title="读取模型能力">Models</button>
+  <button id="native-files-btn" class="native-control-btn" title="只读文件选择">Files</button>
+  <button id="native-account-btn" class="native-control-btn" title="账号与用量">Account</button>
+  <button id="native-mcp-btn" class="native-control-btn" title="MCP 状态">MCP</button>
+  <button id="native-skills-btn" class="native-control-btn" title="Skills 状态">Skills</button>
+  <button id="native-import-btn" class="native-control-btn" title="导入 AGENTS/CLAUDE 配置">Import</button>
+</div>
+<div id="native-panel" hidden></div>
 
 <!-- Messages Container -->
 <div id="messages" aria-live="polite"></div>
@@ -1580,6 +1677,7 @@
   const pendingPanel = $('pending-panel');
   const accountLoginBtn = $('account-login-btn');
   const accountLoginPanel = $('account-login-panel');
+  const nativePanel = $('native-panel');
   const authGate = $('auth-gate');
   const authForm = $('auth-form');
   const authTokenInput = $('auth-token-input');
@@ -1612,6 +1710,8 @@
   let currentSessionId = null;
   let sessions = [];
   let codexSessions = []; // Codex 原生会话（来自 ~/.codex/sessions/）
+  let appThreads = [];
+  let showArchivedThreads = false;
   let pendingToolCards = {}; // toolUseId -> element
   let pendingApprovalCards = {}; // approvalId -> element
   let queuedUserBubbles = [];
@@ -1986,6 +2086,9 @@
       case 'session_list':
         handleSessionList(ev.payload);
         break;
+      case 'thread_event':
+        handleThreadEvent(ev.payload);
+        break;
       case 'user_message':
         finalizeStream();
         appendUserBubble(ev.payload.text, ev.payload.attachments);
@@ -2034,6 +2137,24 @@
         break;
       case 'account_updated':
         handleAccountUpdated(ev.payload);
+        break;
+      case 'compact':
+        handleCompact(ev.payload);
+        break;
+      case 'rollback':
+        handleRollback(ev.payload);
+        break;
+      case 'rate_limits':
+        handleRateLimits(ev.payload);
+        break;
+      case 'mcp_status':
+        handleMcpStatus(ev.payload);
+        break;
+      case 'skills_changed':
+        handleSkillsChanged(ev.payload);
+        break;
+      case 'external_agent_config_import':
+        handleExternalAgentConfigImport(ev.payload);
         break;
       case 'mcp_use':
         handleMcpUse(ev.payload);
@@ -2354,6 +2475,38 @@
     checkEmptyState();
   }
 
+  function handleThreadEvent(payload) {
+    if (!payload?.event) return;
+    const labels = { archived: '已归档', unarchived: '已取消归档', deleted: '已删除', name_updated: '已重命名' };
+    appendSystem(`Thread ${labels[payload.event] || payload.event}: ${(payload.threadId || '').slice(0, 8)}`, false);
+    refreshNativeThreads();
+  }
+
+  function handleCompact(payload) {
+    appendSystem(`上下文压缩完成: ${(payload?.threadId || currentSessionId || '').slice(0, 8)}`, false);
+  }
+
+  function handleRollback(payload) {
+    appendSystem(`已回退 ${payload?.numTurns || 1} 轮: ${(payload?.threadId || currentSessionId || '').slice(0, 8)}`, false);
+  }
+
+  function handleRateLimits(payload) {
+    const limit = payload?.rateLimits?.limitName || payload?.rateLimits?.limitId || 'rate limit';
+    appendSystem(`Rate limits updated: ${limit}`, false);
+  }
+
+  function handleMcpStatus(payload) {
+    appendSystem(`MCP ${payload?.name || 'server'}: ${payload?.status || 'updated'}`, Boolean(payload?.error));
+  }
+
+  function handleSkillsChanged() {
+    appendSystem('Skills changed', false);
+  }
+
+  function handleExternalAgentConfigImport(payload) {
+    appendSystem(`External config import ${payload?.status || 'updated'}: ${payload?.importId || ''}`, false);
+  }
+
   function handleUsage(payload) {
     const usage = payload?.usage || {};
     const total = usage.totalTokens || usage.total_tokens || usage.total || null;
@@ -2396,6 +2549,11 @@
     sessionListEl.innerHTML = '';
     const allItems = [];
     const seen = new Set();
+    for (const s of appThreads) {
+      if (!s.id || seen.has(s.id)) continue;
+      seen.add(s.id);
+      allItems.push({ ...s, source: 'app-server' });
+    }
     for (const s of sessions) {
       if (seen.has(s.id)) continue;
       seen.add(s.id);
@@ -2416,18 +2574,264 @@
       el.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
       const date = new Date(s.lastUsedAt || s.createdAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
       const tag = s.model ? ` · ${escHtml(s.model)}` : '';
-      const srcTag = s.source === 'codex' ? ' · 📁' : '';
-      el.innerHTML = `<div class="session-title">${escHtml(s.title || '未命名')}</div><div class="session-date">${date}${tag}${srcTag}</div>`;
+      const srcTag = s.source === 'app-server' ? ' · native' : (s.source === 'codex' ? ' · 📁' : '');
+      const actions = s.source === 'app-server'
+        ? `<div class="native-row-actions">
+            <button class="native-mini-btn" data-action="rename">Rename</button>
+            <button class="native-mini-btn" data-action="${s.archived ? 'unarchive' : 'archive'}">${s.archived ? 'Unarchive' : 'Archive'}</button>
+            <button class="native-mini-btn native-danger" data-action="delete">Delete</button>
+          </div>`
+        : '';
+      el.innerHTML = `<div class="session-title">${escHtml(s.title || '未命名')}</div><div class="session-date">${date}${tag}${srcTag}</div>${actions}`;
       el.onclick = () => {
         if (s.source === 'codex' && s.filePath) {
           loadHistory(s);
+        } else if (s.source === 'app-server') {
+          socket.emit('thread:select', { threadId: s.id, cwd: s.cwd, title: s.title }, ack => {
+            if (!ack?.ok) {
+              appendSystem(ack?.error || 'Thread select failed', true);
+              return;
+            }
+            clearMessages();
+          });
         } else {
           socket.emit('session:select', { sessionId: s.id });
           clearMessages();
         }
         closeDrawer();
       };
+      for (const btn of el.querySelectorAll('[data-action]')) {
+        btn.onclick = event => {
+          event.stopPropagation();
+          handleNativeThreadAction(s, btn.dataset.action);
+        };
+      }
       sessionListEl.appendChild(el);
+    }
+  }
+
+  function handleNativeThreadAction(thread, action) {
+    if (action === 'rename') {
+      const name = prompt('Thread name', thread.title || '');
+      if (!name) return;
+      socket.emit('thread:rename', { threadId: thread.id, name, cwd: thread.cwd }, ack => {
+        if (!ack?.ok) return appendSystem(ack?.error || 'Rename failed', true);
+        refreshNativeThreads();
+      });
+      return;
+    }
+    if (action === 'delete' && !confirm('Delete this thread?')) return;
+    if (action === 'unarchive') {
+      socket.emit('thread:unarchive', { threadId: thread.id, cwd: thread.cwd }, ack => {
+        if (!ack?.ok) return appendSystem(ack?.error || 'Unarchive failed', true);
+        refreshNativeThreads();
+      });
+      return;
+    }
+    if (action === 'delete') {
+      socket.emit('thread:delete', { threadId: thread.id, cwd: thread.cwd }, ack => {
+        if (!ack?.ok) return appendSystem(ack?.error || 'Delete failed', true);
+        refreshNativeThreads();
+      });
+      return;
+    }
+    socket.emit('thread:archive', { threadId: thread.id, cwd: thread.cwd }, ack => {
+      if (!ack?.ok) return appendSystem(ack?.error || 'Archive failed', true);
+      refreshNativeThreads();
+    });
+  }
+
+  function renderNativePanel(title, bodyHtml) {
+    nativePanel.hidden = false;
+    nativePanel.innerHTML = `<div class="native-panel-header"><span>${escHtml(title)}</span><button class="native-mini-btn" type="button" data-close-native>Close</button></div>${bodyHtml}`;
+    const close = nativePanel.querySelector('[data-close-native]');
+    if (close) close.onclick = () => { nativePanel.hidden = true; };
+  }
+
+  function refreshNativeThreads() {
+    socket.emit('thread:list', { cwd: serverCwd, archived: showArchivedThreads }, ack => {
+      if (!ack?.ok) {
+        appendSystem(ack?.error || 'Thread list failed', true);
+        return;
+      }
+      appThreads = ack.threads || [];
+      renderNativeThreadList();
+      renderSessionList();
+    });
+  }
+
+  function renderNativeThreadList() {
+    const rows = appThreads.length
+      ? appThreads.map(t => `<div class="native-list-row">
+          <div class="native-row-title">${escHtml(t.title || t.id)}</div>
+          <div class="native-row-meta">${escHtml((t.id || '').slice(0, 8))} · ${escHtml(t.cwd || '')}</div>
+        </div>`).join('')
+      : '<div class="native-list-row">No native threads</div>';
+    renderNativePanel(showArchivedThreads ? 'Archived Threads' : 'Native Threads', rows);
+  }
+
+  function startCompact() {
+    if (!currentSessionId) {
+      appendSystem('No active thread to compact', true);
+      return;
+    }
+    socket.emit('thread:compact', { threadId: currentSessionId, cwd: serverCwd }, ack => {
+      if (!ack?.ok) return appendSystem(ack?.error || 'Compact failed', true);
+      appendSystem('Compact requested', false);
+    });
+  }
+
+  function rollbackThread() {
+    if (!currentSessionId) {
+      appendSystem('No active thread to rollback', true);
+      return;
+    }
+    const raw = prompt('Rollback turns', '1');
+    if (raw === null) return;
+    const numTurns = Math.max(1, Number.parseInt(raw, 10) || 1);
+    socket.emit('thread:rollback', { threadId: currentSessionId, numTurns, cwd: serverCwd }, ack => {
+      if (!ack?.ok) return appendSystem(ack?.error || 'Rollback failed', true);
+      appendSystem(`Rollback requested: ${numTurns}`, false);
+    });
+  }
+
+  function loadNativeModels() {
+    socket.emit('models:read', { cwd: serverCwd }, ack => {
+      if (!ack?.ok) return appendSystem(ack?.error || 'Model list failed', true);
+      const caps = ack.capabilities || {};
+      const modelRows = (ack.models || []).map(model => {
+        const id = model.model || model.id || '';
+        const name = model.displayName || id;
+        return `<div class="native-list-row">
+          <div class="native-row-title">${escHtml(name)}</div>
+          <div class="native-row-meta">${escHtml(id)}${model.isDefault ? ' · default' : ''}</div>
+          <div class="native-row-actions"><button class="native-mini-btn" data-model-id="${escHtml(id)}">Use</button></div>
+        </div>`;
+      }).join('') || '<div class="native-list-row">No models</div>';
+      renderNativePanel('Models', `<div class="native-list-row"><div class="native-row-meta">namespaceTools:${Boolean(caps.namespaceTools)} · image:${Boolean(caps.imageGeneration)} · web:${Boolean(caps.webSearch)}</div></div>${modelRows}`);
+      nativePanel.querySelectorAll('[data-model-id]').forEach(btn => {
+        btn.onclick = () => {
+          selectedModel = btn.dataset.modelId;
+          localStorage.setItem('codex_selected_model', selectedModel);
+          $('model-input').value = selectedModel;
+          inputEl.value = `/model ${selectedModel}`;
+          updateFloatingBadges();
+          sendMessage();
+        };
+      });
+    });
+  }
+
+  function openFileBrowser(path = serverCwd) {
+    const targetPath = path || serverCwd || '/';
+    socket.emit('fs:readDirectory', { path: targetPath, cwd: serverCwd }, ack => {
+      if (!ack?.ok) return appendSystem(ack?.error || 'Read directory failed', true);
+      const parent = parentPath(targetPath);
+      const rows = [
+        parent ? `<button class="native-mini-btn" data-dir="${escHtml(parent)}">..</button>` : '',
+        ...(ack.entries || []).map(entry => {
+          const child = joinPath(targetPath, entry.fileName);
+          const action = entry.isDirectory ? `data-dir="${escHtml(child)}"` : `data-file="${escHtml(child)}"`;
+          return `<div class="native-list-row">
+            <div class="native-row-title">${entry.isDirectory ? 'Folder' : 'File'} ${escHtml(entry.fileName)}</div>
+            <div class="native-row-actions"><button class="native-mini-btn" ${action}>${entry.isDirectory ? 'Open' : '@ Mention'}</button></div>
+          </div>`;
+        })
+      ].join('');
+      renderNativePanel('Files', `<input class="native-input" value="${escHtml(targetPath)}" data-file-path>${rows || '<div class="native-list-row">Empty directory</div>'}`);
+      const pathInput = nativePanel.querySelector('[data-file-path]');
+      pathInput.onkeydown = event => {
+        if (event.key === 'Enter') openFileBrowser(pathInput.value.trim());
+      };
+      nativePanel.querySelectorAll('[data-dir]').forEach(btn => {
+        btn.onclick = () => openFileBrowser(btn.dataset.dir);
+      });
+      nativePanel.querySelectorAll('[data-file]').forEach(btn => {
+        btn.onclick = () => readNativeFile(btn.dataset.file);
+      });
+    });
+  }
+
+  function readNativeFile(path) {
+    socket.emit('fs:readFile', { path, cwd: serverCwd }, ack => {
+      if (!ack?.ok) return appendSystem(ack?.error || 'Read file failed', true);
+      const text = decodeBase64Text(ack.dataBase64 || '');
+      const mention = `@${path}`;
+      inputEl.value = inputEl.value ? `${inputEl.value} ${mention}` : mention;
+      inputEl.focus();
+      renderNativePanel('File Preview', `<div class="native-list-row"><div class="native-row-title">${escHtml(path)}</div><pre class="tool-output" style="max-height:180px;">${escHtml(text.slice(0, 2000))}</pre></div>`);
+    });
+  }
+
+  function loadAccountPanel() {
+    socket.emit('account:read', { cwd: serverCwd }, ack => {
+      if (!ack?.ok) return appendSystem(ack?.error || 'Account read failed', true);
+      renderNativePanel('Account', `<pre class="tool-output" style="max-height:220px;">${escHtml(JSON.stringify({ account: ack.account, usage: ack.usage, rateLimits: ack.rateLimits }, null, 2))}</pre>`);
+    });
+  }
+
+  function loadMcpPanel() {
+    socket.emit('mcp:read', { cwd: serverCwd }, ack => {
+      if (!ack?.ok) return appendSystem(ack?.error || 'MCP read failed', true);
+      const rows = (ack.servers || []).map(server => `<div class="native-list-row">
+        <div class="native-row-title">${escHtml(server.name)}</div>
+        <div class="native-row-meta">${escHtml(server.authStatus || '')} · tools:${Object.keys(server.tools || {}).length}</div>
+      </div>`).join('') || '<div class="native-list-row">No MCP servers</div>';
+      renderNativePanel('MCP', rows);
+    });
+  }
+
+  function loadSkillsPanel() {
+    socket.emit('skills:read', { cwd: serverCwd }, ack => {
+      if (!ack?.ok) return appendSystem(ack?.error || 'Skills read failed', true);
+      const rows = (ack.entries || []).map(entry => `<div class="native-list-row">
+        <div class="native-row-title">${escHtml(entry.cwd)}</div>
+        <div class="native-row-meta">skills:${(entry.skills || []).length} · errors:${(entry.errors || []).length}</div>
+      </div>`).join('') || '<div class="native-list-row">No skills</div>';
+      renderNativePanel('Skills', rows);
+    });
+  }
+
+  function detectExternalAgentConfig() {
+    socket.emit('externalAgentConfig:detect', { cwd: serverCwd, includeHome: false }, ack => {
+      if (!ack?.ok) return appendSystem(ack?.error || 'Detect failed', true);
+      const items = ack.items || [];
+      const rows = items.map((item, index) => `<div class="native-list-row">
+        <div class="native-row-title">${escHtml(item.description || 'Migration item')}</div>
+        <div class="native-row-meta">${escHtml(item.cwd || 'home')}</div>
+        <div class="native-row-actions"><button class="native-mini-btn" data-import-index="${index}">Import</button></div>
+      </div>`).join('') || '<div class="native-list-row">No importable config</div>';
+      renderNativePanel('Import', rows);
+      nativePanel.querySelectorAll('[data-import-index]').forEach(btn => {
+        btn.onclick = () => {
+          const item = items[Number(btn.dataset.importIndex)];
+          if (!item || !confirm('Import this config?')) return;
+          socket.emit('externalAgentConfig:import', { migrationItems: [item], cwd: serverCwd }, importAck => {
+            if (!importAck?.ok) return appendSystem(importAck?.error || 'Import failed', true);
+            appendSystem(`Import started: ${importAck.importId || ''}`, false);
+          });
+        };
+      });
+    });
+  }
+
+  function joinPath(base, name) {
+    return `${String(base || '/').replace(/\/+$/, '')}/${name}`.replace(/^\/\//, '/');
+  }
+
+  function parentPath(path) {
+    const clean = String(path || '').replace(/\/+$/, '');
+    if (!clean || clean === '/') return null;
+    const idx = clean.lastIndexOf('/');
+    return idx <= 0 ? '/' : clean.slice(0, idx);
+  }
+
+  function decodeBase64Text(dataBase64) {
+    try {
+      const bytes = Uint8Array.from(atob(dataBase64), c => c.charCodeAt(0));
+      return new TextDecoder().decode(bytes);
+    } catch {
+      return '';
     }
   }
 
@@ -3045,6 +3449,15 @@
   // Send
   sendBtn.onclick = sendMessage;
   if (accountLoginBtn) accountLoginBtn.onclick = startChatgptDeviceLogin;
+  $('native-thread-refresh').onclick = refreshNativeThreads;
+  $('native-compact-btn').onclick = startCompact;
+  $('native-rollback-btn').onclick = rollbackThread;
+  $('native-models-btn').onclick = loadNativeModels;
+  $('native-files-btn').onclick = () => openFileBrowser(serverCwd);
+  $('native-account-btn').onclick = loadAccountPanel;
+  $('native-mcp-btn').onclick = loadMcpPanel;
+  $('native-skills-btn').onclick = loadSkillsPanel;
+  $('native-import-btn').onclick = detectExternalAgentConfig;
   document.querySelectorAll('#quick-actions [data-command]').forEach(btn => {
     btn.onclick = () => {
       inputEl.value = btn.dataset.command;
@@ -3239,6 +3652,7 @@
     socket.emit('session:list', {}, data => {
       if (data) handleSessionList(data);
     });
+    refreshNativeThreads();
     drawer.classList.add('open');
     drawerOverlay.classList.add('open');
   };

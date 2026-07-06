@@ -1,7 +1,7 @@
 // Protocol bridge adaptation tests for docs/codex-app-server-refactor Phase 1.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CodexAppServerSession } from '../agent-appserver.js';
@@ -202,7 +202,14 @@ test('R1.2 chatgpt auth token refresh returns method-not-found without storing c
         message: 'Unsupported server request: account/chatgptAuthTokens/refresh',
       },
     }]);
-    assert.deepEqual(readdirSync(cwd), []);
+    assert.deepEqual(readdirSync(cwd), ['.codex-chat-rpc.jsonl']);
+    const rpcLogPath = join(cwd, '.codex-chat-rpc.jsonl');
+    const rpcLog = readFileSync(rpcLogPath, 'utf8');
+    assert.equal(statSync(rpcLogPath).mode & 0o777, 0o600);
+    assert.match(rpcLog, /account\/chatgptAuthTokens\/refresh/);
+    assert.match(rpcLog, /"params":"<redacted>"/);
+    assert.doesNotMatch(rpcLog, /acct_previous/);
+    assert.doesNotMatch(rpcLog, /expired/);
     assert.equal(session.authTokens, undefined);
     assert.equal(session.accessToken, undefined);
     assert.equal(session.chatgptAuthTokens, undefined);

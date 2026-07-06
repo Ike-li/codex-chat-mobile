@@ -85,9 +85,9 @@ test('thread/tokenUsage/updated: → usage', () => {
   assert.deepEqual(byType(events, 'usage')[0].payload.usage, { totalTokens: 10 });
 });
 
-test('噪音通知被忽略', () => {
+test('未接管的通知被安全忽略', () => {
   const { session, events } = makeSession();
-  for (const m of ['mcpServer/startupStatus/updated', 'skills/changed', 'account/rateLimits/updated', 'thread/status/changed', 'remoteControl/status/changed']) {
+  for (const m of ['thread/status/changed', 'remoteControl/status/changed']) {
     assert.doesNotThrow(() => session.handleNotification(m, {}));
   }
   assert.equal(events.length, 0);
@@ -456,6 +456,111 @@ test('cancelLogin: sends account/login/cancel and emits canceled state', async (
   const canceled = byType(events, 'account_login').at(-1);
   assert.equal(canceled.payload.status, 'canceled');
   assert.equal(canceled.payload.loginId, 'login_cancel');
+});
+
+test('P1 native controls call stable app-server methods with protocol params', async () => {
+  const { session } = makeSession();
+  session.sessionId = 'thr_source';
+  const calls = [];
+  session.request = async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'thread/list') return { data: [{ id: 'thr_list', preview: 'hello' }], nextCursor: null };
+    if (method === 'thread/rollback') return { thread: { id: 'thr_source', turns: [] } };
+    if (method === 'model/list') return { data: [{ id: 'm1', model: 'gpt-5.5', displayName: 'GPT-5.5' }], nextCursor: null };
+    if (method === 'modelProvider/capabilities/read') return { namespaceTools: true, imageGeneration: false, webSearch: true };
+    if (method === 'fs/readDirectory') return { entries: [] };
+    if (method === 'fs/readFile') return { dataBase64: Buffer.from('readme').toString('base64') };
+    if (method === 'account/read') return { account: { type: 'chatgpt', email: 'u@example.com', planType: 'plus' }, requiresOpenaiAuth: false };
+    if (method === 'account/usage/read') return { summary: { lifetimeTokens: 10 }, dailyUsageBuckets: [] };
+    if (method === 'account/rateLimits/read') return { rateLimits: { limitId: 'codex' }, rateLimitsByLimitId: null, rateLimitResetCredits: null };
+    if (method === 'mcpServerStatus/list') return { data: [{ name: 'github', authStatus: { type: 'unauthenticated' } }], nextCursor: null };
+    if (method === 'skills/list') return { data: [{ cwd: '/tmp/work', skills: [], errors: [] }] };
+    if (method === 'externalAgentConfig/detect') return { items: [{ itemType: { type: 'agentsMd' }, description: 'AGENTS.md', cwd: '/tmp/work', details: null }] };
+    if (method === 'externalAgentConfig/import') return { importId: 'import_1' };
+    return {};
+  };
+  session.notify = method => calls.push({ method, params: null });
+
+  await session.listThreads({ archived: true, limit: 25, searchTerm: 'hello' });
+  await session.archiveThread('thr_source');
+  await session.unarchiveThread('thr_source');
+  await session.deleteThread('thr_source');
+  await session.renameThread('thr_source', 'Mobile run');
+  await session.compactThread();
+  await session.rollbackThread({ numTurns: 2 });
+  await session.listModels({ includeHidden: true });
+  await session.readModelProviderCapabilities();
+  await session.readDirectory('/tmp/work');
+  await session.readFile('/tmp/work/README.md');
+  await session.readAccount();
+  await session.readUsage();
+  await session.readRateLimits();
+  await session.listMcpServerStatus({ limit: 10 });
+  await session.listSkills({ forceReload: true });
+  await session.detectExternalAgentConfig({ includeHome: false });
+  await session.importExternalAgentConfig([{ itemType: { type: 'agentsMd' }, description: 'AGENTS.md', cwd: '/tmp/work', details: null }]);
+
+  assert.deepEqual(calls.map(c => c.method), [
+    'initialize', 'initialized', 'thread/list',
+    'thread/archive',
+    'thread/unarchive',
+    'thread/delete',
+    'thread/name/set',
+    'thread/compact/start',
+    'thread/rollback',
+    'model/list',
+    'modelProvider/capabilities/read',
+    'fs/readDirectory',
+    'fs/readFile',
+    'account/read',
+    'account/usage/read',
+    'account/rateLimits/read',
+    'mcpServerStatus/list',
+    'skills/list',
+    'externalAgentConfig/detect',
+    'externalAgentConfig/import',
+  ]);
+  assert.deepEqual(calls[2].params, { cwd: '/tmp/work', archived: true, limit: 25, searchTerm: 'hello' });
+  assert.deepEqual(calls[5].params, { threadId: 'thr_source' });
+  assert.deepEqual(calls[6].params, { threadId: 'thr_source', name: 'Mobile run' });
+  assert.deepEqual(calls[7].params, { threadId: 'thr_source' });
+  assert.deepEqual(calls[8].params, { threadId: 'thr_source', numTurns: 2 });
+  assert.deepEqual(calls[9].params, { includeHidden: true, limit: 100 });
+  assert.deepEqual(calls[10].params, {});
+  assert.deepEqual(calls[11].params, { path: '/tmp/work' });
+  assert.deepEqual(calls[12].params, { path: '/tmp/work/README.md' });
+  assert.equal(calls[13].params, undefined);
+  assert.equal(calls[14].params, undefined);
+  assert.equal(calls[15].params, undefined);
+  assert.deepEqual(calls[16].params, { detail: 'Summary', limit: 10, threadId: 'thr_source' });
+  assert.deepEqual(calls[17].params, { cwds: ['/tmp/work'], forceReload: true });
+  assert.deepEqual(calls[18].params, { includeHome: false, cwds: ['/tmp/work'] });
+  assert.deepEqual(calls[19].params, {
+    migrationItems: [{ itemType: { type: 'agentsMd' }, description: 'AGENTS.md', cwd: '/tmp/work', details: null }],
+    source: 'mobile',
+  });
+});
+
+test('P1 notifications map native app-server state to frontend envelopes', () => {
+  const { session, events } = makeSession();
+
+  session.handleNotification('thread/archived', { threadId: 'thr_1' });
+  session.handleNotification('thread/unarchived', { threadId: 'thr_1' });
+  session.handleNotification('thread/deleted', { threadId: 'thr_1' });
+  session.handleNotification('thread/name/updated', { threadId: 'thr_1', name: 'New name' });
+  session.handleNotification('thread/compacted', { threadId: 'thr_1', turnId: 'turn_1' });
+  session.handleNotification('account/rateLimits/updated', { rateLimits: { limitId: 'codex' } });
+  session.handleNotification('mcpServer/startupStatus/updated', { threadId: null, name: 'github', status: 'ready', error: null });
+  session.handleNotification('skills/changed', { cwd: '/tmp/work' });
+  session.handleNotification('externalAgentConfig/import/progress', { importId: 'import_1', itemTypeResults: [] });
+  session.handleNotification('externalAgentConfig/import/completed', { importId: 'import_1', itemTypeResults: [] });
+
+  assert.deepEqual(byType(events, 'thread_event').map(e => e.payload.event), ['archived', 'unarchived', 'deleted', 'name_updated']);
+  assert.deepEqual(byType(events, 'compact').at(-1).payload, { status: 'compacted', threadId: 'thr_1', turnId: 'turn_1' });
+  assert.equal(byType(events, 'rate_limits').at(-1).payload.rateLimits.limitId, 'codex');
+  assert.equal(byType(events, 'mcp_status').at(-1).payload.name, 'github');
+  assert.equal(byType(events, 'skills_changed').at(-1).payload.cwd, '/tmp/work');
+  assert.deepEqual(byType(events, 'external_agent_config_import').map(e => e.payload.status), ['progress', 'completed']);
 });
 
 test('item/commandExecution/outputDelta: streams raw terminal output including ANSI', () => {

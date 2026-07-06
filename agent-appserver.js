@@ -4,14 +4,22 @@
 //
 // 进程长驻、原生流式（item/agentMessage/delta）、支持手机端审批。
 import { spawn } from 'node:child_process';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { ApprovalBroker } from './approval-broker.js';
-import { sanitize } from './sanitizer.js';
+import { writeOwnerOnlyFile } from './file-security.js';
+import { sanitize, sanitizePath } from './sanitizer.js';
 
 const BUFFER_CAP = 500;
 const TOOL_SUMMARY_CAP = 600;
 const DEFAULT_INPUT_QUEUE_LIMIT = 20;
 const DEFAULT_INTERRUPT_TIMEOUT_MS = 2000;
+const DEFAULT_BACKPRESSURE_RETRIES = 5;
+const DEFAULT_BACKPRESSURE_BASE_MS = 250;
+const MAX_BACKPRESSURE_DELAY_MS = 5000;
+const RPC_SUMMARY_CAP = 240;
+const SENSITIVE_RPC_KEY_RE = /(token|secret|password|passwd|credential|authorization|api[_-]?key|private[_-]?key|refreshToken|accessToken|chatgptAuthTokens|dataBase64)/i;
+const CONTENT_RPC_KEY_RE = /^(text|input|prompt|content|delta|aggregatedOutput|output|diff|data)$/i;
 
 let instanceCounter = 0;
 function nextEpoch() {
@@ -19,7 +27,7 @@ function nextEpoch() {
 }
 
 export class CodexAppServerSession {
-  constructor({ instanceId, resumeId, cwd, codexBin, idleTimeoutMs, onEvent, onSessionId, onExit }) {
+  constructor({ instanceId, resumeId, cwd, codexBin, idleTimeoutMs, onEvent, onSessionId, onExit, rpcLogPath }) {
     this.instanceId = instanceId;
     this.cwd = cwd;
     this.codexBin = codexBin || 'codex';
@@ -43,9 +51,20 @@ export class CodexAppServerSession {
 
     this.rpcId = 0;
     this.pending = new Map(); // id -> { resolve, reject }
+    this.rpcLogPath = rpcLogPath || join(this.cwd, '.codex-chat-rpc.jsonl');
+    this.rpcStats = {
+      clientRequests: 0,
+      clientResponses: 0,
+      clientNotifications: 0,
+      serverRequests: 0,
+      serverResponses: 0,
+      serverNotifications: 0,
+      errors: 0,
+    };
     this.initialized = null;  // initialize + initialized notification
     this.ready = null;        // initialize + thread 就绪的 promise（只做一次）
     this.stdoutBuf = '';
+    this.backpressureRetries = new Set();
     this.pendingApprovals = new Set(); // 等待手机 decision 的 server→client 请求 id
     this.approvalBroker = new ApprovalBroker({
       emit: (type, payload) => this.emit(type, payload),
@@ -82,6 +101,7 @@ export class CodexAppServerSession {
       this.ready = null;
       this.clearQueue('process_exit');
       this.approvalBroker.clearPending();
+      this.clearBackpressureRetries(new Error('app-server 进程已退出'));
       this.rejectAllPending(new Error('app-server 进程已退出'));
       clearInterval(this.idleTimer); this.idleTimer = null;
       if (!this.disposed) this.emitStatus('process_exit');
@@ -91,6 +111,7 @@ export class CodexAppServerSession {
       this.busy = false;
       this.child = null;
       this.clearQueue('process_error');
+      this.clearBackpressureRetries(err);
       this.rejectAllPending(err);
       this.emit('error', { message: `codex app-server 启动失败：${sanitize(err.message)}`, recoverable: false });
       this.emitStatus('process_error');
@@ -101,6 +122,14 @@ export class CodexAppServerSession {
   rejectAllPending(err) {
     for (const { reject } of this.pending.values()) reject(err);
     this.pending.clear();
+  }
+
+  clearBackpressureRetries(err) {
+    for (const retry of this.backpressureRetries) {
+      clearTimeout(retry.timer);
+      retry.reject(err);
+    }
+    this.backpressureRetries.clear();
   }
 
   onStdout(d) {
@@ -118,6 +147,7 @@ export class CodexAppServerSession {
     try { msg = JSON.parse(line); } catch { return; }
     // server→client 请求：有 method 且有 id（无 result/error）→ 必须回应，否则 agent 挂起。
     if (msg.method && msg.id !== undefined) {
+      this.observeRpc('server_request', { direction: 'inbound', id: msg.id, method: msg.method, params: msg.params || {} });
       this.handleServerRequest(msg.id, msg.method, msg.params || {});
       return;
     }
@@ -126,13 +156,23 @@ export class CodexAppServerSession {
       const p = this.pending.get(msg.id);
       if (p) {
         this.pending.delete(msg.id);
-        if (msg.error) p.reject(new Error(msg.error.message || JSON.stringify(msg.error)));
+        this.observeRpc('response', {
+          direction: 'inbound',
+          id: msg.id,
+          method: p.method || null,
+          result: msg.result,
+          error: msg.error,
+        });
+        if (msg.error) p.reject(rpcError(msg.error));
         else p.resolve(msg.result);
       }
       return;
     }
     // 通知。
-    if (msg.method) this.handleNotification(msg.method, msg.params || {});
+    if (msg.method) {
+      this.observeRpc('notification', { direction: 'inbound', method: msg.method, params: msg.params || {} });
+      this.handleNotification(msg.method, msg.params || {});
+    }
   }
 
   // server→client 请求处理。审批类透传给手机；其余安全兜底回应，避免 agent 挂起。
@@ -156,11 +196,13 @@ export class CodexAppServerSession {
 
   respond(rpcId, result) {
     if (!this.child) return;
+    this.observeRpc('response', { direction: 'outbound', id: rpcId, result });
     this.child.stdin.write(JSON.stringify({ id: rpcId, result }) + '\n');
   }
 
   respondError(rpcId, code, message) {
     if (!this.child) return;
+    this.observeRpc('response', { direction: 'outbound', id: rpcId, error: { code, message } });
     this.child.stdin.write(JSON.stringify({ id: rpcId, error: { code, message } }) + '\n');
   }
 
@@ -172,34 +214,105 @@ export class CodexAppServerSession {
   }
 
   request(method, params, options = {}) {
-    this.spawnIfNeeded();
-    const id = ++this.rpcId;
+    const maxBackpressureRetries = integerOption(
+      options.maxBackpressureRetries,
+      numberFromEnv('CODEX_BACKPRESSURE_RETRIES', DEFAULT_BACKPRESSURE_RETRIES),
+      { allowZero: true }
+    );
+    const backpressureBaseMs = integerOption(
+      options.backpressureBaseMs,
+      numberFromEnv('CODEX_BACKPRESSURE_BASE_MS', DEFAULT_BACKPRESSURE_BASE_MS)
+    );
     const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 0;
     return new Promise((resolve, reject) => {
-      let timer = null;
-      const settle = fn => value => {
-        if (timer) clearTimeout(timer);
+      let settled = false;
+      const finish = fn => value => {
+        if (settled) return;
+        settled = true;
         fn(value);
       };
-      if (timeoutMs > 0) {
-        timer = setTimeout(() => {
+      const resolveOnce = finish(resolve);
+      const rejectOnce = finish(reject);
+
+      const sendAttempt = attempt => {
+        if (settled) return;
+        if (this.disposed) {
+          rejectOnce(new Error('disposed'));
+          return;
+        }
+        this.spawnIfNeeded();
+        const id = ++this.rpcId;
+        let timer = null;
+        const cleanup = () => {
+          if (timer) clearTimeout(timer);
+          timer = null;
+        };
+        if (timeoutMs > 0) {
+          timer = setTimeout(() => {
+            this.pending.delete(id);
+            rejectOnce(new Error(`${method} timed out after ${timeoutMs}ms`));
+          }, timeoutMs);
+        }
+        this.pending.set(id, {
+          method,
+          resolve: value => {
+            cleanup();
+            resolveOnce(value);
+          },
+          reject: err => {
+            cleanup();
+            if (isBackpressureError(err) && attempt < maxBackpressureRetries) {
+              const delayMs = backpressureDelayMs(attempt, backpressureBaseMs);
+              this.emit('system', {
+                message: `Codex app-server 拥塞，${delayMs}ms 后重试 ${method}（${attempt + 1}/${maxBackpressureRetries}）`,
+                isError: false,
+                code: -32001,
+                method,
+                retryAfterMs: delayMs,
+                attempt: attempt + 1,
+                maxRetries: maxBackpressureRetries,
+              });
+              this.emitStatus('backpressure_retry');
+              const retry = {
+                timer: null,
+                reject: rejectOnce,
+              };
+              retry.timer = setTimeout(() => {
+                this.backpressureRetries.delete(retry);
+                sendAttempt(attempt + 1);
+              }, delayMs);
+              this.backpressureRetries.add(retry);
+              return;
+            }
+            if (isBackpressureError(err)) {
+              this.emit('system', {
+                message: `Codex app-server 仍然拥塞，超过重试上限（${maxBackpressureRetries}）`,
+                isError: true,
+                code: -32001,
+                method,
+              });
+              this.emitStatus('backpressure_failed');
+            }
+            rejectOnce(err);
+          },
+        });
+        try {
+          this.observeRpc('request', { direction: 'outbound', id, method, params });
+          this.child.stdin.write(JSON.stringify({ method, id, params }) + '\n');
+        } catch (err) {
           this.pending.delete(id);
-          reject(new Error(`${method} timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
-      }
-      this.pending.set(id, { resolve: settle(resolve), reject: settle(reject) });
-      try {
-        this.child.stdin.write(JSON.stringify({ method, id, params }) + '\n');
-      } catch (err) {
-        if (timer) clearTimeout(timer);
-        this.pending.delete(id);
-        reject(err);
-      }
+          cleanup();
+          rejectOnce(err);
+        }
+      };
+
+      sendAttempt(0);
     });
   }
 
   notify(method, params) {
     this.spawnIfNeeded();
+    this.observeRpc('notification', { direction: 'outbound', method, params });
     this.child.stdin.write(JSON.stringify({ method, params }) + '\n');
   }
 
@@ -386,6 +499,43 @@ export class CodexAppServerSession {
         this.lastUsage = params.tokenUsage?.last ?? params.tokenUsage;
         this.emit('usage', { usage: params.tokenUsage?.last ?? params.tokenUsage });
         break;
+      case 'thread/archived':
+        this.emitThreadEvent('archived', params);
+        break;
+      case 'thread/unarchived':
+        this.emitThreadEvent('unarchived', params);
+        break;
+      case 'thread/deleted':
+        this.emitThreadEvent('deleted', params);
+        break;
+      case 'thread/name/updated':
+        this.emitThreadEvent('name_updated', {
+          ...params,
+          name: params.threadName ?? params.name ?? null,
+        });
+        break;
+      case 'thread/compacted':
+        this.emit('compact', {
+          status: 'compacted',
+          threadId: params.threadId || null,
+          turnId: params.turnId || null,
+        });
+        break;
+      case 'account/rateLimits/updated':
+        this.emit('rate_limits', params || {});
+        break;
+      case 'mcpServer/startupStatus/updated':
+        this.emit('mcp_status', params || {});
+        break;
+      case 'skills/changed':
+        this.emit('skills_changed', params || {});
+        break;
+      case 'externalAgentConfig/import/progress':
+        this.emit('external_agent_config_import', { status: 'progress', ...(params || {}) });
+        break;
+      case 'externalAgentConfig/import/completed':
+        this.emit('external_agent_config_import', { status: 'completed', ...(params || {}) });
+        break;
       case 'turn/plan/updated':
         this.emit('plan', { plan: params.plan || [], explanation: params.explanation });
         break;
@@ -461,6 +611,14 @@ export class CodexAppServerSession {
       turnId: params.turnId || null
     });
     this.emitStatus(willRetry ? 'turn_retrying' : 'server_error');
+  }
+
+  emitThreadEvent(event, params) {
+    this.emit('thread_event', {
+      event,
+      threadId: params?.threadId || null,
+      name: params?.name ?? params?.threadName ?? null,
+    });
   }
 
   handleTurnCompleted(params) {
@@ -665,10 +823,136 @@ export class CodexAppServerSession {
     return response;
   }
 
+  async listThreads(options = {}) {
+    await this.ensureInitialized();
+    return this.request('thread/list', definedParams({
+      cwd: options.cwd ?? this.cwd,
+      archived: options.archived ?? false,
+      limit: options.limit,
+      cursor: options.cursor,
+      sortKey: options.sortKey,
+      sortDirection: options.sortDirection,
+      searchTerm: options.searchTerm,
+      sourceKinds: options.sourceKinds,
+      modelProviders: options.modelProviders,
+      useStateDbOnly: options.useStateDbOnly,
+    }));
+  }
+
+  async archiveThread(threadId) {
+    await this.ensureInitialized();
+    return this.request('thread/archive', { threadId: requireThreadId(threadId, 'archive') });
+  }
+
+  async unarchiveThread(threadId) {
+    await this.ensureInitialized();
+    return this.request('thread/unarchive', { threadId: requireThreadId(threadId, 'unarchive') });
+  }
+
+  async deleteThread(threadId) {
+    await this.ensureInitialized();
+    return this.request('thread/delete', { threadId: requireThreadId(threadId, 'delete') });
+  }
+
+  async renameThread(threadId, name) {
+    await this.ensureInitialized();
+    const trimmed = String(name || '').trim();
+    if (!trimmed) throw new Error('thread name is required');
+    return this.request('thread/name/set', { threadId: requireThreadId(threadId, 'rename'), name: trimmed });
+  }
+
+  async compactThread(threadId = this.sessionId) {
+    await this.ensureInitialized();
+    return this.request('thread/compact/start', { threadId: requireThreadId(threadId, 'compact') });
+  }
+
+  async rollbackThread(options = {}) {
+    await this.ensureInitialized();
+    const numTurns = Number.isInteger(options.numTurns) && options.numTurns >= 1 ? options.numTurns : 1;
+    return this.request('thread/rollback', {
+      threadId: requireThreadId(options.threadId || this.sessionId, 'rollback'),
+      numTurns,
+    });
+  }
+
+  async listModels(options = {}) {
+    await this.ensureInitialized();
+    return this.request('model/list', definedParams({
+      includeHidden: options.includeHidden ?? false,
+      limit: options.limit ?? 100,
+      cursor: options.cursor,
+    }));
+  }
+
+  async readModelProviderCapabilities() {
+    await this.ensureInitialized();
+    return this.request('modelProvider/capabilities/read', {});
+  }
+
+  async readDirectory(path) {
+    await this.ensureInitialized();
+    return this.request('fs/readDirectory', { path: requireAbsolutePath(path, 'directory path') });
+  }
+
+  async readFile(path) {
+    await this.ensureInitialized();
+    return this.request('fs/readFile', { path: requireAbsolutePath(path, 'file path') });
+  }
+
+  async readAccount() {
+    await this.ensureInitialized();
+    return this.request('account/read', undefined);
+  }
+
+  async readUsage() {
+    await this.ensureInitialized();
+    return this.request('account/usage/read', undefined);
+  }
+
+  async readRateLimits() {
+    await this.ensureInitialized();
+    return this.request('account/rateLimits/read', undefined);
+  }
+
+  async listMcpServerStatus(options = {}) {
+    await this.ensureInitialized();
+    return this.request('mcpServerStatus/list', definedParams({
+      detail: options.detail ?? 'Summary',
+      limit: options.limit,
+      cursor: options.cursor,
+      threadId: options.threadId ?? this.sessionId ?? null,
+    }));
+  }
+
+  async listSkills(options = {}) {
+    await this.ensureInitialized();
+    return this.request('skills/list', definedParams({
+      cwds: options.cwds ?? [this.cwd],
+      forceReload: options.forceReload,
+    }));
+  }
+
+  async detectExternalAgentConfig(options = {}) {
+    await this.ensureInitialized();
+    return this.request('externalAgentConfig/detect', definedParams({
+      includeHome: options.includeHome ?? false,
+      cwds: options.cwds ?? [this.cwd],
+    }));
+  }
+
+  async importExternalAgentConfig(migrationItems, options = {}) {
+    await this.ensureInitialized();
+    return this.request('externalAgentConfig/import', {
+      migrationItems: Array.isArray(migrationItems) ? migrationItems : [],
+      source: options.source ?? 'mobile',
+    });
+  }
+
   dispose() {
     this.disposed = true;
     clearInterval(this.idleTimer); this.idleTimer = null;
     this.clearQueue('dispose', false);
+    this.clearBackpressureRetries(new Error('disposed'));
     if (this.child) {
       try { this.child.kill('SIGTERM'); } catch { /* noop */ }
       this.child = null;
@@ -727,7 +1011,8 @@ export class CodexAppServerSession {
       approvalPolicy: this.approvalPolicy,
       sandbox: this.sandbox,
       childRunning: Boolean(this.child),
-      lastActivity: this.lastActivity
+      lastActivity: this.lastActivity,
+      rpcStats: { ...this.rpcStats }
     };
   }
 
@@ -735,11 +1020,128 @@ export class CodexAppServerSession {
     if (this.disposed) return;
     this.emit('status', this.statusPayload(reason));
   }
+
+  observeRpc(frame, details = {}) {
+    this.incrementRpcStats(frame, details);
+    this.appendRpcLog(buildRpcLogEntry({
+      ...details,
+      frame,
+      instanceId: this.instanceId,
+      sessionId: this.sessionId,
+    }));
+  }
+
+  incrementRpcStats(frame, details) {
+    if (frame === 'request' && details.direction === 'outbound') this.rpcStats.clientRequests += 1;
+    if (frame === 'response' && details.direction === 'inbound') this.rpcStats.clientResponses += 1;
+    if (frame === 'response' && details.direction === 'outbound') this.rpcStats.serverResponses += 1;
+    if (frame === 'notification' && details.direction === 'outbound') this.rpcStats.clientNotifications += 1;
+    if (frame === 'notification' && details.direction === 'inbound') this.rpcStats.serverNotifications += 1;
+    if (frame === 'server_request') this.rpcStats.serverRequests += 1;
+    if (details.error) this.rpcStats.errors += 1;
+  }
+
+  appendRpcLog(entry) {
+    if (!this.rpcLogPath) return;
+    try {
+      mkdirSync(dirname(this.rpcLogPath), { recursive: true, mode: 0o700 });
+      const previous = existsSync(this.rpcLogPath) ? readFileSync(this.rpcLogPath, 'utf8') : '';
+      writeOwnerOnlyFile(this.rpcLogPath, previous + JSON.stringify(entry) + '\n');
+    } catch {
+      // Observability must not interfere with JSON-RPC protocol progress.
+    }
+  }
 }
 
 function truncate(s, cap) {
   if (typeof s !== 'string') return '';
   return s.length > cap ? s.slice(0, cap) + ' …（已截断）' : s;
+}
+
+function buildRpcLogEntry(details) {
+  const sensitiveMethod = SENSITIVE_RPC_KEY_RE.test(details.method || '');
+  const entry = {
+    ts: Date.now(),
+    direction: details.direction || null,
+    frame: details.frame,
+    id: details.id ?? null,
+    method: details.method || null,
+    instanceId: details.instanceId || null,
+    sessionId: details.sessionId || null,
+  };
+  if (details.params !== undefined) entry.params = sensitiveMethod ? '<redacted>' : redactRpcValue(details.params);
+  if (details.result !== undefined) entry.result = sensitiveMethod ? '<redacted>' : redactRpcValue(details.result);
+  if (details.error !== undefined) entry.error = redactRpcError(details.error);
+  return entry;
+}
+
+function redactRpcError(error) {
+  if (!error || typeof error !== 'object') return { message: redactRpcString(String(error ?? ''), 'message') };
+  const out = {};
+  if (error.code !== undefined) out.code = error.code;
+  if (error.message !== undefined) out.message = redactRpcString(String(error.message), 'message');
+  if (error.data !== undefined) out.data = redactRpcValue(error.data, 'data');
+  return out;
+}
+
+function redactRpcValue(value, key = '') {
+  if (SENSITIVE_RPC_KEY_RE.test(key)) return '<redacted>';
+  if (typeof value === 'string') return redactRpcString(value, key);
+  if (Array.isArray(value)) {
+    if (CONTENT_RPC_KEY_RE.test(key)) return `<redacted:${value.length} items>`;
+    return value.slice(0, 30).map(item => redactRpcValue(item));
+  }
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [childKey, child] of Object.entries(value).slice(0, 40)) {
+      out[childKey] = redactRpcValue(child, childKey);
+    }
+    return out;
+  }
+  return value;
+}
+
+function redactRpcString(value, key = '') {
+  if (CONTENT_RPC_KEY_RE.test(key)) return `<redacted:${value.length} chars>`;
+  const pathSafe = key === 'cwd' || key === 'path' || /^([A-Za-z]:\\|\/Users\/|\/home\/|\/tmp\/|\/var\/)/.test(value)
+    ? sanitizePath(value)
+    : value;
+  return truncate(sanitize(pathSafe), RPC_SUMMARY_CAP);
+}
+
+function definedParams(params) {
+  return Object.fromEntries(Object.entries(params).filter(([, value]) => value !== undefined));
+}
+
+function requireThreadId(threadId, action) {
+  if (typeof threadId === 'string' && threadId) return threadId;
+  throw new Error(`无法 ${action}：缺少 threadId`);
+}
+
+function requireAbsolutePath(path, label) {
+  if (typeof path === 'string' && (/^\//.test(path) || /^[A-Za-z]:\\/.test(path))) return path;
+  throw new Error(`无效 ${label}`);
+}
+
+function rpcError(error) {
+  const err = new Error(error?.message || JSON.stringify(error));
+  if (error?.code !== undefined) err.code = error.code;
+  if (error?.data !== undefined) err.data = error.data;
+  return err;
+}
+
+function isBackpressureError(err) {
+  return err?.code === -32001 || /Server overloaded; retry later/i.test(String(err?.message || err));
+}
+
+function backpressureDelayMs(attempt, baseMs) {
+  return Math.min(MAX_BACKPRESSURE_DELAY_MS, baseMs * (2 ** attempt));
+}
+
+function integerOption(value, fallback, options = {}) {
+  const n = Number(value);
+  if (Number.isInteger(n) && (options.allowZero ? n >= 0 : n > 0)) return n;
+  return fallback;
 }
 
 function truncatePayload(value, cap, depth = 4) {

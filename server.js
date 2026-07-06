@@ -553,6 +553,55 @@ function sysTo(socket, message, isError = false) {
   });
 }
 
+function ackOk(ack, payload = {}) {
+  if (typeof ack === 'function') ack({ ok: true, ...payload });
+}
+
+function ackError(ack, error) {
+  if (typeof ack === 'function') ack({ ok: false, error: error?.message || String(error || 'unknown error') });
+}
+
+function ensureControlAgent(cwd = WORK_DIR) {
+  const routedCwd = routeCwd(cwd);
+  let ai = routeInstance(viewingInstanceId);
+  if (!ai || ai.cwd !== routedCwd) {
+    ai = createAgent(null, routedCwd);
+    viewingInstanceId = ai.instanceId;
+    broadcastInstances();
+  }
+  return ai;
+}
+
+function normalizeThread(thread, { archived = false } = {}) {
+  const secondsToMs = value => Number.isFinite(value) ? value * 1000 : null;
+  const createdAt = secondsToMs(thread?.createdAt) ?? Date.now();
+  const lastUsedAt = secondsToMs(thread?.recencyAt ?? thread?.updatedAt ?? thread?.createdAt) ?? createdAt;
+  return {
+    id: thread?.id || '',
+    sessionId: thread?.sessionId || thread?.id || '',
+    title: thread?.name || thread?.preview || '未命名',
+    preview: thread?.preview || '',
+    cwd: thread?.cwd || WORK_DIR,
+    model: thread?.modelProvider || '',
+    createdAt,
+    lastUsedAt,
+    status: thread?.status || null,
+    archived,
+    source: 'app-server',
+  };
+}
+
+function emitServerEnvelope(socket, type, payload) {
+  socket.emit('agent:event', {
+    seq: 0,
+    epoch: 'server',
+    sessionId: routeInstance(viewingInstanceId)?.sessionId ?? null,
+    ts: Date.now(),
+    type,
+    payload,
+  });
+}
+
 // ---- Socket.IO 连接处理 ----
 io.on('connection', socket => {
   console.log(`[conn] ${socket.id} 已连接（来自 ${clientIp(socket.handshake.address)}）`);
@@ -689,6 +738,200 @@ io.on('connection', socket => {
         seq: 0, epoch: 'server', sessionId: ai.sessionId ?? null, ts: Date.now(),
         type: 'account_login', payload: { status: 'failed', loginId, error: message }
       });
+    }
+  });
+
+  on(socket, 'thread:list', async (payload = {}, ack) => {
+    try {
+      const cwd = routeCwd(payload?.cwd);
+      const ai = ensureControlAgent(cwd);
+      const response = await ai.listThreads({
+        cwd,
+        archived: payload?.archived === true,
+        limit: Number.isInteger(payload?.limit) ? payload.limit : 50,
+        cursor: payload?.cursor,
+        searchTerm: typeof payload?.searchTerm === 'string' ? payload.searchTerm : undefined,
+      });
+      ackOk(ack, {
+        threads: (response?.data || []).map(thread => normalizeThread(thread, { archived: payload?.archived === true })),
+        nextCursor: response?.nextCursor ?? null,
+        backwardsCursor: response?.backwardsCursor ?? null,
+        archived: payload?.archived === true,
+      });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'thread:select', async (payload = {}, ack) => {
+    try {
+      const threadId = payload?.threadId || payload?.sessionId;
+      if (typeof threadId !== 'string' || !threadId) throw new Error('无效 threadId');
+      const cwd = routeCwd(payload?.cwd);
+      sessions.upsertSession({ id: threadId, title: payload?.title || threadId.slice(0, 8), cwd });
+      const agent = createAgent(threadId, cwd);
+      viewingInstanceId = agent.instanceId;
+      broadcastInstances();
+      io.emit('agent:event', {
+        seq: 0, epoch: 'server', sessionId: threadId, ts: Date.now(),
+        type: 'init', payload: { sessionId: threadId, cwd, workDirs, versions }
+      });
+      sendActiveStatus(socket, 'thread_select');
+      ackOk(ack, { sessionId: threadId, instanceId: agent.instanceId });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'thread:archive', async (payload = {}, ack) => {
+    try {
+      await ensureControlAgent(payload?.cwd).archiveThread(payload?.threadId);
+      ackOk(ack, { threadId: payload?.threadId });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'thread:unarchive', async (payload = {}, ack) => {
+    try {
+      await ensureControlAgent(payload?.cwd).unarchiveThread(payload?.threadId);
+      ackOk(ack, { threadId: payload?.threadId });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'thread:delete', async (payload = {}, ack) => {
+    try {
+      const threadId = payload?.threadId;
+      await ensureControlAgent(payload?.cwd).deleteThread(threadId);
+      for (const [instanceId, agent] of agents) {
+        if (agent.sessionId === threadId) {
+          agent.dispose();
+          agents.delete(instanceId);
+          if (viewingInstanceId === instanceId) viewingInstanceId = null;
+        }
+      }
+      broadcastInstances();
+      ackOk(ack, { threadId });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'thread:rename', async (payload = {}, ack) => {
+    try {
+      await ensureControlAgent(payload?.cwd).renameThread(payload?.threadId, payload?.name);
+      ackOk(ack, { threadId: payload?.threadId, name: String(payload?.name || '').trim() });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'thread:compact', async (payload = {}, ack) => {
+    try {
+      await ensureControlAgent(payload?.cwd).compactThread(payload?.threadId);
+      ackOk(ack, { threadId: payload?.threadId });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'thread:rollback', async (payload = {}, ack) => {
+    try {
+      const response = await ensureControlAgent(payload?.cwd).rollbackThread({
+        threadId: payload?.threadId,
+        numTurns: payload?.numTurns,
+      });
+      emitServerEnvelope(socket, 'rollback', { threadId: payload?.threadId, numTurns: payload?.numTurns || 1 });
+      ackOk(ack, { thread: response?.thread || null });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'models:read', async (payload = {}, ack) => {
+    try {
+      const ai = ensureControlAgent(payload?.cwd);
+      const [models, capabilities] = await Promise.all([
+        ai.listModels({ includeHidden: payload?.includeHidden === true }),
+        ai.readModelProviderCapabilities(),
+      ]);
+      ackOk(ack, { models: models?.data || [], nextCursor: models?.nextCursor ?? null, capabilities });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'fs:readDirectory', async (payload = {}, ack) => {
+    try {
+      const response = await ensureControlAgent(payload?.cwd).readDirectory(payload?.path || WORK_DIR);
+      ackOk(ack, { entries: response?.entries || [], path: payload?.path || WORK_DIR });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'fs:readFile', async (payload = {}, ack) => {
+    try {
+      const response = await ensureControlAgent(payload?.cwd).readFile(payload?.path);
+      ackOk(ack, { dataBase64: response?.dataBase64 || '', path: payload?.path });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'account:read', async (payload = {}, ack) => {
+    try {
+      const ai = ensureControlAgent(payload?.cwd);
+      const [account, usage, rateLimits] = await Promise.all([
+        ai.readAccount(),
+        ai.readUsage(),
+        ai.readRateLimits(),
+      ]);
+      ackOk(ack, { account, usage, rateLimits });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'mcp:read', async (payload = {}, ack) => {
+    try {
+      const response = await ensureControlAgent(payload?.cwd).listMcpServerStatus({ limit: payload?.limit || 50 });
+      ackOk(ack, { servers: response?.data || [], nextCursor: response?.nextCursor ?? null });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'skills:read', async (payload = {}, ack) => {
+    try {
+      const response = await ensureControlAgent(payload?.cwd).listSkills({ forceReload: payload?.forceReload === true });
+      ackOk(ack, { entries: response?.data || [] });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'externalAgentConfig:detect', async (payload = {}, ack) => {
+    try {
+      const response = await ensureControlAgent(payload?.cwd).detectExternalAgentConfig({
+        includeHome: payload?.includeHome === true,
+      });
+      ackOk(ack, { items: response?.items || [] });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'externalAgentConfig:import', async (payload = {}, ack) => {
+    try {
+      const items = Array.isArray(payload?.migrationItems) ? payload.migrationItems : [];
+      if (!items.length) throw new Error('没有可导入的配置项');
+      const response = await ensureControlAgent(payload?.cwd).importExternalAgentConfig(items, { source: 'mobile' });
+      ackOk(ack, { importId: response?.importId || null });
+    } catch (err) {
+      ackError(ack, err);
     }
   });
 
@@ -923,6 +1166,11 @@ export function stopServer(callback) {
   statusRefreshTimer = null;
   clearInterval(pruneUploadsTimer);
   pruneUploadsTimer = null;
+  for (const agent of agents.values()) {
+    try { agent.dispose?.(); } catch { /* noop */ }
+  }
+  agents.clear();
+  viewingInstanceId = null;
   if (!httpServer.listening) {
     callback?.();
     return;

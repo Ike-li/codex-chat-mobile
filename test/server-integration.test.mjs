@@ -222,6 +222,100 @@ test('server starts chatgpt device-code login and forwards account notifications
   }
 });
 
+test('server exposes P1 native app-server controls over Socket.IO', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ccm-p1-controls-test-'));
+  const rpcLog = join(root, 'rpc.jsonl');
+  const codexBin = createFakeCodexBin(root);
+  const fixture = await startIsolatedServer({ codexBin, rpcLog });
+  try {
+    const socket = await connectSocket(fixture.url, fixture.authToken);
+    try {
+      await waitForAgentEvent(socket, 'init');
+
+      const threadList = await emitWithAck(socket, 'thread:list', { archived: false });
+      assert.equal(threadList.ok, true);
+      assert.equal(threadList.threads[0].id, 'thr_fake');
+
+      assert.equal((await emitWithAck(socket, 'thread:rename', { threadId: 'thr_fake', name: 'Mobile run' })).ok, true);
+      assert.equal((await emitWithAck(socket, 'thread:archive', { threadId: 'thr_fake' })).ok, true);
+      assert.equal((await emitWithAck(socket, 'thread:unarchive', { threadId: 'thr_fake' })).ok, true);
+      assert.equal((await emitWithAck(socket, 'thread:compact', { threadId: 'thr_fake' })).ok, true);
+      assert.equal((await emitWithAck(socket, 'thread:rollback', { threadId: 'thr_fake', numTurns: 2 })).ok, true);
+
+      const compact = await waitForAgentEvent(socket, 'compact');
+      assert.equal(compact.payload.status, 'compacted');
+
+      const models = await emitWithAck(socket, 'models:read', {});
+      assert.equal(models.ok, true);
+      assert.equal(models.models[0].model, 'gpt-5.5');
+      assert.equal(models.capabilities.webSearch, true);
+
+      const dir = await emitWithAck(socket, 'fs:readDirectory', { path: fixture.workDir });
+      assert.equal(dir.ok, true);
+      assert.equal(dir.entries[0].fileName, 'README.md');
+
+      const file = await emitWithAck(socket, 'fs:readFile', { path: join(fixture.workDir, 'README.md') });
+      assert.equal(file.ok, true);
+      assert.equal(Buffer.from(file.dataBase64, 'base64').toString('utf8'), 'hello from fake file');
+
+      const account = await emitWithAck(socket, 'account:read', {});
+      assert.equal(account.ok, true);
+      assert.equal(account.account.account.type, 'chatgpt');
+      assert.equal(account.usage.summary.lifetimeTokens, 123);
+      assert.equal(account.rateLimits.rateLimits.limitId, 'codex');
+
+      const mcp = await emitWithAck(socket, 'mcp:read', {});
+      assert.equal(mcp.ok, true);
+      assert.equal(mcp.servers[0].name, 'github');
+
+      const skills = await emitWithAck(socket, 'skills:read', {});
+      assert.equal(skills.ok, true);
+      assert.equal(skills.entries[0].cwd, fixture.workDir);
+
+      const detected = await emitWithAck(socket, 'externalAgentConfig:detect', {});
+      assert.equal(detected.ok, true);
+      assert.equal(detected.items[0].description, 'AGENTS.md');
+
+      const imported = await emitWithAck(socket, 'externalAgentConfig:import', { migrationItems: detected.items });
+      assert.equal(imported.ok, true);
+      assert.equal(imported.importId, 'import_fake');
+
+      const deleted = await emitWithAck(socket, 'thread:delete', { threadId: 'thr_fake' });
+      assert.equal(deleted.ok, true);
+
+      const calls = readFileSync(rpcLog, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      const methods = calls.map(call => call.method).filter(Boolean);
+      for (const method of [
+        'thread/list',
+        'thread/name/set',
+        'thread/archive',
+        'thread/unarchive',
+        'thread/compact/start',
+        'thread/rollback',
+        'model/list',
+        'modelProvider/capabilities/read',
+        'fs/readDirectory',
+        'fs/readFile',
+        'account/read',
+        'account/usage/read',
+        'account/rateLimits/read',
+        'mcpServerStatus/list',
+        'skills/list',
+        'externalAgentConfig/detect',
+        'externalAgentConfig/import',
+        'thread/delete',
+      ]) {
+        assert.ok(methods.includes(method), `expected ${method}`);
+      }
+    } finally {
+      socket.disconnect();
+    }
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 async function startIsolatedServer({ codexBin, rpcLog } = {}) {
   const previous = snapshotEnv();
   const root = mkdtempSync(join(tmpdir(), 'ccm-server-test-'));
@@ -345,7 +439,7 @@ function emitWithAck(socket, event, payload) {
 function createFakeCodexBin(root) {
   const file = join(root, 'fake-codex.mjs');
   writeFileSync(file, `#!/usr/bin/env node
-import { appendFileSync } from 'node:fs';
+	import { appendFileSync } from 'node:fs';
 import readline from 'node:readline';
 
 const logPath = process.env.CODEX_FAKE_RPC_LOG;
@@ -366,9 +460,43 @@ rl.on('line', line => {
   log(message);
   if (message.id === undefined) return;
   if (message.method === 'initialize') return send({ id: message.id, result: {} });
-  if (message.method === 'thread/start') return send({ id: message.id, result: { thread: { id: threadId } } });
-  if (message.method === 'turn/start') return send({ id: message.id, result: { turn: { id: turnId, status: 'inProgress' } } });
-  if (message.method === 'thread/fork') {
+	  if (message.method === 'thread/start') return send({ id: message.id, result: { thread: { id: threadId } } });
+	  if (message.method === 'turn/start') return send({ id: message.id, result: { turn: { id: turnId, status: 'inProgress' } } });
+	  if (message.method === 'thread/list') return send({ id: message.id, result: { data: [{
+	    id: threadId,
+	    sessionId: threadId,
+	    preview: 'fake thread',
+	    name: 'Fake thread',
+	    modelProvider: 'openai',
+	    createdAt: 1710000000,
+	    updatedAt: 1710000100,
+	    recencyAt: 1710000100,
+	    cwd: process.env.WORK_DIR,
+	    status: { type: 'idle' },
+	    turns: []
+	  }], nextCursor: null, backwardsCursor: null } });
+	  if (message.method === 'thread/name/set') return send({ id: message.id, result: {} });
+	  if (message.method === 'thread/archive') return send({ id: message.id, result: {} });
+	  if (message.method === 'thread/unarchive') return send({ id: message.id, result: {} });
+	  if (message.method === 'thread/delete') return send({ id: message.id, result: {} });
+	  if (message.method === 'thread/compact/start') {
+	    send({ id: message.id, result: {} });
+	    setTimeout(() => send({ method: 'thread/compacted', params: { threadId: message.params.threadId, turnId } }), 5);
+	    return;
+	  }
+	  if (message.method === 'thread/rollback') return send({ id: message.id, result: { thread: { id: message.params.threadId, turns: [] } } });
+	  if (message.method === 'model/list') return send({ id: message.id, result: { data: [{ id: 'model_1', model: 'gpt-5.5', displayName: 'GPT-5.5', hidden: false, supportedReasoningEfforts: [], defaultReasoningEffort: 'medium', inputModalities: ['text'], serviceTiers: [], defaultServiceTier: null, isDefault: true }], nextCursor: null } });
+	  if (message.method === 'modelProvider/capabilities/read') return send({ id: message.id, result: { namespaceTools: true, imageGeneration: false, webSearch: true } });
+	  if (message.method === 'fs/readDirectory') return send({ id: message.id, result: { entries: [{ fileName: 'README.md', isDirectory: false, isFile: true }] } });
+	  if (message.method === 'fs/readFile') return send({ id: message.id, result: { dataBase64: Buffer.from('hello from fake file').toString('base64') } });
+	  if (message.method === 'account/read') return send({ id: message.id, result: { account: { type: 'chatgpt', email: 'u@example.com', planType: 'plus' }, requiresOpenaiAuth: false } });
+	  if (message.method === 'account/usage/read') return send({ id: message.id, result: { summary: { lifetimeTokens: 123, peakDailyTokens: null, longestRunningTurnSec: null, currentStreakDays: null, longestStreakDays: null }, dailyUsageBuckets: [] } });
+	  if (message.method === 'account/rateLimits/read') return send({ id: message.id, result: { rateLimits: { limitId: 'codex', limitName: 'Codex', primary: null, secondary: null, credits: null, individualLimit: null, planType: 'plus', rateLimitReachedType: null }, rateLimitsByLimitId: null, rateLimitResetCredits: null } });
+	  if (message.method === 'mcpServerStatus/list') return send({ id: message.id, result: { data: [{ name: 'github', serverInfo: null, tools: {}, resources: [], resourceTemplates: [], authStatus: 'notLoggedIn' }], nextCursor: null } });
+	  if (message.method === 'skills/list') return send({ id: message.id, result: { data: [{ cwd: process.env.WORK_DIR, skills: [], errors: [] }] } });
+	  if (message.method === 'externalAgentConfig/detect') return send({ id: message.id, result: { items: [{ itemType: { type: 'agentsMd' }, description: 'AGENTS.md', cwd: process.env.WORK_DIR, details: null }] } });
+	  if (message.method === 'externalAgentConfig/import') return send({ id: message.id, result: { importId: 'import_fake' } });
+	  if (message.method === 'thread/fork') {
     send({ id: message.id, result: { thread: { id: 'thr_forked', forkedFromId: threadId } } });
     setTimeout(() => process.exit(0), 20);
     return;

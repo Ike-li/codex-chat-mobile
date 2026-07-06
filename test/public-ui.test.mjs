@@ -97,3 +97,66 @@ test('client exposes session fork control', () => {
   assert.match(html, /function forkCurrentSession/);
   assert.match(html, /socket\.emit\('session:fork'/);
 });
+
+test('client exposes P1 native app-server controls and readonly status panels', () => {
+  for (const id of [
+    'native-controls',
+    'native-thread-refresh',
+    'native-compact-btn',
+    'native-rollback-btn',
+    'native-models-btn',
+    'native-files-btn',
+    'native-account-btn',
+    'native-mcp-btn',
+    'native-skills-btn',
+    'native-import-btn',
+  ]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+
+  for (const event of [
+    'thread:list',
+    'thread:archive',
+    'thread:unarchive',
+    'thread:delete',
+    'thread:rename',
+    'thread:compact',
+    'thread:rollback',
+    'models:read',
+    'fs:readDirectory',
+    'fs:readFile',
+    'account:read',
+    'mcp:read',
+    'skills:read',
+    'externalAgentConfig:detect',
+    'externalAgentConfig:import',
+  ]) {
+    assert.match(html, new RegExp(`socket\\.emit\\('${event.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
+  }
+
+  assert.match(html, /function refreshNativeThreads/);
+  assert.match(html, /function renderNativeThreadList/);
+  assert.match(html, /function startCompact/);
+  assert.match(html, /function rollbackThread/);
+  assert.match(html, /function loadNativeModels/);
+  assert.match(html, /function openFileBrowser/);
+  assert.match(html, /function readNativeFile/);
+  assert.match(html, /function loadAccountPanel/);
+  assert.match(html, /function loadMcpPanel/);
+  assert.match(html, /function loadSkillsPanel/);
+  assert.match(html, /function detectExternalAgentConfig/);
+
+  for (const [id, handler] of [
+    ['native-thread-refresh', 'refreshNativeThreads'],
+    ['native-compact-btn', 'startCompact'],
+    ['native-rollback-btn', 'rollbackThread'],
+    ['native-models-btn', 'loadNativeModels'],
+    ['native-account-btn', 'loadAccountPanel'],
+    ['native-mcp-btn', 'loadMcpPanel'],
+    ['native-skills-btn', 'loadSkillsPanel'],
+    ['native-import-btn', 'detectExternalAgentConfig'],
+  ]) {
+    assert.match(html, new RegExp(`\\$\\('${id}'\\)\\.onclick = ${handler}`));
+  }
+  assert.match(html, /\$\('native-files-btn'\)\.onclick = \(\) => openFileBrowser\(serverCwd\)/);
+});
