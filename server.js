@@ -48,7 +48,8 @@ const {
 
 let WORK_DIR = process.env.WORK_DIR || homedir();
 let workDirs = [];
-const PORT = Number(process.env.PORT) > 0 ? Number(process.env.PORT) : 3001;
+const rawPort = Number(process.env.PORT);
+const PORT = Number.isInteger(rawPort) && rawPort >= 0 ? rawPort : 3001;
 const shouldStartServer = process.env.CODEX_SERVER_NO_START !== '1';
 let HOST;
 try {
@@ -135,19 +136,9 @@ function preflight() {
     process.exit(1);
   };
   try {
-    if (!statSync(WORK_DIR).isDirectory()) fail(`WORK_DIR 不是目录：${WORK_DIR}`);
-  } catch {
-    fail(`WORK_DIR 不存在：${WORK_DIR}（请在 .env 中设置有效路径）`);
-  }
-  WORK_DIR = realpathSync(WORK_DIR);
-  workDirs = [WORK_DIR];
-  const rawDirs = (process.env.WORK_DIRS || '').split(',').map(s => s.trim()).filter(Boolean);
-  for (const raw of rawDirs) {
-    try {
-      const d = realpathSync(raw);
-      if (!statSync(d).isDirectory()) { console.warn(`⚠️  WORK_DIRS 忽略（不是目录）：${raw}`); continue; }
-      if (!workDirs.includes(d)) workDirs.push(d);
-    } catch { console.warn(`⚠️  WORK_DIRS 忽略（不存在/不可达）：${raw}`); }
+    initializeWorkDirs();
+  } catch (err) {
+    fail(err.message);
   }
 
   let codexBin = process.env.CODEX_BIN || '';
@@ -178,6 +169,26 @@ function preflight() {
   console.log('');
 
   return codexBin;
+}
+
+function initializeWorkDirs() {
+  let workDirStat;
+  try {
+    workDirStat = statSync(WORK_DIR);
+  } catch {
+    throw new Error(`WORK_DIR 不存在：${WORK_DIR}（请在 .env 中设置有效路径）`);
+  }
+  if (!workDirStat.isDirectory()) throw new Error(`WORK_DIR 不是目录：${WORK_DIR}`);
+  WORK_DIR = realpathSync(WORK_DIR);
+  workDirs = [WORK_DIR];
+  const rawDirs = (process.env.WORK_DIRS || '').split(',').map(s => s.trim()).filter(Boolean);
+  for (const raw of rawDirs) {
+    try {
+      const d = realpathSync(raw);
+      if (!statSync(d).isDirectory()) { console.warn(`⚠️  WORK_DIRS 忽略（不是目录）：${raw}`); continue; }
+      if (!workDirs.includes(d)) workDirs.push(d);
+    } catch { console.warn(`⚠️  WORK_DIRS 忽略（不存在/不可达）：${raw}`); }
+  }
 }
 const codexBin = shouldStartServer ? preflight() : (process.env.CODEX_BIN || 'codex');
 
@@ -751,6 +762,7 @@ io.on('connection', socket => {
 
 // ---- 状态栏刷新 ----
 let statusRefreshTimer = null;
+let pruneUploadsTimer = null;
 
 async function refreshStatusLine() {
   try {
@@ -776,23 +788,40 @@ function scheduleStatusRefresh() {
 
 // ---- 启动 ----
 export function startServer() {
+  if (workDirs.length === 0) initializeWorkDirs();
   httpServer.listen(PORT, HOST, () => {
-  const displayHost = HOST === '0.0.0.0' ? 'localhost' : HOST;
-  console.log(`🚀 Codex Chat Mobile 运行在 http://${displayHost}:${PORT}`);
-  scheduleStatusRefresh();
+    const displayHost = HOST === '0.0.0.0' ? 'localhost' : HOST;
+    const address = httpServer.address();
+    const displayPort = typeof address === 'object' && address ? address.port : PORT;
+    console.log(`🚀 Codex Chat Mobile 运行在 http://${displayHost}:${displayPort}`);
+    scheduleStatusRefresh();
 
-  // 启动时清理过期附件
-  for (const dir of workDirs) {
-    pruneExpiredUploads(dir).catch(() => {});
-  }
-
-  // 每 1 小时自动定时清理
-  setInterval(() => {
+    // 启动时清理过期附件
     for (const dir of workDirs) {
       pruneExpiredUploads(dir).catch(() => {});
     }
-  }, 3600000);
+
+    // 每 1 小时自动定时清理
+    pruneUploadsTimer = setInterval(() => {
+      for (const dir of workDirs) {
+        pruneExpiredUploads(dir).catch(() => {});
+      }
+    }, 3600000);
+    pruneUploadsTimer.unref?.();
   });
+  return httpServer;
+}
+
+export function stopServer(callback) {
+  clearInterval(statusRefreshTimer);
+  statusRefreshTimer = null;
+  clearInterval(pruneUploadsTimer);
+  pruneUploadsTimer = null;
+  if (!httpServer.listening) {
+    callback?.();
+    return;
+  }
+  httpServer.close(callback);
 }
 
 if (shouldStartServer) startServer();
