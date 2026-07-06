@@ -156,6 +156,30 @@ test('startTurn: turn/start 抛错 → error(recoverable) 且 busy 复位、返�
   assert.equal(err.payload.recoverable, true);
 });
 
+test('steerTurn: turn/steer 抛错 → recoverable error 且不破坏当前 turn', async () => {
+  const { session, events } = makeSession();
+  session.sessionId = 'thr_steer_fail';
+  session.currentTurnId = 'turn_active';
+  session.busy = true;
+  session.child = fakeChild().child;
+  session.ensureReady = async () => {};
+  session.request = async (method) => {
+    if (method === 'turn/steer') throw new Error('steer rejected');
+    return {};
+  };
+
+  const result = await session.send('recover by steering');
+
+  assert.equal(result, false);
+  assert.equal(session.busy, true);
+  assert.equal(session.currentTurnId, 'turn_active');
+  assert.equal(session.inputQueue.length, 0);
+  const err = byType(events, 'error').at(-1);
+  assert.match(err.payload.message, /turn\/steer 失败/);
+  assert.match(err.payload.message, /steer rejected/);
+  assert.equal(err.payload.recoverable, true);
+});
+
 test('startTurn: 带附件 → 注入路径且 user_message 只含元数据(无 absPath)', async () => {
   const { session, events } = makeSession();
   session.sessionId = 'thr_att';

@@ -105,7 +105,7 @@ test('R1.1 legacy turn failed notification still reports error and drains queued
   };
 
   assert.equal(await session.send('first turn'), true);
-  assert.equal(await session.send('queued turn'), true);
+  assert.equal(session.enqueueInput('queued turn'), true);
 
   session.handleNotification('turn/failed', {
     turn: { error: { message: 'legacy failed message' } },

@@ -54,7 +54,7 @@
 | 容错环 | B1∖A（如 `item/fileChange/patchUpdated`、v1 `applyPatchApproval`） | 可用但必须有降级路径；映射表标注 `fallback` |
 | 实验环 | B2∖B1（process PTY、realtime、remoteControl、turns/list…） | 独立模块 + feature flag；握手时才声明 `experimentalApi: true`；类型取自 `generate-ts --experimental` 产物 |
 
-**握手规范**：`initialize` 携带稳定的 `clientInfo.name`（合规日志），`capabilities.optOutNotificationMethods` 屏蔽未消费的高频通知（首批：`item/reasoning/textDelta` 未开 FR-04 时、`rawResponseItem/completed`）。
+**握手规范**：`initialize` 携带稳定的 `clientInfo.name`（合规日志）；FR-04 已消费 `item/reasoning/textDelta` / `summaryPartAdded`，不再把 full reasoning 作为未消费高频通知处理。
 
 ## 4. 关键组件深潜
 
@@ -62,17 +62,18 @@
 - **注册表分派 + 映射表**（实测校正：非透明代理）：S→C request 经 `handleServerRequest` 注册表分派（审批族 → ApprovalBroker；已知无法履约如 `account/chatgptAuthTokens/refresh` → JSON-RPC `-32601`；未知 → `-32601` + `system` 告警，**不再默认回 `{}`**）；通知经 `handleNotification` 映射表分发。新增/未知方法有显式兜底，schema 升级由 CI `protocol:check` 拦截。
 - **ApprovalBroker（FR-06/07）**：S→C request 到达 → 按 method 精确分类（命令/文件/权限/工具输入/旧式兜底）→ 生成 approvalId 登记 pending 表 → 信封推送 + Web Push → 前端决议 `user:approval` → 回填 JSON-RPC response → 清表并广播 `approval:resolved`；同时监听服务端 `serverRequest/resolved` 撤销他端已决弹窗。超时策略：不自动决议（安全默认），仅提醒。
 - **事件映射表（FR-05）**：以 pin 版本 `codex app-server generate-ts --out .protocol/stable` 导出为唯一映射源（实测校正：`generate-ts` 无 `--experimental` flag，stable 产物已含 EXPERIMENTAL 类型；CI `protocol:check` 校验桥消费方法均在产物中）；未知 **item** → `raw_item` 信封（NFR-5），未知**通知**安全忽略；删除对 `turn/failed` 的依赖，终态取 `turn/completed.status`（completed/failed/interrupted）+ `error` 通知（`turn/failed` 保留一版本周期双轨兼容）。
-- **登录状态机（FR-03 范围，本次重构计划不实施；以下为后续设计）**：`account/login/start(chatgptDeviceCode)` → 透出 user_code/verification_url → 轮询等待 `account/login/completed` → `account/updated` 刷新状态。实测校正：`account/chatgptAuthTokens/refresh`（S→C）本桥**显式拒绝**（`-32601`，不落盘/不透传凭证），非静默应答。
+- **登录状态机（FR-03）**：`account:loginStart` → 桥层 `account/login/start({type:"chatgptDeviceCode"})` → `account_login` 信封透出 `userCode` / `verificationUrl` / pending 状态 → `account/login/completed` 与 `account/updated` 映射为前端登录完成和账号状态。`account:loginCancel` 调用 `account/login/cancel`。实测校正：`account/chatgptAuthTokens/refresh`（S→C）本桥**显式拒绝**（`-32601`，不落盘/不透传凭证），非静默应答。自动化已用 mock app-server 覆盖；真实账号 device-code smoke 需人工完成。
 
 ### 4.2 网关路由层（server.js）
-- agents Map 多实例不变；新增 fork 路由：`session:fork` → `thread/fork` → 新 instanceId 挂载（FR-02）。
-- steer 语义（FR-01）：turn 运行中收到 `user:message` 不再排队，改发 `turn/steer`；无活跃 turn 才走 `turn/start`。队列深度透出到状态栏（现有 `q:n`）。
+- agents Map 多实例不变；fork 路由：`session:fork` → `thread/fork` → 新 `instanceId` 挂载并切换 `viewingInstanceId`，广播 `init` / `instances` / `session_list`（FR-02 已实现）。
+- steer 语义（FR-01）：turn 运行中且有 `currentTurnId` 时收到 `user:message` 发 `turn/steer`；无活跃 turn 或无法 steer 的边界保留队列。steer 失败发 recoverable error，不复位当前 turn。队列深度透出到状态栏（现有 `q:n`）。
 - 重放缓冲：按 (instanceId, seq) 环形缓冲，`catch-up` 按客户端最后 seq 增量下发（现有机制，容量参数化）。
 
 ### 4.3 前端 SPA
 - item 状态机 reducer：`started(id,type)` 建卡 → delta 按 id 追加 → `completed` 定稿替换（plan 类以 completed 为准，delta 仅预览——schema 注释明示两者可不一致）。
 - 渲染注册表：item type → 卡片组件；未注册 type → raw JSON 卡片（NFR-5）。
 - 审批卡片携 approvalId 幂等：重复决议、已撤销决议均无副作用。
+- Reasoning 渲染（FR-04）：继续使用向后兼容的 `reasoning` 信封，`payload.text` 保留；新增 `channel` / `kind` / index 元数据，将 summary 与 full reasoning 分区渲染，不混入普通 assistant 文本。
 
 ## 5. 状态与存储
 

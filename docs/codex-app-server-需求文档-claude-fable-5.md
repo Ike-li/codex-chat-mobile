@@ -36,10 +36,10 @@
 
 | ID | 需求 | 接口 | 现状 |
 |---|---|---|---|
-| FR-01 | 运行中追加指令（steer） | `turn/steer` | ❌ 未实现 |
-| FR-02 | 会话分叉 | `thread/fork`（含 `ephemeral`） | ❌ 未实现 |
-| FR-03 | 设备码登录，替代"先在桌面登录"前置条件 | `account/login/start` type=`chatgptDeviceCode`、`account/login/completed`、`account/updated` | ❌ 未实现 |
-| FR-04 | reasoning 全量流（现仅 summaryTextDelta） | `item/reasoning/textDelta`、`summaryPartAdded` | ⚠️ 部分 |
+| FR-01 | 运行中追加指令（steer） | `turn/steer` | ✅ 已实现；agent/socket 自动化验证 |
+| FR-02 | 会话分叉 | `thread/fork`（含 `ephemeral`） | ✅ 已实现；agent/socket/UI 入口自动化验证 |
+| FR-03 | 设备码登录，替代"先在桌面登录"前置条件 | `account/login/start` type=`chatgptDeviceCode`、`account/login/completed`、`account/updated` | ✅ 已实现；mock app-server 自动化验证，真实账号 smoke 待跑 |
+| FR-04 | reasoning 全量流（现仅 summaryTextDelta） | `item/reasoning/textDelta`、`summaryPartAdded` | ✅ 已实现；summary/full reasoning 自动化验证 |
 | FR-05 | 协议版本适配：移除对已删除通知的依赖 | 现网映射含新版 schema 已不存在的 `turn/failed`；改用 `turn/completed` 携带的终态 + `error` 通知 | ⚠️ 风险项 |
 | FR-06 | 审批精确分派：按 method 区分命令/文件/权限审批，弃用 `/requestApproval/i` 正则 | `item/commandExecution\|fileChange\|permissions/requestApproval` + 旧式 `applyPatchApproval`、`execCommandApproval` 兜底 | ⚠️ MVP 兜底中 |
 | FR-07 | 多端审批一致性：他端已决的弹窗自动撤销 | `serverRequest/resolved` | ❌ 未实现 |
@@ -90,8 +90,10 @@ FR-31 完整网页终端（`process/spawn` 族 PTY）；FR-32 历史分页正规
 | 已观测到通知增删（如 `turn/failed` 消失） | 事件映射失效 | FR-05 + 映射表以 `--experimental` 导出产物为准 |
 | B1∖A 无文档承诺（如 `item/fileChange/patchUpdated`） | diff 视图退化 | 降级路径：`turn/diff/updated` 全量 diff |
 | 官方 `remoteControl` 配对成熟 | 自建通道重复建设 | FR-35 持续评估，架构上把"浏览器↔网关"通道做成可替换层 |
-| deviceCode 登录依赖 ChatGPT 侧流程 | FR-03 阻塞 | 保留 apiKey 登录与"桌面预登录"兜底 |
+| deviceCode 登录依赖 ChatGPT 侧流程 | FR-03 真实链路 smoke 仍需人工账号操作 | 自动化使用 mock app-server 覆盖 request/notification/UI；保留 apiKey 登录与"桌面预登录"兜底 |
 
 ## 6. 验收方式
 
 延续 `docs/scenario-acceptance.md` 四维度判定（功能等价 / 状态可见 / 失败可恢复 / 权限可控）：每个 FR 必须给出 mock 浏览器 + 真机双证据；P0 完成时新增场景案例：S4 纠偏（steer 后 agent 输出反映新指令）、FR-03 登录（无桌面前置条件冷启动）、FR-07 多端（两浏览器并发审批一次决议）。
+
+**P0 自动化验证状态（2026-07-06）：** FR-01/FR-02/FR-03/FR-04 已通过 agent/socket/public-ui/protocol focused tests；完整门禁以本地最终执行结果为准。FR-03 的真实 ChatGPT device-code 账号流程和真机 smoke 未由自动化替代，仍需人工输入设备码后验证完成通知与账号状态更新。

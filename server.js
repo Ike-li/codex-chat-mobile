@@ -505,6 +505,10 @@ function createAgent(resumeId = null, cwd = WORK_DIR) {
   return agent;
 }
 
+function forkedSessionId(response) {
+  return response?.thread?.id ?? response?.threadId ?? null;
+}
+
 function broadcastInstances() {
   const list = [];
   for (const [id, a] of agents) {
@@ -515,6 +519,12 @@ function broadcastInstances() {
     seq: 0, epoch: 'server', sessionId: null, ts: Date.now(),
     type: 'instances', payload: { instances: list, viewingInstanceId }
   });
+}
+
+function broadcastSessionList(cwd) {
+  for (const socket of io.sockets.sockets.values()) {
+    if (socket.deviceApproved === true) sendSessionList(socket, cwd);
+  }
 }
 
 // ---- 契约路由辅助 ----
@@ -626,6 +636,62 @@ io.on('connection', socket => {
     }
   });
 
+  on(socket, 'account:loginStart', async (payload, ack) => {
+    if (payload?.type && payload.type !== 'chatgptDeviceCode') {
+      if (typeof ack === 'function') ack({ ok: false, error: '仅支持 chatgptDeviceCode 登录' });
+      return;
+    }
+    let ai = routeInstance(viewingInstanceId);
+    if (!ai) {
+      ai = createAgent(null, WORK_DIR);
+      viewingInstanceId = ai.instanceId;
+      broadcastInstances();
+    }
+    if (typeof ai.startChatgptDeviceLogin !== 'function') {
+      if (typeof ack === 'function') ack({ ok: false, error: '当前后端不支持 ChatGPT device code 登录' });
+      return;
+    }
+    try {
+      const response = await ai.startChatgptDeviceLogin();
+      if (response?.type !== 'chatgptDeviceCode') throw new Error('account/login/start 未返回 device code');
+      if (typeof ack === 'function') {
+        ack({
+          ok: true,
+          loginId: response.loginId,
+          verificationUrl: response.verificationUrl,
+          userCode: response.userCode
+        });
+      }
+    } catch (err) {
+      const message = `登录启动失败：${err.message}`;
+      if (typeof ack === 'function') ack({ ok: false, error: message });
+      socket.emit('agent:event', {
+        seq: 0, epoch: 'server', sessionId: ai.sessionId ?? null, ts: Date.now(),
+        type: 'account_login', payload: { status: 'failed', error: message }
+      });
+    }
+  });
+
+  on(socket, 'account:loginCancel', async (payload, ack) => {
+    const loginId = payload?.loginId;
+    const ai = routeInstance(viewingInstanceId);
+    if (!ai || typeof ai.cancelLogin !== 'function' || typeof loginId !== 'string' || !loginId) {
+      if (typeof ack === 'function') ack({ ok: false, error: '无效登录任务' });
+      return;
+    }
+    try {
+      const response = await ai.cancelLogin(loginId);
+      if (typeof ack === 'function') ack({ ok: true, status: response?.status || null });
+    } catch (err) {
+      const message = `登录取消失败：${err.message}`;
+      if (typeof ack === 'function') ack({ ok: false, error: message });
+      socket.emit('agent:event', {
+        seq: 0, epoch: 'server', sessionId: ai.sessionId ?? null, ts: Date.now(),
+        type: 'account_login', payload: { status: 'failed', loginId, error: message }
+      });
+    }
+  });
+
   on(socket, 'session:new', (payload, maybeAck) => {
     const ack = typeof payload === 'function' ? payload : maybeAck;
     const cwd = routeCwd(payload?.cwd);
@@ -693,6 +759,46 @@ io.on('connection', socket => {
     sendActiveStatus(socket, 'session_select');
     sendSessionList(socket);
     if (typeof ack === 'function') ack({ ok: true, sessionId });
+  });
+
+  on(socket, 'session:fork', async (payload, ack) => {
+    const ai = routeInstance(payload?.instanceId || viewingInstanceId);
+    const threadId = typeof payload?.threadId === 'string' && payload.threadId
+      ? payload.threadId
+      : ai?.sessionId;
+    if (!ai || !threadId || typeof ai.forkThread !== 'function') {
+      if (typeof ack === 'function') ack({ ok: false, error: '当前没有可分叉的会话' });
+      else sysTo(socket, '当前没有可分叉的会话', true);
+      return;
+    }
+
+    try {
+      const response = await ai.forkThread({
+        threadId,
+        ephemeral: payload?.ephemeral === true
+      });
+      const sessionId = forkedSessionId(response);
+      if (!sessionId) throw new Error('thread/fork 未返回 thread.id');
+      const cwd = ai.cwd || WORK_DIR;
+      sessions.upsertSession({ id: sessionId, title: payload?.title || `Fork ${String(threadId).slice(0, 8)}`, cwd });
+      const agent = createAgent(sessionId, cwd);
+      viewingInstanceId = agent.instanceId;
+      io.emit('agent:event', {
+        seq: 0, epoch: 'server', sessionId, ts: Date.now(),
+        type: 'init', payload: { sessionId, cwd, workDirs, versions }
+      });
+      broadcastInstances();
+      broadcastSessionList(cwd);
+      sendActiveStatus(socket, 'session_fork');
+      if (typeof ack === 'function') ack({ ok: true, sessionId, instanceId: agent.instanceId });
+    } catch (err) {
+      const message = `会话分叉失败：${err.message}`;
+      if (typeof ack === 'function') ack({ ok: false, error: message });
+      socket.emit('agent:event', {
+        seq: 0, epoch: 'server', sessionId: ai.sessionId ?? null, ts: Date.now(),
+        type: 'error', payload: { message, recoverable: true }
+      });
+    }
   });
 
   on(socket, 'session:switch', payload => {

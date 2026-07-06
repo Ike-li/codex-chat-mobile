@@ -70,3 +70,30 @@ test('client renders rich approval, user input, and raw item cards', () => {
   assert.match(html, /payload\.permissions/);
   assert.match(html, /JSON\.stringify\(payload\.item/);
 });
+
+test('client renders ChatGPT device-code login envelopes', () => {
+  assert.match(html, /id="account-login-btn"/);
+  assert.match(html, /id="account-login-panel"/);
+  assert.match(html, /case 'account_login'/);
+  assert.match(html, /case 'account_updated'/);
+  assert.match(html, /function startChatgptDeviceLogin/);
+  assert.match(html, /function handleAccountLogin/);
+  assert.match(html, /function handleAccountUpdated/);
+  assert.match(html, /socket\.emit\('account:loginStart'/);
+  assert.match(html, /socket\.emit\('account:loginCancel'/);
+});
+
+test('client renders summary and full reasoning streams separately', () => {
+  assert.match(html, /case 'reasoning'/);
+  assert.match(html, /function appendReasoning/);
+  assert.match(html, /summary_part_added/);
+  assert.match(html, /reasoning-summary/);
+  assert.match(html, /reasoning-full/);
+  assert.match(html, /payload\.channel/);
+});
+
+test('client exposes session fork control', () => {
+  assert.match(html, /fork-instance-btn/);
+  assert.match(html, /function forkCurrentSession/);
+  assert.match(html, /socket\.emit\('session:fork'/);
+});

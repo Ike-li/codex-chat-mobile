@@ -161,7 +161,48 @@ test('turn/plan/updated: → plan', () => {
 test('item/reasoning/summaryTextDelta: → reasoning', () => {
   const { session, events } = makeSession();
   session.handleNotification('item/reasoning/summaryTextDelta', { delta: 'thinking…' });
-  assert.equal(byType(events, 'reasoning')[0].payload.text, 'thinking…');
+  const reasoning = byType(events, 'reasoning')[0].payload;
+  assert.equal(reasoning.text, 'thinking…');
+  assert.equal(reasoning.channel, 'summary');
+  assert.equal(reasoning.kind, 'summary_text_delta');
+});
+
+test('reasoning full stream notifications map to reasoning envelopes', () => {
+  const { session, events } = makeSession();
+
+  session.handleNotification('item/reasoning/textDelta', {
+    threadId: 'thr_reason',
+    turnId: 'turn_reason',
+    itemId: 'item_reason',
+    contentIndex: 0,
+    delta: 'full thought',
+  });
+  session.handleNotification('item/reasoning/summaryPartAdded', {
+    threadId: 'thr_reason',
+    turnId: 'turn_reason',
+    itemId: 'item_reason',
+    summaryIndex: 1,
+  });
+
+  const [full, part] = byType(events, 'reasoning').map(e => e.payload);
+  assert.deepEqual(full, {
+    text: 'full thought',
+    channel: 'full',
+    kind: 'text_delta',
+    threadId: 'thr_reason',
+    turnId: 'turn_reason',
+    itemId: 'item_reason',
+    contentIndex: 0,
+  });
+  assert.deepEqual(part, {
+    text: '',
+    channel: 'summary',
+    kind: 'summary_part_added',
+    threadId: 'thr_reason',
+    turnId: 'turn_reason',
+    itemId: 'item_reason',
+    summaryIndex: 1,
+  });
 });
 
 test('item/started(mcpToolCall): → mcp_use', () => {
@@ -238,6 +279,32 @@ test('send: busy turn queues mobile input and drains FIFO after completion', asy
   assert.deepEqual(started, ['first task', '/diff', 'second task']);
 });
 
+test('send: busy turn with active currentTurnId steers instead of queueing', async () => {
+  const { session, events } = makeSession();
+  session.sessionId = 'thr_steer';
+  session.ensureReady = async () => {};
+  const requests = [];
+  session.request = async (method, params) => {
+    requests.push({ method, params });
+    if (method === 'turn/start') return { turn: { id: 'turn_active', status: 'inProgress' } };
+    if (method === 'turn/steer') return { turnId: 'turn_active' };
+    return {};
+  };
+
+  assert.equal(await session.send('first task'), true);
+  assert.equal(await session.send('please adjust course'), true);
+
+  assert.deepEqual(requests.map(r => r.method), ['turn/start', 'turn/steer']);
+  assert.deepEqual(requests[1].params, {
+    threadId: 'thr_steer',
+    input: [{ type: 'text', text: 'please adjust course' }],
+    expectedTurnId: 'turn_active',
+  });
+  assert.equal(session.inputQueue.length, 0);
+  assert.equal(byType(events, 'queued_message').length, 0);
+  assert.equal(byType(events, 'status').at(-1).payload.reason, 'steer_submitted');
+});
+
 test('status: exposes busy queue approval and sandbox state', async () => {
   const { session, events } = makeSession();
   session.sessionId = 'thr_status';
@@ -275,7 +342,7 @@ test('abort: interrupts active turn and clears queued phone input', async () => 
   session.child = { stdin: { write: () => {} } };
 
   await session.send('long task');
-  await session.send('queued after long task');
+  session.enqueueInput('queued after long task');
   await session.abort();
 
   assert.deepEqual(requests.at(-1), {
@@ -285,6 +352,110 @@ test('abort: interrupts active turn and clears queued phone input', async () => 
   assert.equal(session.busy, false);
   assert.equal(session.inputQueue.length, 0);
   assert.equal(byType(events, 'queue_cleared').at(-1).payload.dropped, 1);
+});
+
+test('forkThread: sends thread/fork with stable protocol fields', async () => {
+  const { session } = makeSession();
+  session.sessionId = 'thr_source';
+  session.ensureReady = async () => {};
+  let forkRequest = null;
+  session.request = async (method, params) => {
+    if (method === 'thread/fork') {
+      forkRequest = params;
+      return { thread: { id: 'thr_forked' } };
+    }
+    return {};
+  };
+
+  const response = await session.forkThread({ ephemeral: true });
+
+  assert.deepEqual(forkRequest, {
+    threadId: 'thr_source',
+    cwd: '/tmp/work',
+    approvalPolicy: session.approvalPolicy,
+    sandbox: session.sandbox,
+    ephemeral: true,
+  });
+  assert.equal(response.thread.id, 'thr_forked');
+});
+
+test('startChatgptDeviceLogin: requests chatgptDeviceCode without starting a thread', async () => {
+  const { session, events } = makeSession();
+  const calls = [];
+  session.request = async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'account/login/start') {
+      return {
+        type: 'chatgptDeviceCode',
+        loginId: 'login_1',
+        verificationUrl: 'https://openai.com/device',
+        userCode: 'ABCD-EFGH',
+      };
+    }
+    return {};
+  };
+  session.notify = method => calls.push({ method, params: null });
+
+  const response = await session.startChatgptDeviceLogin();
+
+  assert.equal(response.loginId, 'login_1');
+  assert.deepEqual(calls.map(c => c.method), ['initialize', 'initialized', 'account/login/start']);
+  assert.deepEqual(calls.at(-1).params, { type: 'chatgptDeviceCode' });
+  const login = byType(events, 'account_login').at(-1);
+  assert.equal(login.payload.status, 'pending');
+  assert.equal(login.payload.userCode, 'ABCD-EFGH');
+  assert.equal(login.payload.verificationUrl, 'https://openai.com/device');
+});
+
+test('account login and update notifications map to frontend envelopes', () => {
+  const { session, events } = makeSession();
+
+  session.handleNotification('account/login/completed', {
+    loginId: 'login_1',
+    success: true,
+    error: null,
+  });
+  session.handleNotification('account/updated', {
+    authMode: 'chatgpt',
+    planType: 'plus',
+  });
+
+  const login = byType(events, 'account_login').at(-1);
+  assert.equal(login.payload.status, 'completed');
+  assert.equal(login.payload.loginId, 'login_1');
+  assert.equal(login.payload.success, true);
+
+  const account = byType(events, 'account_updated').at(-1);
+  assert.deepEqual(account.payload, { authMode: 'chatgpt', planType: 'plus' });
+
+  session.handleNotification('account/login/completed', {
+    loginId: 'login_2',
+    success: false,
+    error: 'expired',
+  });
+  const failed = byType(events, 'account_login').at(-1);
+  assert.equal(failed.payload.status, 'failed');
+  assert.equal(failed.payload.error, 'expired');
+});
+
+test('cancelLogin: sends account/login/cancel and emits canceled state', async () => {
+  const { session, events } = makeSession();
+  const calls = [];
+  session.request = async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'account/login/cancel') return { status: 'canceled' };
+    return {};
+  };
+  session.notify = method => calls.push({ method, params: null });
+
+  const response = await session.cancelLogin('login_cancel');
+
+  assert.deepEqual(calls.map(c => c.method), ['initialize', 'initialized', 'account/login/cancel']);
+  assert.deepEqual(calls.at(-1).params, { loginId: 'login_cancel' });
+  assert.equal(response.status, 'canceled');
+  const canceled = byType(events, 'account_login').at(-1);
+  assert.equal(canceled.payload.status, 'canceled');
+  assert.equal(canceled.payload.loginId, 'login_cancel');
 });
 
 test('item/commandExecution/outputDelta: streams raw terminal output including ANSI', () => {

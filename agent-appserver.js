@@ -43,6 +43,7 @@ export class CodexAppServerSession {
 
     this.rpcId = 0;
     this.pending = new Map(); // id -> { resolve, reject }
+    this.initialized = null;  // initialize + initialized notification
     this.ready = null;        // initialize + thread 就绪的 promise（只做一次）
     this.stdoutBuf = '';
     this.pendingApprovals = new Set(); // 等待手机 decision 的 server→client 请求 id
@@ -77,6 +78,7 @@ export class CodexAppServerSession {
     this.child.on('close', () => {
       this.busy = false;
       this.child = null;
+      this.initialized = null;
       this.ready = null;
       this.clearQueue('process_exit');
       this.approvalBroker.clearPending();
@@ -201,14 +203,23 @@ export class CodexAppServerSession {
     this.child.stdin.write(JSON.stringify({ method, params }) + '\n');
   }
 
-  // initialize + 建/续 thread，只执行一次。
-  ensureReady() {
-    if (this.ready) return this.ready;
-    this.ready = (async () => {
+  // initialize app-server，只执行一次；登录等非 thread 操作也复用它。
+  ensureInitialized() {
+    if (this.initialized) return this.initialized;
+    this.initialized = (async () => {
       await this.request('initialize', {
         clientInfo: { name: 'codex-chat-mobile', title: 'Codex Chat Mobile', version: '0.1.0' }
       });
       this.notify('initialized', {});
+    })();
+    return this.initialized;
+  }
+
+  // initialize + 建/续 thread，只执行一次。
+  ensureReady() {
+    if (this.ready) return this.ready;
+    this.ready = (async () => {
+      await this.ensureInitialized();
       if (this.sessionId) {
         if (process.env.LOG_STDERR) console.error('[appserver] thread/resume', { approvalPolicy: this.approvalPolicy, sandbox: this.sandbox });
         await this.request('thread/resume', { threadId: this.sessionId, cwd: this.cwd, approvalPolicy: this.approvalPolicy, sandbox: this.sandbox });
@@ -229,6 +240,7 @@ export class CodexAppServerSession {
     if (!text) return false;
     if (this.disposed) return false;
     if (this.busy) {
+      if (this.currentTurnId) return this.steerTurn(text, savedAttachments);
       return this.enqueueInput(text, savedAttachments);
     }
 
@@ -282,6 +294,38 @@ export class CodexAppServerSession {
       this.busy = false;
       this.emit('error', { message: `turn/start 失败：${sanitize(String(err?.message || err))}`, recoverable: true });
       this.emitStatus('turn_start_failed');
+      return false;
+    }
+    return true;
+  }
+
+  async steerTurn(text, savedAttachments) {
+    const expectedTurnId = this.currentTurnId;
+    const promptText = savedAttachments?.length
+      ? this.buildPromptText(text, savedAttachments)
+      : text;
+    const attachMeta = savedAttachments?.length
+      ? savedAttachments.map(a => ({ name: a.name, mimeType: a.mimeType, size: a.size }))
+      : undefined;
+    this.emit('user_message', { text, attachments: attachMeta });
+
+    try {
+      await this.ensureReady();
+      const steer = await this.request('turn/steer', {
+        threadId: this.sessionId,
+        input: [{ type: 'text', text: promptText }],
+        expectedTurnId
+      });
+      this.recordCurrentTurn(steer);
+      this.emit('system', {
+        message: '已向当前运行任务追加指令',
+        isError: false,
+        turnId: steer?.turnId || expectedTurnId
+      });
+      this.emitStatus('steer_submitted');
+    } catch (err) {
+      this.emit('error', { message: `turn/steer 失败：${sanitize(String(err?.message || err))}`, recoverable: true });
+      this.emitStatus('steer_failed');
       return false;
     }
     return true;
@@ -352,7 +396,42 @@ export class CodexAppServerSession {
         if (params.diff) this.emit('diff', { diff: truncate(params.diff, TOOL_SUMMARY_CAP * 2) });
         break;
       case 'item/reasoning/summaryTextDelta':
-        if (params.delta) this.emit('reasoning', { text: params.delta });
+        if (params.delta) this.emit('reasoning', reasoningPayload(params, {
+          text: params.delta,
+          channel: 'summary',
+          kind: 'summary_text_delta',
+          indexKey: 'summaryIndex'
+        }));
+        break;
+      case 'item/reasoning/textDelta':
+        if (params.delta) this.emit('reasoning', reasoningPayload(params, {
+          text: params.delta,
+          channel: 'full',
+          kind: 'text_delta',
+          indexKey: 'contentIndex'
+        }));
+        break;
+      case 'item/reasoning/summaryPartAdded':
+        this.emit('reasoning', reasoningPayload(params, {
+          text: '',
+          channel: 'summary',
+          kind: 'summary_part_added',
+          indexKey: 'summaryIndex'
+        }));
+        break;
+      case 'account/login/completed':
+        this.emit('account_login', {
+          status: params.success ? 'completed' : 'failed',
+          loginId: params.loginId ?? null,
+          success: params.success === true,
+          error: params.error ?? null
+        });
+        break;
+      case 'account/updated':
+        this.emit('account_updated', {
+          authMode: params.authMode ?? null,
+          planType: params.planType ?? null
+        });
         break;
       case 'error':
         this.handleErrorNotification(params);
@@ -546,6 +625,46 @@ export class CodexAppServerSession {
     this.emitStatus(dropped ? 'interrupt_cleared_queue' : 'interrupt');
   }
 
+  async forkThread(options = {}) {
+    await this.ensureReady();
+    const threadId = typeof options.threadId === 'string' && options.threadId
+      ? options.threadId
+      : this.sessionId;
+    if (!threadId) throw new Error('无法 fork：当前实例没有可用 threadId');
+    return this.request('thread/fork', {
+      threadId,
+      cwd: this.cwd,
+      approvalPolicy: this.approvalPolicy,
+      sandbox: this.sandbox,
+      ephemeral: options.ephemeral === true
+    });
+  }
+
+  async startChatgptDeviceLogin() {
+    await this.ensureInitialized();
+    const response = await this.request('account/login/start', { type: 'chatgptDeviceCode' });
+    if (response?.type === 'chatgptDeviceCode') {
+      this.emit('account_login', {
+        status: 'pending',
+        loginId: response.loginId,
+        verificationUrl: response.verificationUrl,
+        userCode: response.userCode
+      });
+    }
+    return response;
+  }
+
+  async cancelLogin(loginId) {
+    await this.ensureInitialized();
+    const response = await this.request('account/login/cancel', { loginId });
+    this.emit('account_login', {
+      status: response?.status === 'canceled' ? 'canceled' : 'cancel_missing',
+      loginId,
+      cancelStatus: response?.status || null
+    });
+    return response;
+  }
+
   dispose() {
     this.disposed = true;
     clearInterval(this.idleTimer); this.idleTimer = null;
@@ -650,6 +769,15 @@ function protocolErrorMessage(source, fallback) {
   return source?.error?.message
     || source?.message
     || fallback;
+}
+
+function reasoningPayload(params, { text, channel, kind, indexKey }) {
+  const payload = { text, channel, kind };
+  for (const key of ['threadId', 'turnId', 'itemId']) {
+    if (typeof params?.[key] === 'string') payload[key] = params[key];
+  }
+  if (params?.[indexKey] !== undefined) payload[indexKey] = params[indexKey];
+  return payload;
 }
 
 function numberFromEnv(name, fallback) {

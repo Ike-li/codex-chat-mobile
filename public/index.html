@@ -1084,6 +1084,48 @@
     .approve-btn { background: var(--accent-light); color: white; }
     .deny-btn { background: var(--error); color: white; }
 
+    #account-login-panel {
+      background: #f6fbf8;
+      border-bottom: 1px solid #d9efe5;
+      padding: 10px 16px;
+      font-size: 12px;
+      color: var(--text);
+    }
+    #account-login-panel[hidden] { display: none; }
+    .account-login-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .account-login-main {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+    .account-login-code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 1px;
+    }
+    .account-login-url {
+      color: var(--accent-light);
+      font-weight: 600;
+      overflow-wrap: anywhere;
+    }
+    #account-login-btn {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
     /* Instance Tabs */
     #instance-tabs {
       display: none;
@@ -1223,6 +1265,7 @@
       <span>📁</span>
       <select id="workdir-select"></select>
     </div>
+    <button id="account-login-btn" title="ChatGPT 登录">登录</button>
     <div id="status-dot"></div>
   </div>
 
@@ -1242,6 +1285,9 @@
 
 <!-- Pending devices panel -->
 <div id="pending-panel"></div>
+
+<!-- ChatGPT device-code login panel -->
+<div id="account-login-panel" hidden></div>
 
 <!-- Messages Container -->
 <div id="messages" aria-live="polite"></div>
@@ -1532,6 +1578,8 @@
   const drawer = $('drawer');
   const sessionListEl = $('session-list');
   const pendingPanel = $('pending-panel');
+  const accountLoginBtn = $('account-login-btn');
+  const accountLoginPanel = $('account-login-panel');
   const authGate = $('auth-gate');
   const authForm = $('auth-form');
   const authTokenInput = $('auth-token-input');
@@ -1581,6 +1629,7 @@
   let currentViewingId = null;
   let offlineQueue = []; // [{text, attachments}]
   let offlineUserBubbles = []; // [{text, el}]
+  let activeAccountLoginId = null;
 
   // Socket
   const socket = io({ autoConnect: false, auth: { token: authToken, deviceToken } });
@@ -1978,7 +2027,13 @@
         handlePlan(ev.payload);
         break;
       case 'reasoning':
-        appendReasoning(ev.payload.text);
+        appendReasoning(ev.payload);
+        break;
+      case 'account_login':
+        handleAccountLogin(ev.payload);
+        break;
+      case 'account_updated':
+        handleAccountUpdated(ev.payload);
         break;
       case 'mcp_use':
         handleMcpUse(ev.payload);
@@ -2078,6 +2133,79 @@
     }
   }
 
+  function startChatgptDeviceLogin() {
+    if (!socket.connected) {
+      appendSystem('连接后才能启动 ChatGPT 登录', true);
+      return;
+    }
+    handleAccountLogin({ status: 'starting' });
+    socket.emit('account:loginStart', { type: 'chatgptDeviceCode' }, ack => {
+      if (!ack?.ok) {
+        handleAccountLogin({ status: 'failed', error: ack?.error || '登录启动失败' });
+        return;
+      }
+      handleAccountLogin({
+        status: 'pending',
+        loginId: ack.loginId,
+        verificationUrl: ack.verificationUrl,
+        userCode: ack.userCode
+      });
+    });
+  }
+
+  function handleAccountLogin(payload) {
+    const status = payload?.status || 'unknown';
+    if (payload?.loginId) activeAccountLoginId = payload.loginId;
+    if (status === 'completed' || status === 'failed' || status === 'canceled' || status === 'cancel_missing') {
+      activeAccountLoginId = null;
+    }
+    accountLoginPanel.hidden = false;
+
+    if (status === 'starting') {
+      accountLoginPanel.innerHTML = '<div class="account-login-row"><div class="account-login-main"><strong>正在启动 ChatGPT 登录...</strong></div></div>';
+      return;
+    }
+    if (status === 'pending') {
+      const verificationUrl = payload.verificationUrl || '';
+      const userCode = payload.userCode || '';
+      accountLoginPanel.innerHTML = `<div class="account-login-row">
+        <div class="account-login-main">
+          <strong>ChatGPT 设备码登录</strong>
+          <span class="account-login-code">${escHtml(userCode)}</span>
+          <a class="account-login-url" href="${escHtml(verificationUrl)}" target="_blank" rel="noopener">${escHtml(verificationUrl)}</a>
+        </div>
+        <button class="deny-btn account-login-cancel" type="button">取消</button>
+      </div>`;
+      const cancel = accountLoginPanel.querySelector('.account-login-cancel');
+      cancel.onclick = () => {
+        if (!activeAccountLoginId) return;
+        socket.emit('account:loginCancel', { loginId: activeAccountLoginId }, ack => {
+          if (!ack?.ok) handleAccountLogin({ status: 'failed', error: ack?.error || '取消登录失败' });
+        });
+      };
+      return;
+    }
+    if (status === 'completed') {
+      accountLoginPanel.innerHTML = '<div class="account-login-row"><div class="account-login-main"><strong>ChatGPT 登录完成</strong><span>账号状态已更新。</span></div></div>';
+      appendSystem('ChatGPT 登录完成', false);
+      return;
+    }
+    if (status === 'canceled' || status === 'cancel_missing') {
+      accountLoginPanel.innerHTML = '<div class="account-login-row"><div class="account-login-main"><strong>ChatGPT 登录已取消</strong></div></div>';
+      return;
+    }
+    accountLoginPanel.innerHTML = `<div class="account-login-row"><div class="account-login-main"><strong>ChatGPT 登录失败</strong><span>${escHtml(payload?.error || 'unknown error')}</span></div></div>`;
+  }
+
+  function handleAccountUpdated(payload) {
+    const authMode = payload?.authMode || 'unknown';
+    const planType = payload?.planType || 'unknown';
+    if (accountLoginPanel.hidden) accountLoginPanel.hidden = false;
+    if (authMode === 'chatgpt') {
+      accountLoginPanel.innerHTML = `<div class="account-login-row"><div class="account-login-main"><strong>ChatGPT 已登录</strong><span>${escHtml(planType)}</span></div></div>`;
+    }
+  }
+
   function handleInit(payload) {
     currentSessionId = payload.sessionId;
     serverCwd = payload.cwd || serverCwd;
@@ -2150,7 +2278,7 @@
 
   function renderInstanceTabs() {
     const tabs = document.getElementById('instance-tabs');
-    if (instanceList.length <= 1) { tabs.style.display = 'none'; return; }
+    if (instanceList.length <= 1 && !currentSessionId) { tabs.style.display = 'none'; return; }
     tabs.style.display = 'flex';
     let html = '';
     for (const inst of instanceList) {
@@ -2159,6 +2287,7 @@
       const dot = inst.busy ? '⚡' : '○';
       html += `<button class="instance-tab${active}" data-iid="${escHtml(inst.instanceId)}" style="padding:6px 12px;font-size:11px;font-weight:600;border:1px solid ${active?'var(--text)':'var(--border)'};border-radius:12px;background:${active?'var(--text)':'var(--surface)'};color:${active?'var(--surface)':'var(--text)'};cursor:pointer;white-space:nowrap;transition:all 0.1s;">${dot} ${name}</button>`;
     }
+    html += `<button id="fork-instance-btn" title="分叉当前会话" style="padding:4px 10px;font-size:14px;font-weight:bold;border:1px solid var(--border);border-radius:12px;background:var(--surface);cursor:pointer;color:var(--text-muted);">⎇</button>`;
     html += `<button id="new-instance-btn" style="padding:4px 10px;font-size:16px;font-weight:bold;border:1px solid var(--border);border-radius:12px;background:var(--surface);cursor:pointer;color:var(--text-muted);">+</button>`;
     tabs.innerHTML = html;
 
@@ -2167,9 +2296,22 @@
         socket.emit('session:switch', { instanceId: btn.dataset.iid });
       };
     }
+    document.getElementById('fork-instance-btn').onclick = forkCurrentSession;
     document.getElementById('new-instance-btn').onclick = () => {
       socket.emit('session:new', {});
     };
+  }
+
+  function forkCurrentSession() {
+    socket.emit('session:fork', { instanceId: currentViewingId }, ack => {
+      if (!ack?.ok) {
+        appendSystem(ack?.error || '会话分叉失败', true);
+        return;
+      }
+      clearMessages();
+      appendSystem('已分叉当前会话', false);
+      socket.emit('session:list');
+    });
   }
 
   function updateStatusDetail(payload) {
@@ -2615,17 +2757,38 @@
     scrollBottom();
   }
 
-  function appendReasoning(text) {
-    if (!text) return;
-    if (!appendReasoning.el) {
-      const el = document.createElement('div');
-      el.className = 'tool-output';
-      el.style.cssText = 'opacity:.6;font-style:italic;background:transparent;color:var(--text-muted);';
-      appendRaw(el, 'codex');
-      appendReasoning.el = el;
+  function appendReasoning(payload) {
+    const data = typeof payload === 'string' ? { text: payload, channel: 'summary' } : (payload || {});
+    const channel = payload && payload.channel === 'full' ? 'full' : 'summary';
+    if (!data.text && data.kind !== 'summary_part_added') return;
+    if (!appendReasoning.card) {
+      const card = document.createElement('div');
+      card.className = 'tool-card reasoning-card';
+      card.innerHTML = '<div class="tool-name">思考过程</div>';
+      appendRaw(card, 'codex');
+      appendReasoning.card = card;
+      appendReasoning.sections = {};
     }
-    appendReasoning.el.textContent += text;
+    const section = ensureReasoningSection(channel);
+    if (data.kind === 'summary_part_added' && section.textContent.trim()) {
+      section.textContent += '\n\n';
+    }
+    if (data.text) section.textContent += data.text;
     scrollBottom();
+  }
+
+  function ensureReasoningSection(channel) {
+    const key = channel === 'full' ? 'full' : 'summary';
+    if (appendReasoning.sections?.[key]) return appendReasoning.sections[key];
+    const wrap = document.createElement('div');
+    wrap.className = key === 'full'
+      ? 'reasoning-section reasoning-full'
+      : 'reasoning-section reasoning-summary';
+    wrap.innerHTML = `<div class="tool-name" style="font-size:11px;opacity:.7;">${key === 'full' ? 'Full reasoning' : 'Summary'}</div><pre class="tool-output" style="white-space:pre-wrap;opacity:.72;background:transparent;color:var(--text-muted);"></pre>`;
+    appendReasoning.card.appendChild(wrap);
+    const out = wrap.querySelector('pre');
+    appendReasoning.sections[key] = out;
+    return out;
   }
 
   // MCP tool cards
@@ -2720,7 +2883,8 @@
   function finalizeStream() {
     streamingEl = null;
     streamText = '';
-    appendReasoning.el = null;
+    appendReasoning.card = null;
+    appendReasoning.sections = null;
   }
 
   function appendUserBubble(text, attachments) {
@@ -2880,6 +3044,7 @@
 
   // Send
   sendBtn.onclick = sendMessage;
+  if (accountLoginBtn) accountLoginBtn.onclick = startChatgptDeviceLogin;
   document.querySelectorAll('#quick-actions [data-command]').forEach(btn => {
     btn.onclick = () => {
       inputEl.value = btn.dataset.command;

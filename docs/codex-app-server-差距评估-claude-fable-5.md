@@ -34,7 +34,14 @@
 
 ## 3. 功能缺口（非债务，按 PRD P0 排期）
 
-`turn/steer`（现 busy 时仅排队，L199-201）、`thread/fork`、`chatgptDeviceCode` 登录、reasoning 全量流（现仅 `summaryTextDelta`，L328）。代码库 0 引用已核实。
+**状态（2026-07-06 更新）：FR-01–FR-04 已实现。**
+
+| FR | 结果 | 自动化验证 | 残留 smoke |
+|---|---|---|---|
+| FR-01 steer | busy + active turn 走 `turn/steer`；无 active turn 保留队列；失败 recoverable 且不破坏当前 turn | agent-appserver + server socket focused tests | 真实长任务中追加指令的人工观察 |
+| FR-02 fork | `session:fork` 调 `thread/fork`，创建新 instance 并切换 viewing，广播 init/instances/session_list | agent-appserver + server socket + public UI 字符串测试 | 真机多实例切换体验 |
+| FR-03 chatgptDeviceCode | `account/login/start`、`account/login/completed`、`account/updated`、取消路径已映射；token refresh 仍显式拒绝 | agent-appserver + mock app-server socket + public UI 字符串测试 | 真实 ChatGPT 账号输入 device code 后的登录完成 smoke |
+| FR-04 reasoning 全量流 | `summaryTextDelta`、`textDelta`、`summaryPartAdded` 均映射到兼容 `reasoning` 信封，前端分 summary/full 渲染 | agent-appserver + public UI + protocol check | 真实模型输出 full reasoning 时的视觉 smoke |
 
 ## 4. 对齐良好、无需改动的部分
 
