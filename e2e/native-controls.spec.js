@@ -1,0 +1,90 @@
+// spec: specs/codex-chat-mobile-playwright-plan.md
+// seed: e2e/seed.spec.ts
+
+import { test, expect } from '@playwright/test';
+
+const forbiddenRuntimeErrors = [
+  /TypeError/i,
+  /ServiceWorker.*scope/i,
+  /The path of the provided scope/i,
+  /scope.*not under the max scope allowed/i,
+  /Content Security Policy/i,
+  /Refused to load/i,
+  /Refused to connect/i,
+  /Refused to apply/i,
+];
+
+function collectRuntimeErrors(page) {
+  const errors = [];
+  page.on('console', message => {
+    if (message.type() === 'error') errors.push(message.text());
+  });
+  page.on('pageerror', error => {
+    errors.push(error.message);
+  });
+  return errors;
+}
+
+function expectNoForbiddenRuntimeErrors(errors) {
+  const output = errors.join('\n');
+  for (const pattern of forbiddenRuntimeErrors) {
+    expect(output, `unexpected browser runtime error matching ${pattern}`).not.toMatch(pattern);
+  }
+}
+
+async function expectNativePanelOpen(page, label, expectedPattern = /.+/) {
+  const panel = page.locator('#native-panel');
+  await expect(panel, `${label} panel should be visible`).toBeVisible({ timeout: 10000 });
+  await expect(page.locator('#msg-input'), 'chat input should remain available').toBeVisible();
+  await expect.poll(
+    async () => (await panel.innerText()).replace(/\s+/g, ' ').trim(),
+    { message: `${label} panel should show expected data or recoverable state`, timeout: 10000 },
+  ).toMatch(expectedPattern);
+  const text = (await panel.innerText()).replace(/\s+/g, ' ').trim();
+  return text;
+}
+
+async function clickNativeControl(page, selector) {
+  await expect(page.locator(selector)).toBeVisible();
+  await page.locator(selector).dispatchEvent('click');
+}
+
+test.describe('Native Controls Browser Panels', () => {
+  test('Native Controls Browser Panels', async ({ page }) => {
+    const runtimeErrors = collectRuntimeErrors(page);
+
+    // 1. Open / and wait until #state-label is not offline.
+    await page.goto('/');
+    await expect(page.locator('#state-label')).not.toHaveText('offline', { timeout: 10000 });
+
+    // 2. Click #native-thread-refresh.
+    await clickNativeControl(page, '#native-thread-refresh');
+    await expectNativePanelOpen(page, 'Threads', /Native Threads|No native threads|Thread list failed/i);
+
+    // 3. Click #native-models-btn, #native-files-btn, #native-account-btn, #native-mcp-btn, #native-skills-btn, and #native-import-btn.
+    for (const [selector, label, pattern] of [
+      ['#native-models-btn', 'Models', /Models|No models|Model list failed/i],
+      ['#native-files-btn', 'Files', /Files|Empty directory|Read directory failed/i],
+      ['#native-account-btn', 'Account', /Account|Account read failed/i],
+      ['#native-mcp-btn', 'MCP', /MCP|No MCP servers|MCP read failed/i],
+      ['#native-skills-btn', 'Skills', /Skills|No skills|Skills read failed/i],
+      ['#native-import-btn', 'Import', /Import|No importable config|Detect failed/i],
+    ]) {
+      await clickNativeControl(page, selector);
+      const panelText = await expectNativePanelOpen(page, label, pattern);
+
+      if (selector === '#native-files-btn') {
+        // 4. For the Files panel, click a visible directory/file row or assert an empty/recoverable state if the mock app-server returns no entries.
+        const fileActions = page.locator('#native-panel [data-dir], #native-panel [data-file]');
+        if (await fileActions.count()) {
+          await fileActions.first().dispatchEvent('click');
+          await expectNativePanelOpen(page, 'Files row action');
+        } else {
+          expect(panelText).toMatch(/Files|Empty directory|Read directory failed/i);
+        }
+      }
+    }
+
+    expectNoForbiddenRuntimeErrors(runtimeErrors);
+  });
+});

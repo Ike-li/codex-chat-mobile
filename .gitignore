@@ -15,5 +15,6 @@ playwright-report/
 
 # Local editor/tool state
 .claude/settings.local.json
+.playwright-mcp/
 reasonix.toml
 .reasonix

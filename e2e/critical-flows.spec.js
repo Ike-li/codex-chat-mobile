@@ -1,6 +1,10 @@
 // e2e/critical-flows.spec.js —— 关键用户旅程 E2E 测试。
 import { test, expect } from '@playwright/test';
 
+function latestApprovalCard(page) {
+  return page.locator('.tool-card').filter({ hasText: '需要审批' }).last();
+}
+
 test.describe('关键用户旅程', () => {
 
   test('创建任务 + 流式输出', async ({ page }) => {
@@ -15,10 +19,10 @@ test.describe('关键用户旅程', () => {
     await page.locator('#send-btn').click();
 
     // User message bubble should appear
-    await expect(page.locator('.msg.user')).toContainText('hello world');
+    await expect(page.locator('.msg.user').filter({ hasText: 'hello world' }).last()).toBeVisible();
 
     // Codex response should stream in (mock returns "Mock response to: hello world")
-    await expect(page.locator('.msg.codex')).toContainText('Mock response to: hello world', { timeout: 10000 });
+    await expect(page.locator('.msg.codex').filter({ hasText: 'Mock response to: hello world' }).last()).toBeVisible({ timeout: 10000 });
 
     // Status should return to idle
     await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });
@@ -40,7 +44,7 @@ test.describe('关键用户旅程', () => {
     await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });
 
     // Should receive status response - use text locator to find the specific message
-    await expect(page.getByText('当前没有活跃目标')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('当前没有活跃目标').last()).toBeVisible({ timeout: 10000 });
   });
 
   test('发送中断信号', async ({ page }) => {
@@ -122,7 +126,7 @@ test.describe('关键用户旅程', () => {
     await page.locator('#send-btn').click();
 
     // Wait for response
-    await expect(page.locator('.msg.codex').first()).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('.msg.codex').filter({ hasText: 'Mock response to: before refresh' }).last()).toBeVisible({ timeout: 10000 });
 
     // Refresh the page
     await page.reload();
@@ -144,16 +148,17 @@ test.describe('关键用户旅程', () => {
     await page.locator('#send-btn').click();
 
     // Wait for approval card to appear (uses .approve-btn class)
-    await expect(page.locator('.approve-btn')).toBeVisible({ timeout: 10000 });
+    const approveCard = latestApprovalCard(page);
+    await expect(approveCard).toBeVisible({ timeout: 10000 });
 
     // Click the approve button
-    await page.locator('.approve-btn').first().click();
+    await approveCard.getByRole('button', { name: '批准' }).click();
 
     // Wait for the turn to complete (command executed after approval)
     await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 15000 });
 
     // Should see the tool result with exit: 0 (command executed successfully)
-    await expect(page.getByText('exit: 0')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('exit: 0').last()).toBeVisible({ timeout: 10000 });
   });
 
   test('审批流程：拒绝审批', async ({ page }) => {
@@ -169,16 +174,17 @@ test.describe('关键用户旅程', () => {
     await page.locator('#send-btn').click();
 
     // Wait for approval card to appear
-    await expect(page.locator('.approve-btn')).toBeVisible({ timeout: 10000 });
+    const declineCard = latestApprovalCard(page);
+    await expect(declineCard).toBeVisible({ timeout: 10000 });
 
     // Click the decline button (uses .deny-btn class)
-    await page.locator('.deny-btn').first().click();
+    await declineCard.getByRole('button', { name: '拒绝' }).click();
 
     // Wait for the turn to complete (declined)
     await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 15000 });
 
     // Should see decline message
-    await expect(page.locator('.msg.system-msg, .msg.error-msg')).toContainText('declined', { timeout: 10000 });
+    await expect(page.locator('.msg.system-msg, .msg.error-msg').filter({ hasText: 'declined' }).last()).toBeVisible({ timeout: 10000 });
   });
 
 });

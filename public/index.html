@@ -12,11 +12,6 @@
   <link rel="apple-touch-icon" href="/icons/icon.svg">
   <title>Codex Chat</title>
   
-  <!-- Premium Typography -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
-
   <style>
     :root {
       --bg: #f8f9fa;
@@ -1041,6 +1036,7 @@
       border-top: 1px solid var(--border-light); background: rgba(255,255,255,0.6);
       backdrop-filter: blur(8px);
     }
+    #attach-tray[hidden] { display: none; }
     .attach-chip {
       display: flex; align-items: center; gap: 4px;
       background: var(--surface); border: 1px solid var(--border);
@@ -2368,6 +2364,7 @@
     };
 
     renderSessionMeta();
+    renderInstanceTabs();
     updateFloatingBadges();
     checkEmptyState();
   }
@@ -2398,6 +2395,7 @@
     }
     setBusy(Boolean(payload?.busy));
     renderSessionMeta();
+    renderInstanceTabs();
     updateFloatingBadges();
     checkEmptyState();
   }
@@ -3898,6 +3896,7 @@
   // ---- Web Push ----
   const pushBtn = document.getElementById('push-subscribe-btn');
   async function initPush() {
+    if (!pushBtn) return;
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
     try {
       const reg = await navigator.serviceWorker.register('/js/sw.js', { scope: '/' });

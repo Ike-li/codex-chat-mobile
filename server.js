@@ -237,6 +237,7 @@ app.use(noTokenLocalOnly);
 app.use(express.static(join(HERE, 'public'), {
   setHeaders: (res, filePath) => {
     if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-store');
+    if (filePath.endsWith('/js/sw.js')) res.setHeader('Service-Worker-Allowed', '/');
   }
 }));
 

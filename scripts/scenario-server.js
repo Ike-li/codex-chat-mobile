@@ -15,6 +15,7 @@ const app = express();
 app.use(express.static(join(ROOT, 'public'), {
   setHeaders: (res, filePath) => {
     if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-store');
+    if (filePath.endsWith('/js/sw.js')) res.setHeader('Service-Worker-Allowed', '/');
   }
 }));
 app.get('/health', (_req, res) => res.json({ status: 'ok', scenario: true, sessionId: SESSION_ID }));
