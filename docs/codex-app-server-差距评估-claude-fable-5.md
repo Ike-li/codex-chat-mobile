@@ -17,18 +17,20 @@
 
 ## 2. 债务清单（(Impact+Risk)×(6−Effort) 打分）
 
-| # | 债务 | 证据 | I | R | E | 分 |
-|---|---|---|---|---|---|---|
-| D1 | 依赖新 schema 已删除的 `turn/failed`；`error` 通知未监听。升级 CLI 后失败终态丢失、错误信息黑洞 | agent-appserver.js L311-317 | 3 | 5 | 1 | 40 |
-| D2 | 未知 S→C 请求一律回 `{}`：`item/tool/requestUserInput`、`mcpServer/elicitation/request`、`account/chatgptAuthTokens/refresh` 被空应答（喂空输入/吞 token 刷新） | L137-140 | 4 | 5 | 2 | 36 |
-| D3 | 审批 `/requestApproval/i` 正则分类；payload 仅 command/cwd/reason，**文件审批 diff 丢失**；旧式 `applyPatchApproval`/`execCommandApproval` 落入回 `{}` 分支 | L126-135 | 4 | 4 | 2 | 32 |
-| D4 | 无 CI 协议 diff 防线（G4；D1 正是此类事故） | — | 3 | 4 | 2 | 28 |
-| D5 | 审批不触发 Web Push，仅 result/error 推送（G2 要求锁屏 ≤30s 可审批） | server.js L447-452 | 3 | 2 | 1 | 25 |
-| D6 | 未知 item type 桥层静默丢弃，违背 NFR-5 raw 降级 | L407-409 | 2 | 3 | 1 | 25 |
-| D7 | `turn/interrupt` 以 notification 发出，schema 定义为 request | L426 | 2 | 3 | 1 | 25 |
-| D8 | `serverRequest/resolved` 未消费——多端弹窗撤销缺失（FR-07） | — | 2 | 2 | 1 | 20 |
+| # | 债务 | 证据 | I | R | E | 分 | 状态 |
+|---|---|---|---|---|---|---|---|
+| D1 | 依赖新 schema 已删除的 `turn/failed`；`error` 通知未监听。升级 CLI 后失败终态丢失、错误信息黑洞 | agent-appserver.js L311-317 | 3 | 5 | 1 | 40 | ✅ 已关闭 · R1.1 (e1d4e00) |
+| D2 | 未知 S→C 请求一律回 `{}`：`item/tool/requestUserInput`、`mcpServer/elicitation/request`、`account/chatgptAuthTokens/refresh` 被空应答（喂空输入/吞 token 刷新） | L137-140 | 4 | 5 | 2 | 36 | ✅ 已关闭 · R1.2 (e1d4e00) |
+| D3 | 审批 `/requestApproval/i` 正则分类；payload 仅 command/cwd/reason，**文件审批 diff 丢失**；旧式 `applyPatchApproval`/`execCommandApproval` 落入回 `{}` 分支 | L126-135 | 4 | 4 | 2 | 32 | ✅ 已关闭 · R2.1 (bdcff9f) |
+| D4 | 无 CI 协议 diff 防线（G4；D1 正是此类事故） | — | 3 | 4 | 2 | 28 | ✅ 已关闭 · P3/D4 (4e9fac9) |
+| D5 | 审批不触发 Web Push，仅 result/error 推送（G2 要求锁屏 ≤30s 可审批） | server.js L447-452 | 3 | 2 | 1 | 25 | ✅ 已关闭 · R2.2 (bdcff9f) |
+| D6 | 未知 item type 桥层静默丢弃，违背 NFR-5 raw 降级 | L407-409 | 2 | 3 | 1 | 25 | ✅ 已关闭 · R2.3 (bdcff9f) |
+| D7 | `turn/interrupt` 以 notification 发出，schema 定义为 request | L426 | 2 | 3 | 1 | 25 | ✅ 已关闭 · R1.3 (e1d4e00) |
+| D8 | `serverRequest/resolved` 未消费——多端弹窗撤销缺失（FR-07） | — | 2 | 2 | 1 | 20 | ✅ 已关闭 · R1.4 (e1d4e00) |
 
 分类（tech-debt 框架）：D1/D7 = 依赖债务（协议版本漂移）；D2/D3/D8 = 架构债务（审批通道健壮性）；D4 = 基础设施债务；D5/D6 = 代码债务。
+
+**状态（2026-07-06 更新）：D1–D8 全部关闭。** 落点见上表状态列；实测协议事实以 `.protocol/stable`（codex 0.142.5）为准，CI 协议防线（`npm run protocol:check`）拦截后续协议漂移。详见《重构计划》与三阶段提交 e1d4e00 / bdcff9f / 4e9fac9。
 
 ## 3. 功能缺口（非债务，按 PRD P0 排期）
 

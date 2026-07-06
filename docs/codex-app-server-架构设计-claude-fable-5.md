@@ -31,7 +31,7 @@
 ├─────────────────────────────────────────────────┤
 │ agent-appserver.js  协议桥（每实例一个）          │
 │  · JSON-RPC 客户端: initialize 握手/能力声明      │
-│  · 方法拦截链（透明代理 + 按需拦截）              │
+│  · 方法拦截链（注册表分派 + 映射表）              │
 │  · ApprovalBroker: S→C 请求登记→转发→回填 response│
 │  · 事件映射表: 通知 → 统一信封 type               │
 ├──────────────┬──────────────────────────────────┤
@@ -59,10 +59,10 @@
 ## 4. 关键组件深潜
 
 ### 4.1 协议桥（agent-appserver.js）
-- **拦截链**（沿用 Remodex 透明代理模式）：默认透传；拦截点=审批族、登录流、错误归一化。新增方法零成本透传，schema 升级不需全量改造。
+- **注册表分派 + 映射表**（实测校正：非透明代理）：S→C request 经 `handleServerRequest` 注册表分派（审批族 → ApprovalBroker；已知无法履约如 `account/chatgptAuthTokens/refresh` → JSON-RPC `-32601`；未知 → `-32601` + `system` 告警，**不再默认回 `{}`**）；通知经 `handleNotification` 映射表分发。新增/未知方法有显式兜底，schema 升级由 CI `protocol:check` 拦截。
 - **ApprovalBroker（FR-06/07）**：S→C request 到达 → 按 method 精确分类（命令/文件/权限/工具输入/旧式兜底）→ 生成 approvalId 登记 pending 表 → 信封推送 + Web Push → 前端决议 `user:approval` → 回填 JSON-RPC response → 清表并广播 `approval:resolved`；同时监听服务端 `serverRequest/resolved` 撤销他端已决弹窗。超时策略：不自动决议（安全默认），仅提醒。
-- **事件映射表（FR-05）**：以 `--experimental` 导出的 `ServerNotification.ts` 为唯一映射源；未知通知 → `type:'raw'` 信封（NFR-5）；删除对 `turn/failed` 的依赖，终态取 `turn/completed.status` + `error` 通知。
-- **登录状态机（FR-03）**：`account/login/start(chatgptDeviceCode)` → 透出 user_code/verification_url → 轮询等待 `account/login/completed` → `account/updated` 刷新状态；`account/chatgptAuthTokens/refresh`（S→C）由桥静默应答。
+- **事件映射表（FR-05）**：以 pin 版本 `codex app-server generate-ts --out .protocol/stable` 导出为唯一映射源（实测校正：`generate-ts` 无 `--experimental` flag，stable 产物已含 EXPERIMENTAL 类型；CI `protocol:check` 校验桥消费方法均在产物中）；未知 **item** → `raw_item` 信封（NFR-5），未知**通知**安全忽略；删除对 `turn/failed` 的依赖，终态取 `turn/completed.status`（completed/failed/interrupted）+ `error` 通知（`turn/failed` 保留一版本周期双轨兼容）。
+- **登录状态机（FR-03 范围，本次重构计划不实施；以下为后续设计）**：`account/login/start(chatgptDeviceCode)` → 透出 user_code/verification_url → 轮询等待 `account/login/completed` → `account/updated` 刷新状态。实测校正：`account/chatgptAuthTokens/refresh`（S→C）本桥**显式拒绝**（`-32601`，不落盘/不透传凭证），非静默应答。
 
 ### 4.2 网关路由层（server.js）
 - agents Map 多实例不变；新增 fork 路由：`session:fork` → `thread/fork` → 新 instanceId 挂载（FR-02）。
