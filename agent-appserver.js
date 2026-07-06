@@ -27,7 +27,7 @@ function nextEpoch() {
 }
 
 export class CodexAppServerSession {
-  constructor({ instanceId, resumeId, cwd, codexBin, idleTimeoutMs, onEvent, onSessionId, onExit, rpcLogPath }) {
+  constructor({ instanceId, resumeId, cwd, codexBin, idleTimeoutMs, onEvent, onSessionId, onExit, rpcLogPath, experimentalApi = false }) {
     this.instanceId = instanceId;
     this.cwd = cwd;
     this.codexBin = codexBin || 'codex';
@@ -77,6 +77,7 @@ export class CodexAppServerSession {
     this.interruptTimeoutMs = numberFromEnv('CODEX_INTERRUPT_TIMEOUT_MS', DEFAULT_INTERRUPT_TIMEOUT_MS);
     this.currentTurnId = null;
     this.drainScheduled = false;
+    this.experimentalApi = experimentalApi === true;
     // 审批/沙箱（仅 app-server 后端）：默认 on-request + workspace-write，可经环境变量覆盖。
     this.approvalPolicy = process.env.CODEX_APPROVAL_POLICY || 'on-request';
     this.sandbox = process.env.CODEX_SANDBOX || 'workspace-write';
@@ -321,7 +322,11 @@ export class CodexAppServerSession {
     if (this.initialized) return this.initialized;
     this.initialized = (async () => {
       await this.request('initialize', {
-        clientInfo: { name: 'codex-chat-mobile', title: 'Codex Chat Mobile', version: '0.1.0' }
+        clientInfo: { name: 'codex-chat-mobile', title: 'Codex Chat Mobile', version: '0.1.0' },
+        capabilities: {
+          experimentalApi: this.experimentalApi,
+          requestAttestation: false,
+        },
       });
       this.notify('initialized', {});
     })();
@@ -484,6 +489,49 @@ export class CodexAppServerSession {
         break;
       case 'item/commandExecution/outputDelta':
         this.handleCommandOutputDelta(params);
+        break;
+      case 'command/exec/outputDelta':
+        this.handleTerminalOutputDelta(params, 'processId');
+        break;
+      case 'process/outputDelta':
+        this.handleTerminalOutputDelta(params, 'processHandle');
+        break;
+      case 'process/exited':
+        this.emit('term_exit', {
+          processId: params.processHandle || params.processId || null,
+          exitCode: params.exitCode ?? null,
+          stdout: params.stdout || '',
+          stderr: params.stderr || '',
+          stdoutCapReached: params.stdoutCapReached === true,
+          stderrCapReached: params.stderrCapReached === true,
+        });
+        break;
+      case 'thread/realtime/started':
+        this.emitRealtime('started', params);
+        break;
+      case 'thread/realtime/sdp':
+        this.emitRealtime('sdp', params);
+        break;
+      case 'thread/realtime/itemAdded':
+        this.emitRealtime('item_added', params);
+        break;
+      case 'thread/realtime/transcript/delta':
+        this.emitRealtime('transcript_delta', params);
+        break;
+      case 'thread/realtime/transcript/done':
+        this.emitRealtime('transcript_done', params);
+        break;
+      case 'thread/realtime/outputAudio/delta':
+        this.emitRealtime('output_audio_delta', params);
+        break;
+      case 'thread/realtime/error':
+        this.emitRealtime('error', params);
+        break;
+      case 'thread/realtime/closed':
+        this.emitRealtime('closed', params);
+        break;
+      case 'remoteControl/status/changed':
+        this.emit('remote_control', params || {});
         break;
       case 'serverRequest/resolved':
         this.handleServerRequestResolved(params);
@@ -663,6 +711,21 @@ export class CodexAppServerSession {
       text,
       stream: params.stream || params.channel || 'stdout'
     });
+  }
+
+  handleTerminalOutputDelta(params, idKey) {
+    const text = decodeBase64(params.deltaBase64) || params.delta || params.text || '';
+    if (!text) return;
+    this.emit('term_output', {
+      processId: params[idKey] || params.processId || params.processHandle || null,
+      stream: params.stream || 'stdout',
+      text,
+      capReached: params.capReached === true,
+    });
+  }
+
+  emitRealtime(event, params) {
+    this.emit('realtime', { event, ...(params || {}) });
   }
 
   handleServerRequestResolved(params) {
@@ -1054,6 +1117,87 @@ export class CodexAppServerSession {
     return this.request('account/logout', undefined);
   }
 
+  async spawnTerminal(options = {}) {
+    await this.ensureInitialized();
+    const processId = requireString(options.processId, 'processId');
+    if (!Array.isArray(options.command) || options.command.length === 0) throw new Error('terminal command is required');
+    return this.request('command/exec', definedParams({
+      processId,
+      command: options.command.map((part, index) => requireString(part, `command[${index}]`)),
+      tty: true,
+      streamStdin: true,
+      streamStdoutStderr: true,
+      cwd: options.cwd,
+      env: options.env,
+      size: options.size,
+      timeoutMs: options.timeoutMs,
+      disableTimeout: options.disableTimeout,
+      outputBytesCap: options.outputBytesCap,
+      disableOutputCap: options.disableOutputCap,
+      sandboxPolicy: options.sandboxPolicy,
+    }));
+  }
+
+  async writeTerminal(processId, text, options = {}) {
+    await this.ensureInitialized();
+    return this.request('command/exec/write', definedParams({
+      processId: requireString(processId, 'processId'),
+      deltaBase64: text === undefined || text === null ? undefined : Buffer.from(String(text)).toString('base64'),
+      closeStdin: options.closeStdin,
+    }));
+  }
+
+  async resizeTerminal(processId, size = {}) {
+    await this.ensureInitialized();
+    return this.request('command/exec/resize', {
+      processId: requireString(processId, 'processId'),
+      size: {
+        cols: requirePositiveInteger(size.cols, 'terminal cols'),
+        rows: requirePositiveInteger(size.rows, 'terminal rows'),
+      },
+    });
+  }
+
+  async terminateTerminal(processId) {
+    await this.ensureInitialized();
+    return this.request('command/exec/terminate', { processId: requireString(processId, 'processId') });
+  }
+
+  async listThreadTurns(options = {}) {
+    await this.ensureInitialized();
+    const threadId = requireThreadId(options.threadId || this.sessionId, 'list thread turns');
+    const response = await this.request('thread/read', { threadId, includeTurns: true });
+    return {
+      thread: response?.thread ?? response ?? null,
+      turns: response?.thread?.turns ?? response?.turns ?? [],
+      source: 'thread/read',
+    };
+  }
+
+  async searchThreads(options = {}) {
+    await this.ensureInitialized();
+    const query = requireString(options.query, 'search query');
+    const response = await this.request('thread/list', definedParams({
+      cwd: options.cwd ?? this.cwd,
+      archived: options.archived ?? false,
+      limit: options.limit,
+      cursor: options.cursor,
+      searchTerm: query,
+    }));
+    return {
+      results: response?.results ?? response?.data ?? [],
+      nextCursor: response?.nextCursor ?? null,
+      backwardsCursor: response?.backwardsCursor ?? null,
+      source: 'thread/list',
+      query,
+    };
+  }
+
+  async listP3Capabilities() {
+    await this.ensureInitialized();
+    return this.request('experimentalFeature/list', {});
+  }
+
   dispose() {
     this.disposed = true;
     clearInterval(this.idleTimer); this.idleTimer = null;
@@ -1234,9 +1378,23 @@ function requireString(value, label) {
   throw new Error(`${label} is required`);
 }
 
+function requirePositiveInteger(value, label) {
+  if (Number.isInteger(value) && value > 0) return value;
+  throw new Error(`${label} must be a positive integer`);
+}
+
 function requireMergeStrategy(value) {
   if (value === 'replace' || value === 'upsert') return value;
   throw new Error('mergeStrategy must be replace or upsert');
+}
+
+function decodeBase64(value) {
+  if (typeof value !== 'string' || !value) return '';
+  try {
+    return Buffer.from(value, 'base64').toString();
+  } catch {
+    return '';
+  }
 }
 
 function rpcError(error) {

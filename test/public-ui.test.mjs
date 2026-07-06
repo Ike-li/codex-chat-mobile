@@ -208,3 +208,41 @@ test('client exposes P2 admin controls behind unlock and per-action confirmation
 
   assert.match(html, /\$\('native-admin-btn'\)\.onclick = openAdminPanel/);
 });
+
+test('client exposes P3 experimental labs controls and isolated event renderers', () => {
+  for (const id of [
+    'native-p3-btn',
+    'p3-capabilities-btn',
+    'p3-terminal-spawn-btn',
+    'p3-terminal-write-btn',
+    'p3-terminal-resize-btn',
+    'p3-terminal-terminate-btn',
+    'p3-thread-turns-btn',
+    'p3-thread-search-btn',
+  ]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+
+  for (const event of [
+    'p3:capabilities',
+    'p3:terminalSpawn',
+    'p3:terminalWrite',
+    'p3:terminalResize',
+    'p3:terminalTerminate',
+    'p3:threadTurns',
+    'p3:threadSearch',
+  ]) {
+    assert.match(html, new RegExp(`socket\\.emit\\('${event.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
+  }
+
+  for (const type of ['term_output', 'term_exit', 'realtime', 'remote_control']) {
+    assert.match(html, new RegExp(`case '${type}'`));
+  }
+
+  assert.match(html, /function openP3Panel/);
+  assert.match(html, /function spawnP3Terminal/);
+  assert.match(html, /function handleP3TerminalOutput/);
+  assert.match(html, /function handleP3Realtime/);
+  assert.match(html, /function handleP3RemoteControl/);
+  assert.match(html, /\$\('native-p3-btn'\)\.onclick = openP3Panel/);
+});

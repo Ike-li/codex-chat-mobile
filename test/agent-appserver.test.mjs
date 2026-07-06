@@ -87,7 +87,7 @@ test('thread/tokenUsage/updated: → usage', () => {
 
 test('未接管的通知被安全忽略', () => {
   const { session, events } = makeSession();
-  for (const m of ['thread/status/changed', 'remoteControl/status/changed']) {
+  for (const m of ['thread/status/changed', 'mcpServer/unknown']) {
     assert.doesNotThrow(() => session.handleNotification(m, {}));
   }
   assert.equal(events.length, 0);
@@ -632,6 +632,97 @@ test('P2 admin controls call stable app-server methods with protocol params', as
   assert.deepEqual(calls[11].params, { sourcePath: '/tmp/work/a.txt', destinationPath: '/tmp/work/b.txt', recursive: false });
   assert.deepEqual(calls[12].params, { threadId: 'thr_admin', server: 'github', tool: 'search', arguments: { q: 'repo' } });
   assert.equal(calls[13].params, undefined);
+});
+
+test('P3 experimental controls use gated app-server methods and isolated envelopes', async () => {
+  const { session, events } = makeSession({ experimentalApi: true });
+  session.sessionId = 'thr_p3';
+  const calls = [];
+  session.request = async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'command/exec') return { exitCode: 0 };
+    if (method === 'thread/read') return { thread: { id: params.threadId, turns: [{ id: 'turn_1', items: [{ id: 'item_1' }] }] } };
+    if (method === 'thread/list') return { data: [{ id: 'thr_hit', title: 'match' }], nextCursor: null };
+    return {};
+  };
+  session.notify = method => calls.push({ method, params: null });
+
+  await session.spawnTerminal({
+    processId: 'term_1',
+    command: ['bash', '-lc', 'echo hi'],
+    cwd: '/tmp/work',
+    size: { cols: 100, rows: 30 },
+  });
+  await session.writeTerminal('term_1', 'ls\n');
+  await session.resizeTerminal('term_1', { cols: 120, rows: 40 });
+  await session.terminateTerminal('term_1');
+  await session.listThreadTurns({ threadId: 'thr_p3' });
+  await session.searchThreads({ query: 'match', limit: 5 });
+  await session.listP3Capabilities();
+
+  assert.deepEqual(calls.map(c => c.method), [
+    'initialize', 'initialized',
+    'command/exec',
+    'command/exec/write',
+    'command/exec/resize',
+    'command/exec/terminate',
+    'thread/read',
+    'thread/list',
+    'experimentalFeature/list',
+  ]);
+  assert.deepEqual(calls[2].params, {
+    processId: 'term_1',
+    command: ['bash', '-lc', 'echo hi'],
+    tty: true,
+    streamStdin: true,
+    streamStdoutStderr: true,
+    cwd: '/tmp/work',
+    size: { cols: 100, rows: 30 },
+  });
+  assert.deepEqual(calls[3].params, {
+    processId: 'term_1',
+    deltaBase64: Buffer.from('ls\n').toString('base64'),
+  });
+  assert.deepEqual(calls[4].params, { processId: 'term_1', size: { cols: 120, rows: 40 } });
+  assert.deepEqual(calls[5].params, { processId: 'term_1' });
+  assert.deepEqual(calls[6].params, { threadId: 'thr_p3', includeTurns: true });
+  assert.deepEqual(calls[7].params, { cwd: '/tmp/work', archived: false, limit: 5, searchTerm: 'match' });
+
+  session.handleNotification('command/exec/outputDelta', {
+    processId: 'term_1',
+    stream: 'stdout',
+    deltaBase64: Buffer.from('hi\n').toString('base64'),
+    capReached: false,
+  });
+  session.handleNotification('process/outputDelta', {
+    processHandle: 'term_2',
+    stream: 'stderr',
+    deltaBase64: Buffer.from('warn\n').toString('base64'),
+    capReached: true,
+  });
+  session.handleNotification('process/exited', {
+    processHandle: 'term_2',
+    exitCode: 2,
+    stdout: '',
+    stdoutCapReached: false,
+    stderr: '',
+    stderrCapReached: true,
+  });
+  session.handleNotification('thread/realtime/sdp', { threadId: 'thr_p3', sdp: 'v=0' });
+  session.handleNotification('thread/realtime/transcript/delta', { threadId: 'thr_p3', delta: 'hello' });
+  session.handleNotification('thread/realtime/error', { threadId: 'thr_p3', error: 'mic failed' });
+  session.handleNotification('remoteControl/status/changed', {
+    status: { type: 'connected' },
+    serverName: 'local',
+    installationId: 'install_1',
+    environmentId: 'env_1',
+  });
+
+  assert.deepEqual(byType(events, 'term_output').map(e => e.payload.text), ['hi\n', 'warn\n']);
+  assert.equal(byType(events, 'term_output').at(-1).payload.capReached, true);
+  assert.equal(byType(events, 'term_exit').at(-1).payload.exitCode, 2);
+  assert.equal(byType(events, 'realtime').map(e => e.payload.event).join(','), 'sdp,transcript_delta,error');
+  assert.equal(byType(events, 'remote_control').at(-1).payload.serverName, 'local');
 });
 
 test('item/commandExecution/outputDelta: streams raw terminal output including ANSI', () => {

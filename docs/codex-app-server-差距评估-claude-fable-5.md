@@ -12,7 +12,7 @@
 | 架构同构性 | ✅ 与架构文档 §2 完全同构：统一信封+seq/epoch 续传、agents Map 多实例、stdio 子进程、协议桥分层 |
 | 安全边界 | ✅ 符合 §7：loopback-only 默认、timingSafeEqual、CSP、owner-only 落盘、设备审批 |
 | 工程卫生 | ✅ node:test 覆盖桥层、Socket.IO、前端静态契约、协议 drift 与安全边界；Playwright 10 流程保留 |
-| 债务分布 | ⚠️ P0/P1/P2/NFR-8 功能债务已收敛；剩余主要是真机 smoke 和 P3 feature flag |
+| 债务分布 | ⚠️ P0/P1/P2/P3/NFR-8 功能债务已收敛；剩余主要是真机 smoke 和 P3 experimental 协议补齐 |
 | 重写理由 | ❌ 无。骨架正确、卫生良好、债务定向可修 |
 
 ## 2. 债务清单（(Impact+Risk)×(6−Effort) 打分）
@@ -34,7 +34,7 @@
 
 ## 3. PRD 对账（功能与非功能）
 
-**状态（2026-07-06 更新）：P0 FR-01–FR-07、P1 FR-11–FR-18、P2 FR-21–FR-25 与 NFR-8 已实现并有自动化验证；P3 仍是后续阶段。**
+**状态（2026-07-06 更新）：P0 FR-01–FR-07、P1 FR-11–FR-18、P2 FR-21–FR-25、P3 FR-31–FR-35 与 NFR-8 已实现并有自动化验证；P3 仍保留 feature flag 默认关闭。**
 
 | FR | 结果 | 自动化验证 | 残留 smoke |
 |---|---|---|---|
@@ -58,6 +58,11 @@
 | FR-23 文件写操作 | `fs/writeFile/remove/copy` 要求绝对路径、Admin 二次确认并审计摘要 | agent-appserver + server socket + public UI tests | 真实文件破坏性操作 smoke |
 | FR-24 MCP 直调 | `mcpServer/tool/call` 要求显式 threadId/server/tool，arguments 不进审计明文 | agent-appserver + server socket + public UI tests | 真实 MCP 工具权限 smoke |
 | FR-25 登出 | `account/logout` 经 Admin-only contract 暴露并审计 | agent-appserver + server socket + public UI tests | 真实账号 logout smoke |
+| FR-31 网页终端 | `command/exec` PTY 系列请求经 `p3:terminal*` 暴露，`term_*` 独立信封不混入聊天流 | agent-appserver + server socket + public UI tests | `CODEX_P3_EXPERIMENTAL=1` 下真实 PTY smoke；未来 `process/spawn` 请求导出后切换 |
+| FR-32 历史分页 | 当前用 `thread/read(includeTurns)` 降级读取 turns | agent-appserver + server socket + public UI tests | `thread/turns/list` / `thread/items/list` 请求导出后替换为正规分页 |
+| FR-33 会话搜索 | 当前用 `thread/list(searchTerm)` 降级搜索 | agent-appserver + server socket + public UI tests | `thread/search` 请求导出后替换 |
+| FR-34 语音对话 | `thread/realtime/*` 通知映射到 `realtime` 独立信封和 Labs 提示 | agent-appserver + server socket + public UI tests | 真实音频输入/WebRTC 启动请求待协议导出 |
+| FR-35 官方配对跟踪 | `remoteControl/status/changed` 映射到 `remote_control` 信封 | agent-appserver + server socket + public UI tests | `remoteControl/pairing/*` 请求待官方能力成熟 |
 
 | NFR | 对账结果 | 残留 |
 |---|---|---|
@@ -70,11 +75,11 @@
 | NFR-7 移动体验 | PWA/长日志/键盘布局已有验收资产 | 真机弱网体验仍需人工验证 |
 | NFR-8 可观测 | 审批审计 + 通用 JSON-RPC 脱敏 JSONL owner-only 落盘，`rpcStats` 进入 status | 日志保留/轮转策略后续按运维需要补充 |
 
-**非本期交付：** PRD P3（FR-31–FR-35）仍未按产品功能开放，继续保持 feature-flag future 范围。P2 已开放但限定在 Admin unlock + per-action confirm + owner-only 审计路径下；真实破坏性操作仍需人工 smoke。
+**非本期交付：** P3 的真实 `process/spawn`、`thread/turns/list` / `thread/items/list`、`thread/search`、realtime 启动/音频输入、`remoteControl/pairing/*` 请求仍受当前协议导出限制，已用 feature flag + 降级/通知跟踪保留演进空间。P2/P3 真实破坏性或 experimental 操作仍需人工 smoke。
 
 ## 4. 对齐良好、无需改动的部分
 
-信封契约（含 P0/P1 原生 app-server 事件）、eventsSince 续传语义、输入队列、JSON-RPC `-32001` 退避、idle 看门狗、附件安全落盘链路、会话懒开与 resume、TTY/远程双通道设备审批、statusline 4s 轮询、history.js JSONL 兜底（P3 前按设计保留）。
+信封契约（含 P0/P1/P2/P3 原生 app-server 事件）、eventsSince 续传语义、输入队列、JSON-RPC `-32001` 退避、idle 看门狗、附件安全落盘链路、会话懒开与 resume、TTY/远程双通道设备审批、statusline 4s 轮询、history.js JSONL 兜底（作为 P3 降级路径保留）。
 
 ## 5. 判定依据小结
 

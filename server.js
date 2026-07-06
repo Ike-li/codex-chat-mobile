@@ -63,6 +63,7 @@ const HERE = import.meta.dirname;
 const DATA_DIR = process.env.CODEX_DATA_DIR || join(HERE, 'data');
 const ADMIN_UNLOCK_PHRASE = 'ENABLE ADMIN';
 const ADMIN_AUDIT_FILE = join(DATA_DIR, 'admin-audit.jsonl');
+const P3_EXPERIMENTAL_ENABLED = process.env.CODEX_P3_EXPERIMENTAL === '1';
 
 // ---- Web Push ----
 const VAPID_PUBLIC_KEY  = process.env.VAPID_PUBLIC_KEY  || '';
@@ -500,7 +501,8 @@ function createAgent(resumeId = null, cwd = WORK_DIR) {
     },
     onExit: () => {
       // Session process ended naturally; keep agent in map for reconnect
-    }
+    },
+    experimentalApi: P3_EXPERIMENTAL_ENABLED,
   });
   agents.set(instanceId, agent);
   broadcastInstances();
@@ -561,6 +563,12 @@ function ackOk(ack, payload = {}) {
 
 function ackError(ack, error) {
   if (typeof ack === 'function') ack({ ok: false, error: error?.message || String(error || 'unknown error') });
+}
+
+function requireP3Experimental(ack) {
+  if (P3_EXPERIMENTAL_ENABLED) return true;
+  ackError(ack, new Error('P3 experimental controls are disabled'));
+  return false;
 }
 
 function ensureControlAgent(cwd = WORK_DIR) {
@@ -1039,6 +1047,97 @@ io.on('connection', socket => {
       if (!items.length) throw new Error('没有可导入的配置项');
       const response = await ensureControlAgent(payload?.cwd).importExternalAgentConfig(items, { source: 'mobile' });
       ackOk(ack, { importId: response?.importId || null });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'p3:capabilities', async (payload = {}, ack) => {
+    if (!requireP3Experimental(ack)) return;
+    try {
+      const response = await ensureControlAgent(payload?.cwd).listP3Capabilities();
+      ackOk(ack, { capabilities: response?.data || response?.features || response || {} });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'p3:terminalSpawn', async (payload = {}, ack) => {
+    if (!requireP3Experimental(ack)) return;
+    try {
+      const processId = typeof payload?.processId === 'string' && payload.processId
+        ? payload.processId
+        : `term_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const response = await ensureControlAgent(payload?.cwd).spawnTerminal({
+        processId,
+        command: Array.isArray(payload?.command) ? payload.command : [],
+        cwd: payload?.cwd ? routeCwd(payload.cwd) : WORK_DIR,
+        size: {
+          cols: Number.isInteger(payload?.cols) ? payload.cols : 80,
+          rows: Number.isInteger(payload?.rows) ? payload.rows : 24,
+        },
+      });
+      ackOk(ack, { processId, result: response ?? null });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'p3:terminalWrite', async (payload = {}, ack) => {
+    if (!requireP3Experimental(ack)) return;
+    try {
+      await ensureControlAgent(payload?.cwd).writeTerminal(payload?.processId, payload?.text ?? '', {
+        closeStdin: payload?.closeStdin === true,
+      });
+      ackOk(ack, { processId: payload?.processId });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'p3:terminalResize', async (payload = {}, ack) => {
+    if (!requireP3Experimental(ack)) return;
+    try {
+      await ensureControlAgent(payload?.cwd).resizeTerminal(payload?.processId, {
+        cols: payload?.cols,
+        rows: payload?.rows,
+      });
+      ackOk(ack, { processId: payload?.processId });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'p3:terminalTerminate', async (payload = {}, ack) => {
+    if (!requireP3Experimental(ack)) return;
+    try {
+      await ensureControlAgent(payload?.cwd).terminateTerminal(payload?.processId);
+      ackOk(ack, { processId: payload?.processId });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'p3:threadTurns', async (payload = {}, ack) => {
+    if (!requireP3Experimental(ack)) return;
+    try {
+      const response = await ensureControlAgent(payload?.cwd).listThreadTurns({ threadId: payload?.threadId });
+      ackOk(ack, response);
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'p3:threadSearch', async (payload = {}, ack) => {
+    if (!requireP3Experimental(ack)) return;
+    try {
+      const response = await ensureControlAgent(payload?.cwd).searchThreads({
+        query: payload?.query,
+        limit: Number.isInteger(payload?.limit) ? payload.limit : 20,
+        cursor: payload?.cursor,
+        archived: payload?.archived === true,
+      });
+      ackOk(ack, response);
     } catch (err) {
       ackError(ack, err);
     }

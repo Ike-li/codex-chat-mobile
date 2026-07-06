@@ -71,7 +71,15 @@
 
 ### P3 实验区（feature flag，默认关闭）
 
-对账状态（2026-07-06）：⚪ 未实现。FR-31 完整网页终端（`process/spawn` 族 PTY）；FR-32 历史分页正规化（`thread/turns/list`、`thread/items/list`，替代 history.js JSONL 解析）；FR-33 会话搜索（`thread/search`）；FR-34 语音对话（`thread/realtime/*`）；FR-35 官方配对跟踪（`remoteControl/pairing/*`——与本产品同方向，评估替代自建通道的可能）仍保持 future/feature-flag 范围。
+对账状态（2026-07-06）：✅ 已实现为默认关闭的 `CODEX_P3_EXPERIMENTAL=1` 实验面。当前 pin 的 `.protocol/stable/ClientRequest` 尚未导出 `process/spawn`、`thread/turns/list`、`thread/items/list`、`thread/search`、`thread/realtime/*` 启动请求或 `remoteControl/pairing/*` 请求，因此 P3 按可用协议做降级实现与状态跟踪，不伪造不存在的请求方法。
+
+| ID | 需求 | 当前协议落点 | 对账状态（2026-07-06） |
+|---|---|---|---|
+| FR-31 | 网页终端 | `command/exec` + `command/exec/write\|resize\|terminate`，兼容 `command/exec/outputDelta` 与 `process/outputDelta\|exited` 通知 | ✅ 已实现；Labs 面板 + `term_*` 独立信封，不与聊天流混流；真实 PTY smoke 待跑 |
+| FR-32 | 历史分页正规化 | `thread/read({includeTurns:true})` | ✅ 已实现降级读取 turns；当前无 `thread/turns/list` / `thread/items/list` 请求，分页正规化待协议补齐后替换 |
+| FR-33 | 会话搜索 | `thread/list({searchTerm})` | ✅ 已实现降级搜索；当前无 `thread/search` 请求，结果仍复用 thread list 页 |
+| FR-34 | 语音对话 | `thread/realtime/*` 通知 | ✅ 已实现 realtime 独立信封和前端状态渲染；当前无启动/音频输入请求，真实语音链路待协议补齐 |
+| FR-35 | 官方配对跟踪 | `remoteControl/status/changed` 通知 | ✅ 已实现 remote-control 状态信封和前端提示；当前无 `remoteControl/pairing/*` 请求，替代自建通道仍待官方能力成熟 |
 
 ### 不在范围
 
@@ -104,4 +112,4 @@
 
 延续 `docs/scenario-acceptance.md` 四维度判定（功能等价 / 状态可见 / 失败可恢复 / 权限可控）：每个 FR 必须给出 mock 浏览器 + 真机双证据；P0 完成时新增场景案例：S4 纠偏（steer 后 agent 输出反映新指令）、FR-03 登录（无桌面前置条件冷启动）、FR-07 多端（两浏览器并发审批一次决议）。
 
-**P0/P1/P2 自动化验证状态（2026-07-06）：** FR-01–FR-07、FR-11–FR-18、FR-21–FR-25 已通过 agent/socket/public-ui/protocol focused tests；NFR-6 背压退避、NFR-8 JSON-RPC 脱敏观测已补充 focused test。完整门禁以本地最终执行结果为准。FR-03 的真实 ChatGPT device-code 账号流程、P1/P2 原生 app-server 真机操作、真机多端审批撤销、真机弱网/PWA smoke 未由自动化替代，仍需人工输入设备码或连接真实 Codex 环境后验证。
+**P0/P1/P2/P3 自动化验证状态（2026-07-06）：** FR-01–FR-07、FR-11–FR-18、FR-21–FR-25、FR-31–FR-35 已通过 agent/socket/public-ui/protocol focused tests；NFR-6 背压退避、NFR-8 JSON-RPC 脱敏观测已补充 focused test。完整门禁以本地最终执行结果为准。FR-03 的真实 ChatGPT device-code 账号流程、P1/P2/P3 原生 app-server 真机操作、真机多端审批撤销、真机弱网/PWA smoke 未由自动化替代，仍需人工输入设备码或连接真实 Codex 环境后验证。

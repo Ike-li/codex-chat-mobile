@@ -20,6 +20,7 @@ const ENV_KEYS = [
   'VAPID_SUBJECT',
   'CODEX_BIN',
   'CODEX_FAKE_RPC_LOG',
+  'CODEX_P3_EXPERIMENTAL',
 ];
 
 test('server lifecycle exposes HTTP and Socket.IO behavior without starting Codex', async () => {
@@ -405,7 +406,92 @@ test('server gates P2 admin app-server controls with unlock, per-action confirma
   }
 });
 
-async function startIsolatedServer({ codexBin, rpcLog } = {}) {
+test('server exposes P3 experimental controls only behind feature flag', async () => {
+  const disabledFixture = await startIsolatedServer();
+  try {
+    const socket = await connectSocket(disabledFixture.url, disabledFixture.authToken);
+    try {
+      const denied = await emitWithAck(socket, 'p3:terminalSpawn', { command: ['bash'] });
+      assert.equal(denied.ok, false);
+      assert.match(denied.error, /P3.*disabled/i);
+    } finally {
+      socket.disconnect();
+    }
+  } finally {
+    await disabledFixture.close();
+  }
+
+  const root = mkdtempSync(join(tmpdir(), 'ccm-p3-test-'));
+  const rpcLog = join(root, 'rpc.jsonl');
+  const codexBin = createFakeCodexBin(root);
+  const fixture = await startIsolatedServer({ codexBin, rpcLog, p3Experimental: true });
+  try {
+    const socket = await connectSocket(fixture.url, fixture.authToken);
+    try {
+      await waitForAgentEvent(socket, 'init');
+
+      const capabilities = await emitWithAck(socket, 'p3:capabilities', { cwd: fixture.workDir });
+      assert.equal(capabilities.ok, true);
+
+      const terminal = await emitWithAck(socket, 'p3:terminalSpawn', {
+        cwd: fixture.workDir,
+        processId: 'term_server',
+        command: ['bash', '-lc', 'echo p3'],
+        cols: 100,
+        rows: 30,
+      });
+      assert.equal(terminal.ok, true);
+      const termOutput = await waitForAgentEvent(socket, 'term_output');
+      assert.equal(termOutput.payload.processId, 'term_server');
+      assert.equal(termOutput.payload.text, 'p3\n');
+
+      const write = await emitWithAck(socket, 'p3:terminalWrite', { processId: 'term_server', text: 'pwd\n' });
+      assert.equal(write.ok, true);
+      const resize = await emitWithAck(socket, 'p3:terminalResize', { processId: 'term_server', cols: 120, rows: 40 });
+      assert.equal(resize.ok, true);
+      const terminate = await emitWithAck(socket, 'p3:terminalTerminate', { processId: 'term_server' });
+      assert.equal(terminate.ok, true);
+
+      const turns = await emitWithAck(socket, 'p3:threadTurns', { threadId: 'thr_fake' });
+      assert.equal(turns.ok, true);
+      assert.equal(turns.source, 'thread/read');
+      assert.equal(turns.turns[0].id, 'turn_fake');
+
+      const search = await emitWithAck(socket, 'p3:threadSearch', { query: 'fake', limit: 5 });
+      assert.equal(search.ok, true);
+      assert.equal(search.source, 'thread/list');
+      assert.equal(search.results[0].id, 'thr_fake');
+
+      const realtime = await waitForAgentEvent(socket, 'realtime');
+      assert.equal(realtime.payload.event, 'sdp');
+      const remote = await waitForAgentEvent(socket, 'remote_control');
+      assert.equal(remote.payload.serverName, 'local');
+
+      const calls = readFileSync(rpcLog, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      const initialize = calls.find(call => call.method === 'initialize');
+      assert.equal(initialize.params.capabilities.experimentalApi, true);
+      const methods = calls.map(call => call.method).filter(Boolean);
+      for (const method of [
+        'experimentalFeature/list',
+        'command/exec',
+        'command/exec/write',
+        'command/exec/resize',
+        'command/exec/terminate',
+        'thread/read',
+        'thread/list',
+      ]) {
+        assert.ok(methods.includes(method), `expected ${method}`);
+      }
+    } finally {
+      socket.disconnect();
+    }
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+async function startIsolatedServer({ codexBin, rpcLog, p3Experimental = false } = {}) {
   const previous = snapshotEnv();
   const root = mkdtempSync(join(tmpdir(), 'ccm-server-test-'));
   let workDir = join(root, 'work');
@@ -426,6 +512,8 @@ async function startIsolatedServer({ codexBin, rpcLog } = {}) {
   process.env.AUTH_TOKEN = 'server-integration-token';
   if (codexBin) process.env.CODEX_BIN = codexBin;
   if (rpcLog) process.env.CODEX_FAKE_RPC_LOG = rpcLog;
+  if (p3Experimental) process.env.CODEX_P3_EXPERIMENTAL = '1';
+  else delete process.env.CODEX_P3_EXPERIMENTAL;
   delete process.env.VAPID_PUBLIC_KEY;
   delete process.env.VAPID_PRIVATE_KEY;
   delete process.env.VAPID_SUBJECT;
@@ -598,6 +686,19 @@ rl.on('line', line => {
 	  if (message.method === 'fs/copy') return send({ id: message.id, result: {} });
 	  if (message.method === 'mcpServer/tool/call') return send({ id: message.id, result: { result: { ok: true } } });
 	  if (message.method === 'account/logout') return send({ id: message.id, result: {} });
+	  if (message.method === 'experimentalFeature/list') {
+	    send({ method: 'thread/realtime/sdp', params: { threadId, sdp: 'v=0' } });
+	    send({ method: 'remoteControl/status/changed', params: { status: { type: 'connected' }, serverName: 'local', installationId: 'install_fake', environmentId: 'env_fake' } });
+	    return send({ id: message.id, result: { data: [{ name: 'p3-terminal', enabled: true }] } });
+	  }
+	  if (message.method === 'command/exec') {
+	    send({ method: 'command/exec/outputDelta', params: { processId: message.params.processId, stream: 'stdout', deltaBase64: Buffer.from('p3\\n').toString('base64'), capReached: false } });
+	    return send({ id: message.id, result: { exitCode: 0 } });
+	  }
+	  if (message.method === 'command/exec/write') return send({ id: message.id, result: {} });
+	  if (message.method === 'command/exec/resize') return send({ id: message.id, result: {} });
+	  if (message.method === 'command/exec/terminate') return send({ id: message.id, result: {} });
+	  if (message.method === 'thread/read') return send({ id: message.id, result: { thread: { id: message.params.threadId, turns: [{ id: turnId, items: [{ id: 'item_fake' }] }] } } });
 	  if (message.method === 'thread/fork') {
     send({ id: message.id, result: { thread: { id: 'thr_forked', forkedFromId: threadId } } });
     setTimeout(() => process.exit(0), 20);
