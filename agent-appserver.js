@@ -432,16 +432,6 @@ export class CodexAppServerSession {
     this.approvalBroker.handleResolved(params);
   }
 
-  deletePendingApproval(requestId) {
-    for (const approvalId of this.pendingApprovals) {
-      if (String(approvalId) === String(requestId)) {
-        this.pendingApprovals.delete(approvalId);
-        return approvalId;
-      }
-    }
-    return null;
-  }
-
   recordCurrentTurn(source) {
     const turnId = source?.turn?.id ?? source?.turnId ?? source?.id;
     if (typeof turnId === 'string' && turnId) this.currentTurnId = turnId;
