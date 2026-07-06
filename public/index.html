@@ -1965,6 +1965,9 @@
       case 'approval_request':
         handleApprovalRequest(ev.payload);
         break;
+      case 'user_input_request':
+        handleUserInputRequest(ev.payload);
+        break;
       case 'approval_revoked':
         handleApprovalRevoked(ev.payload);
         break;
@@ -2006,6 +2009,12 @@
         break;
       case 'usage':
         handleUsage(ev.payload);
+        break;
+      case 'raw_item':
+        handleRawItem(ev.payload);
+        break;
+      default:
+        handleRawItem({ envelopeType: ev.type, item: ev.payload });
         break;
     }
   }
@@ -2450,13 +2459,15 @@
     finalizeStream();
     const decisions = payload.availableDecisions || [];
     const deny = decisions.includes('decline') ? 'decline' : (decisions.includes('cancel') ? 'cancel' : 'decline');
+    const sessionDecision = decisions.includes('acceptForSession') ? `<button class="approve-btn" data-d="acceptForSession">本会话批准</button>` : '';
     const card = document.createElement('div');
     card.className = 'tool-card';
     card.innerHTML = `<div class="tool-name">⚠️ 需要审批</div>`
       + `<div class="tool-cmd">${escHtml(payload.command || payload.kind || '需要确认的操作')}</div>`
-      + (payload.reason ? `<div class="tool-output" style="opacity:.8;background:transparent;color:var(--text-muted);">${escHtml(payload.reason)}</div>` : '')
+      + renderApprovalDetails(payload)
       + `<div class="approval-btns">`
       + `<button class="approve-btn" data-d="accept">批准</button>`
+      + sessionDecision
       + `<button class="deny-btn" data-d="${deny}">拒绝</button></div>`;
     appendRaw(card, 'codex');
     pendingApprovalCards[String(payload.approvalId)] = card;
@@ -2469,6 +2480,94 @@
       };
     });
     scrollBottom();
+  }
+
+  function renderApprovalDetails(payload) {
+    let html = '';
+    if (payload.reason) {
+      html += `<div class="tool-output" style="opacity:.8;background:transparent;color:var(--text-muted);">${escHtml(payload.reason)}</div>`;
+    }
+    if (payload.permissions && (payload.permissions.network !== undefined || payload.permissions.fileSystem !== undefined)) {
+      const lines = [];
+      if (payload.permissions.network !== undefined) lines.push(`network: ${JSON.stringify(payload.permissions.network)}`);
+      if (payload.permissions.fileSystem !== undefined) lines.push(`fileSystem: ${JSON.stringify(payload.permissions.fileSystem)}`);
+      html += `<div class="tool-cmd">${escHtml(lines.join('\n'))}</div>`;
+    }
+    if (Array.isArray(payload.changes) && payload.changes.length) {
+      html += payload.changes.map(change => {
+        const title = `${kindLabel(change.kind)}: ${change.path || ''}`;
+        const diff = change.diff ? `<pre class="tool-output" style="max-height:220px;">${escHtml(change.diff)}</pre>` : '';
+        return `<details open><summary class="tool-cmd">${escHtml(title)}</summary>${diff}</details>`;
+      }).join('');
+    }
+    if (payload.grantRoot) {
+      html += `<div class="tool-cmd">grantRoot: ${escHtml(payload.grantRoot)}</div>`;
+    }
+    return html;
+  }
+
+  function kindLabel(k) {
+    return ({ add: '新增', modify: '修改', update: '修改', delete: '删除', rename: '重命名' }[k] || k || 'modify');
+  }
+
+  function handleUserInputRequest(payload) {
+    finalizeStream();
+    const questions = payload.questions || [];
+    const card = document.createElement('div');
+    card.className = 'tool-card';
+    card.innerHTML = `<div class="tool-name">❔ 需要回答</div>`
+      + questions.map(q => renderQuestion(q)).join('')
+      + (payload.autoResolutionMs ? `<div class="tool-output" style="opacity:.7;background:transparent;color:var(--text-muted);">autoResolutionMs: ${escHtml(String(payload.autoResolutionMs))}</div>` : '')
+      + `<div class="approval-btns"><button class="approve-btn answer-submit" type="button">提交</button><button class="deny-btn answer-cancel" type="button">跳过</button></div>`;
+    appendRaw(card, 'codex');
+    pendingApprovalCards[String(payload.approvalId)] = card;
+
+    card.querySelectorAll('.answer-option').forEach(btn => {
+      btn.onclick = () => btn.classList.toggle('selected');
+    });
+    card.querySelector('.answer-submit').onclick = () => {
+      const answers = collectAnswers(card, questions);
+      socket.emit('user:approval', { approvalId: payload.approvalId, answers });
+      markInputCardDone(card, payload.approvalId, '已提交');
+    };
+    card.querySelector('.answer-cancel').onclick = () => {
+      socket.emit('user:approval', { approvalId: payload.approvalId, answers: {} });
+      markInputCardDone(card, payload.approvalId, '已跳过');
+    };
+    scrollBottom();
+  }
+
+  function renderQuestion(q) {
+    const options = Array.isArray(q.options) ? q.options : [];
+    const header = q.header || q.id || 'Question';
+    const optionHtml = options.length
+      ? `<div class="approval-btns">${options.map(o => `<button type="button" class="approve-btn answer-option" data-q="${escHtml(q.id)}" data-value="${escHtml(o.label)}">${escHtml(o.label)}</button>`).join('')}</div>`
+      : `<input class="tool-cmd answer-input" data-q="${escHtml(q.id)}" type="${q.isSecret ? 'password' : 'text'}" placeholder="Answer">`;
+    return `<div class="tool-cmd" style="white-space:normal;"><strong>${escHtml(header)}</strong><br>${escHtml(q.question || '')}</div>${optionHtml}`;
+  }
+
+  function collectAnswers(card, questions) {
+    const answers = {};
+    questions.forEach(q => {
+      const qid = String(q.id || '');
+      const selected = [...card.querySelectorAll(`.answer-option[data-q="${cssEscape(qid)}"].selected`)].map(btn => btn.dataset.value);
+      const input = card.querySelector(`.answer-input[data-q="${cssEscape(qid)}"]`);
+      const typed = input?.value?.trim();
+      const values = selected.length ? selected : (typed ? [typed] : []);
+      answers[qid] = values;
+    });
+    return answers;
+  }
+
+  function cssEscape(value) {
+    if (window.CSS?.escape) return window.CSS.escape(value);
+    return value.replace(/"/g, '\\"');
+  }
+
+  function markInputCardDone(card, approvalId, label) {
+    delete pendingApprovalCards[String(approvalId)];
+    const btns = card.querySelector('.approval-btns:last-child');
+    if (btns) btns.innerHTML = `<span class="tool-output tool-ok" style="background:transparent;padding:0;">${escHtml(label)}</span>`;
   }
 
   function handleApprovalRevoked(payload) {
@@ -2484,11 +2583,21 @@
     finalizeStream();
     const files = payload.files || [];
     if (!files.length) return;
-    const kindLabel = k => ({ add: '新增', modify: '修改', update: '修改', delete: '删除', rename: '重命名' }[k] || k);
     const card = document.createElement('div');
     card.className = 'tool-card';
     card.innerHTML = `<div class="tool-name">📝 文件变更</div>`
       + files.map(f => `<div class="tool-cmd">${escHtml(kindLabel(f.kind))}: ${escHtml(f.path)}</div>`).join('');
+    appendRaw(card, 'codex');
+    scrollBottom();
+  }
+
+  function handleRawItem(payload) {
+    finalizeStream();
+    const card = document.createElement('div');
+    card.className = 'tool-card';
+    const label = payload?.item?.type || payload?.envelopeType || 'raw';
+    card.innerHTML = `<div class="tool-name">🧾 Raw</div>`
+      + `<details><summary class="tool-cmd">${escHtml(label)}</summary><pre class="tool-output">${escHtml(JSON.stringify(payload.item || payload, null, 2))}</pre></details>`;
     appendRaw(card, 'codex');
     scrollBottom();
   }

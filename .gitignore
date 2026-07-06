@@ -6,6 +6,7 @@ node_modules/
 *.log
 data/
 workdirs.json
+.codex-chat-approval-audit.jsonl
 
 # Generated test/coverage artifacts
 coverage/

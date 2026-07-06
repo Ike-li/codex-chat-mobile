@@ -339,10 +339,14 @@ test('item/completed(commandExecution with non-zero exit): ok=false', () => {
   assert.equal(tr.payload.exitCode, 1);
 });
 
-test('item/completed(unknown item type): 静默忽略', () => {
+test('item/completed(unknown item type): emits raw_item without crashing', () => {
   const { session, events } = makeSession();
   assert.doesNotThrow(() => session.handleNotification('item/completed', { item: { type: 'unknownType', id: 'x1' } }));
-  assert.equal(events.length, 0);
+  const raw = byType(events, 'raw_item').at(-1);
+  assert.ok(raw);
+  assert.equal(raw.payload.completed, true);
+  assert.equal(raw.payload.item.type, 'unknownType');
+  assert.equal(raw.payload.item.id, 'x1');
 });
 
 test('dispose: 标记 disposed 并清理', () => {

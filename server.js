@@ -49,6 +49,7 @@ const {
 let WORK_DIR = process.env.WORK_DIR || homedir();
 let workDirs = [];
 const PORT = Number(process.env.PORT) > 0 ? Number(process.env.PORT) : 3001;
+const shouldStartServer = process.env.CODEX_SERVER_NO_START !== '1';
 let HOST;
 try {
   HOST = resolveListenHost({ env: process.env, authToken: AUTH_TOKEN });
@@ -91,6 +92,36 @@ async function pushNotify(title, body) {
     pushSubscriptions = pushSubscriptions.filter(s => !expired.includes(s.endpoint));
     persistPushSubs();
   }
+}
+
+export function pushDecision(envelope) {
+  if (!envelope || typeof envelope.type !== 'string') return null;
+  if (envelope.type === 'approval_request') {
+    return {
+      title: 'Codex 待审批',
+      body: pushText(envelope.payload?.command || envelope.payload?.reason || envelope.payload?.kind || '有操作等待审批'),
+    };
+  }
+  if (envelope.type === 'user_input_request') {
+    return {
+      title: 'Codex 需要人到场',
+      body: pushText(envelope.payload?.questions?.[0]?.question || '有问题等待回答'),
+    };
+  }
+  if (envelope.type === 'approval_revoked') return null;
+  if (envelope.type === 'result' || envelope.type === 'error') {
+    const status = envelope.payload?.ok ? '完成' : '出错';
+    return {
+      title: `Codex ${status}`,
+      body: pushText(envelope.payload?.status || envelope.payload?.message || '任务已完成'),
+    };
+  }
+  return null;
+}
+
+function pushText(value) {
+  const text = typeof value === 'string' ? value : String(value ?? '');
+  return text.length > 180 ? `${text.slice(0, 180)} ...` : text;
 }
 // 仅 app-server 后端（长驻 JSON-RPC，原生流式/审批）
 const SessionClass = CodexAppServerSession;
@@ -148,7 +179,7 @@ function preflight() {
 
   return codexBin;
 }
-const codexBin = preflight();
+const codexBin = shouldStartServer ? preflight() : (process.env.CODEX_BIN || 'codex');
 
 // ---- HTTP ----
 const app = express();
@@ -290,15 +321,17 @@ function broadcastPendingDevices() {
 const TRUSTED_DEVICES_FILE = join(DATA_DIR, 'trusted-devices.json');
 const PENDING_DEVICES_FILE = join(DATA_DIR, 'pending-devices.json');
 try {
-  mkdirSync(DATA_DIR, { recursive: true });
-  if (!existsSync(TRUSTED_DEVICES_FILE)) writeOwnerOnlyFile(TRUSTED_DEVICES_FILE, JSON.stringify([], null, 2));
-  if (!existsSync(PENDING_DEVICES_FILE)) writeOwnerOnlyFile(PENDING_DEVICES_FILE, JSON.stringify([], null, 2));
+  if (shouldStartServer) {
+    mkdirSync(DATA_DIR, { recursive: true });
+    if (!existsSync(TRUSTED_DEVICES_FILE)) writeOwnerOnlyFile(TRUSTED_DEVICES_FILE, JSON.stringify([], null, 2));
+    if (!existsSync(PENDING_DEVICES_FILE)) writeOwnerOnlyFile(PENDING_DEVICES_FILE, JSON.stringify([], null, 2));
+  }
 } catch (err) {
   console.error('[devices] 初始化设备认证文件失败:', err.message);
 }
 
 // 监听 trusted-devices.json 变化（CLI 审批后自动解锁）
-if (existsSync(TRUSTED_DEVICES_FILE)) {
+if (shouldStartServer && existsSync(TRUSTED_DEVICES_FILE)) {
   try {
     watch(TRUSTED_DEVICES_FILE, eventType => {
       if (eventType === 'change') {
@@ -322,7 +355,7 @@ if (existsSync(TRUSTED_DEVICES_FILE)) {
 }
 
 // TTY 回车一键审批
-if (process.stdin.isTTY) {
+if (shouldStartServer && process.stdin.isTTY) {
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', data => {
     const text = data.trim().toLowerCase();
@@ -446,10 +479,8 @@ function createAgent(resumeId = null, cwd = WORK_DIR) {
     idleTimeoutMs,
     onEvent: envelope => {
       io.emit('agent:event', envelope);
-      if (envelope.type === 'result' || envelope.type === 'error') {
-        const status = envelope.payload?.ok ? '完成' : '出错';
-        pushNotify(`Codex ${status}`, envelope.payload?.status || '任务已完成').catch(() => {});
-      }
+      const push = pushDecision(envelope);
+      if (push) pushNotify(push.title, push.body).catch(() => {});
     },
     onSessionId: (sid, firstMessage) => {
       sessions.upsertSession({ id: sid, title: firstMessage, cwd });
@@ -580,7 +611,7 @@ io.on('connection', socket => {
     const { approvalId, decision } = payload || {};
     const ai = routeInstance(viewingInstanceId);
     if (typeof ai?.respondApproval === 'function') {
-      ai.respondApproval(approvalId, decision);
+      ai.respondApproval(approvalId, decision, payload);
     }
   });
 
@@ -744,7 +775,8 @@ function scheduleStatusRefresh() {
 }
 
 // ---- 启动 ----
-httpServer.listen(PORT, HOST, () => {
+export function startServer() {
+  httpServer.listen(PORT, HOST, () => {
   const displayHost = HOST === '0.0.0.0' ? 'localhost' : HOST;
   console.log(`🚀 Codex Chat Mobile 运行在 http://${displayHost}:${PORT}`);
   scheduleStatusRefresh();
@@ -760,7 +792,10 @@ httpServer.listen(PORT, HOST, () => {
       pruneExpiredUploads(dir).catch(() => {});
     }
   }, 3600000);
-});
+  });
+}
+
+if (shouldStartServer) startServer();
 
 // 优雅退出
 function shutdown() {
@@ -768,5 +803,7 @@ function shutdown() {
   try { sessions.flushSaveSync(); } catch { /* noop */ }
   process.exit(0);
 }
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
+if (shouldStartServer) {
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+}

@@ -59,3 +59,14 @@ test('client checks auth requirement before opening the socket', () => {
   assert.match(html, /socket\.connect\(\)/);
   assert.match(html, /socket\.on\('connect_error'/);
 });
+
+test('client renders rich approval, user input, and raw item cards', () => {
+  assert.match(html, /case 'user_input_request'/);
+  assert.match(html, /case 'raw_item'/);
+  assert.match(html, /function renderApprovalDetails/);
+  assert.match(html, /function handleUserInputRequest/);
+  assert.match(html, /function handleRawItem/);
+  assert.match(html, /payload\.changes/);
+  assert.match(html, /payload\.permissions/);
+  assert.match(html, /JSON\.stringify\(payload\.item/);
+});

@@ -4,19 +4,14 @@
 //
 // 进程长驻、原生流式（item/agentMessage/delta）、支持手机端审批。
 import { spawn } from 'node:child_process';
+import { join } from 'node:path';
+import { ApprovalBroker } from './approval-broker.js';
 import { sanitize } from './sanitizer.js';
 
 const BUFFER_CAP = 500;
 const TOOL_SUMMARY_CAP = 600;
 const DEFAULT_INPUT_QUEUE_LIMIT = 20;
 const DEFAULT_INTERRUPT_TIMEOUT_MS = 2000;
-const APPROVAL_REQUEST_METHODS = new Set([
-  'item/commandExecution/requestApproval',
-  'item/fileChange/requestApproval',
-  'item/permissions/requestApproval',
-  'applyPatchApproval',
-  'execCommandApproval',
-]);
 
 let instanceCounter = 0;
 function nextEpoch() {
@@ -51,6 +46,12 @@ export class CodexAppServerSession {
     this.ready = null;        // initialize + thread 就绪的 promise（只做一次）
     this.stdoutBuf = '';
     this.pendingApprovals = new Set(); // 等待手机 decision 的 server→client 请求 id
+    this.approvalBroker = new ApprovalBroker({
+      emit: (type, payload) => this.emit(type, payload),
+      respond: (approvalId, result) => this.respond(approvalId, result),
+      pendingApprovals: this.pendingApprovals,
+      auditPath: join(this.cwd, '.codex-chat-approval-audit.jsonl'),
+    });
     this.inputQueue = [];
     this.inputQueueLimit = numberFromEnv('CODEX_INPUT_QUEUE_LIMIT', DEFAULT_INPUT_QUEUE_LIMIT);
     this.interruptTimeoutMs = numberFromEnv('CODEX_INTERRUPT_TIMEOUT_MS', DEFAULT_INTERRUPT_TIMEOUT_MS);
@@ -78,6 +79,7 @@ export class CodexAppServerSession {
       this.child = null;
       this.ready = null;
       this.clearQueue('process_exit');
+      this.approvalBroker.clearPending();
       this.rejectAllPending(new Error('app-server 进程已退出'));
       clearInterval(this.idleTimer); this.idleTimer = null;
       if (!this.disposed) this.emitStatus('process_exit');
@@ -133,23 +135,8 @@ export class CodexAppServerSession {
 
   // server→client 请求处理。审批类透传给手机；其余安全兜底回应，避免 agent 挂起。
   handleServerRequest(rpcId, method, params) {
-    if (APPROVAL_REQUEST_METHODS.has(method)) {
-      this.pendingApprovals.add(rpcId);
-      this.emit('approval_request', {
-        approvalId: rpcId,
-        kind: method,
-        command: params.command || null,
-        cwd: params.cwd || null,
-        reason: params.reason || null,
-        availableDecisions: params.availableDecisions || ['accept', 'decline'],
-      });
+    if (this.approvalBroker.handleRequest(rpcId, method, params)) {
       this.emitStatus('approval_requested');
-    } else if (method === 'item/tool/requestUserInput') {
-      this.respondError(rpcId, -32601, `Unsupported server request: ${method}`);
-      this.emit('system', {
-        message: `Tool user input server request is not supported in Phase 1: ${method}`,
-        isError: true
-      });
     } else if (method === 'account/chatgptAuthTokens/refresh') {
       this.respondError(rpcId, -32601, `Unsupported server request: ${method}`);
       this.emit('system', {
@@ -176,13 +163,10 @@ export class CodexAppServerSession {
   }
 
   // 手机回传 decision（accept|acceptForSession|decline|cancel）。
-  respondApproval(approvalId, decision) {
-    const id = Number(approvalId);
-    if (!this.pendingApprovals.has(id)) return false;
-    this.pendingApprovals.delete(id);
-    this.respond(id, { decision: decision || 'decline' });
-    this.emitStatus('approval_resolved');
-    return true;
+  respondApproval(approvalId, decision, extra) {
+    const ok = this.approvalBroker.respondApproval(approvalId, decision, extra);
+    if (ok) this.emitStatus('approval_resolved');
+    return ok;
   }
 
   request(method, params, options = {}) {
@@ -348,6 +332,7 @@ export class CodexAppServerSession {
         this.handleServerRequestResolved(params);
         break;
       case 'item/started':
+        this.approvalBroker.registerItem(params.item);
         this.handleItem(params.item, false);
         break;
       case 'item/completed':
@@ -374,10 +359,12 @@ export class CodexAppServerSession {
         break;
       case 'turn/completed':
         this.clearCurrentTurn(params);
+        this.approvalBroker.clearItems();
         this.handleTurnCompleted(params);
         break;
       case 'turn/failed':
         this.clearCurrentTurn(params);
+        this.approvalBroker.clearItems();
         this.finishTurnFailure(turnErrorMessage(params), 'turn_failed');
         break;
       // 忽略：thread/started、thread/status/changed、mcpServer/*、skills/changed、account/*、remoteControl/* 等。
@@ -401,7 +388,7 @@ export class CodexAppServerSession {
     const status = params.turn?.status || params.status || 'completed';
     if (status === 'completed') {
       this.busy = false;
-      this.pendingApprovals.clear();
+      this.approvalBroker.clearPending();
       this.emit('result', { ok: true, status });
       this.emitStatus('turn_completed');
       this.scheduleDrain();
@@ -417,7 +404,7 @@ export class CodexAppServerSession {
     }
 
     this.busy = false;
-    this.pendingApprovals.clear();
+    this.approvalBroker.clearPending();
     this.emit('result', { ok: false, status });
     this.emitStatus('turn_completed');
     this.scheduleDrain();
@@ -425,7 +412,7 @@ export class CodexAppServerSession {
 
   finishTurnFailure(message, statusReason) {
     this.busy = false;
-    this.pendingApprovals.clear();
+    this.approvalBroker.clearPending();
     this.emit('error', { message, recoverable: true });
     this.emitStatus(statusReason);
     this.scheduleDrain();
@@ -442,13 +429,7 @@ export class CodexAppServerSession {
   }
 
   handleServerRequestResolved(params) {
-    const approvalId = this.deletePendingApproval(params.requestId);
-    if (approvalId === null) return;
-    this.emit('approval_revoked', {
-      approvalId,
-      requestId: params.requestId,
-      threadId: params.threadId || null
-    });
+    this.approvalBroker.handleResolved(params);
   }
 
   deletePendingApproval(requestId) {
@@ -534,7 +515,10 @@ export class CodexAppServerSession {
         }
         break;
       default:
-        // 未知 item type：静默忽略。
+        this.emit('raw_item', {
+          completed,
+          item: truncatePayload(item, TOOL_SUMMARY_CAP * 2)
+        });
         break;
     }
   }
@@ -566,7 +550,8 @@ export class CodexAppServerSession {
     }
     const dropped = this.clearQueue('interrupt');
     this.busy = false;
-    this.pendingApprovals.clear();
+    this.approvalBroker.clearPending();
+    this.approvalBroker.clearItems();
     this.currentTurnId = null;
     this.emitStatus(dropped ? 'interrupt_cleared_queue' : 'interrupt');
   }
@@ -646,6 +631,23 @@ export class CodexAppServerSession {
 function truncate(s, cap) {
   if (typeof s !== 'string') return '';
   return s.length > cap ? s.slice(0, cap) + ' …（已截断）' : s;
+}
+
+function truncatePayload(value, cap, depth = 4) {
+  if (typeof value === 'string') return truncate(value, cap);
+  if (Array.isArray(value)) {
+    if (depth <= 0) return [];
+    return value.slice(0, 50).map(item => truncatePayload(item, cap, depth - 1));
+  }
+  if (value && typeof value === 'object') {
+    if (depth <= 0) return {};
+    const out = {};
+    for (const [key, child] of Object.entries(value).slice(0, 50)) {
+      out[key] = truncatePayload(child, cap, depth - 1);
+    }
+    return out;
+  }
+  return value;
 }
 
 function turnErrorMessage(params, fallback = '任务失败') {

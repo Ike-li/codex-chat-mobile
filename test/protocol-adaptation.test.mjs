@@ -146,7 +146,7 @@ test('R1.2 unknown server request returns method-not-found error and warns the c
   assert.match(warning.payload.message, /example\/unknown\/request/);
 });
 
-test('R1.2 tool user input request returns method-not-found error and warns the client', () => {
+test('R2.1 tool user input request emits user_input_request and returns answers', () => {
   const { session, events } = makeSession();
   const writes = attachRpcWriter(session);
 
@@ -155,23 +155,32 @@ test('R1.2 tool user input request returns method-not-found error and warns the 
     method: 'item/tool/requestUserInput',
     params: {
       itemId: 'tool_1',
-      question: { type: 'confirm', message: 'Continue?' },
+      questions: [{
+        id: 'q1',
+        header: 'Continue',
+        question: 'Continue?',
+        isOther: false,
+        isSecret: false,
+        options: [{ label: 'Yes', description: 'Continue the run' }],
+      }],
+      autoResolutionMs: 1000,
     },
   }));
 
-  assert.deepEqual(writes, [{
-    id: 42,
-    error: {
-      code: -32601,
-      message: 'Unsupported server request: item/tool/requestUserInput',
-    },
-  }]);
+  assert.deepEqual(writes, []);
+  assert.equal(session.pendingApprovals.has(42), true);
+  const request = byType(events, 'user_input_request').at(-1);
+  assert.ok(request, 'tool user input should emit user_input_request');
+  assert.equal(request.payload.approvalId, 42);
+  assert.equal(request.payload.kind, 'item/tool/requestUserInput');
+  assert.equal(request.payload.autoResolutionMs, 1000);
+  assert.equal(request.payload.questions[0].id, 'q1');
 
-  const warning = byType(events, 'system').at(-1);
-  assert.ok(warning, 'tool user input request should emit a system warning');
-  assert.equal(warning.payload.isError, true);
-  assert.match(warning.payload.message, /user input/i);
-  assert.match(warning.payload.message, /Phase 1/);
+  assert.equal(session.respondApproval(42, null, { answers: { q1: ['Yes'] } }), true);
+  assert.deepEqual(writes.at(-1), {
+    id: 42,
+    result: { answers: { q1: { answers: ['Yes'] } } },
+  });
 });
 
 test('R1.2 chatgpt auth token refresh returns method-not-found without storing credentials', () => {
@@ -264,6 +273,37 @@ test('R1.2 command execution approval request is not rejected as unsupported', (
   assert.equal(approval.payload.command, 'npm test');
   assert.equal(approval.payload.cwd, '/tmp/work');
   assert.equal(approval.payload.reason, 'run tests');
+});
+
+test('R2.1 file change approval joins changes from item/started cache', () => {
+  const { session, events } = makeSession();
+  const writes = attachRpcWriter(session);
+
+  session.handleNotification('item/started', {
+    item: {
+      type: 'fileChange',
+      id: 'file_item_1',
+      changes: [{ path: '/tmp/work/a.txt', kind: { type: 'modify' }, diff: '-old\n+new\n' }],
+    },
+  });
+  session.handleLine(JSON.stringify({
+    id: 89,
+    method: 'item/fileChange/requestApproval',
+    params: {
+      threadId: 'thr_protocol',
+      turnId: 'turn_protocol',
+      itemId: 'file_item_1',
+      reason: 'review file changes',
+      grantRoot: '/tmp/work',
+    },
+  }));
+
+  assert.deepEqual(writes, []);
+  const approval = byType(events, 'approval_request').at(-1);
+  assert.ok(approval, 'file change approval should emit approval_request');
+  assert.deepEqual(approval.payload.changes, [
+    { path: '/tmp/work/a.txt', kind: 'modify', diff: '-old\n+new\n' },
+  ]);
 });
 
 test('R1.3 abort sends turn interrupt as a request with the active turn id', async () => {
