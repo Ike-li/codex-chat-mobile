@@ -6,7 +6,7 @@
 
 - [../PROTOCOL.md](../PROTOCOL.md)：协议参考（对照 pin 版本校对过）
 - [../ARCHITECTURE.md](../ARCHITECTURE.md)：当前架构和安全模型
-- [../EVENTS.md](../EVENTS.md)：Socket.IO 事件契约索引
+- [../API.md](../API.md)：接口参考（HTTP + Socket.IO 事件签名）
 
 存档文件仅供追溯设计意图时参考；任何与当前代码或上述文档冲突之处，以当前文档和代码为准。
 

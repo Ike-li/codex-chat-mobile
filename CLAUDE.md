@@ -25,11 +25,12 @@ npm run test:e2e
 - `SECURITY.md`：威胁模型、部署规则和漏洞披露（英文）。
 - `LICENSE`：AGPL-3.0 全文，与 package.json 的 `license` 字段保持一致。
 - `ROADMAP.md`：已完成 / 进行中 / 候选（英文）。
+- `docs/SHOWCASE.md`：功能巡览（截图取自 mock，零额度）。
 - `docs/GUIDE.md`：端到端使用走查。
 - `docs/REMOTE_ACCESS.md`：从手机连接的 HTTPS/PWA/Push 硬限制与方案。
 - `docs/ARCHITECTURE.md`：当前架构和安全模型。
 - `docs/PROTOCOL.md`：Codex app-server 协议参考。
-- `docs/EVENTS.md`：Socket.IO 事件契约索引。
+- `docs/API.md`：接口参考（HTTP + Socket.IO 事件签名）。
 - `docs/TESTING.md`：测试门禁、验收矩阵和手工冒烟清单。
 - `docs/PROTOCOL_UPGRADE.md`：Codex app-server 协议升级流程。
 - `docs/archive/`：历史存档，不再维护，不作为事实来源。

@@ -18,7 +18,7 @@ B2 全量 schema   generate-ts --experimental / 源码   → 含 experimental �
 - 关系：`B1 ⊂ B2`；本项目的 `.protocol/stable/` 是 **B1（默认导出）**，运行时调用 experimental 方法还需在 `initialize` 声明 `experimentalApi: true`。
 - 产品规则：主干只用 `A∩B1`；`B2∖B1` 一律 feature flag 隔离（本项目 `CODEX_P3_EXPERIMENTAL=1`）。
 
-`0.142.5` 默认导出计数口径：ClientRequest 76 · ServerRequest 10 · ServerNotification 66 · ClientNotification 1。
+`0.142.5` 默认导出计数口径：ClientRequest 90 · ServerRequest 10 · ServerNotification 69 · ClientNotification 1。
 
 ## 产品主干接口
 
@@ -62,16 +62,16 @@ B2 全量 schema   generate-ts --experimental / 源码   → 含 experimental �
 
 ## 与本项目实现的映射
 
-协议方法集中在 `agent-appserver.js`；`server.js` 只做 Socket.IO 语义化事件到协议方法的路由。Socket 事件到协议方法的完整对照见 [EVENTS.md](EVENTS.md)。
+协议方法集中在 `agent-appserver.js`；`server.js` 只做 Socket.IO 语义化事件到协议方法的路由。客户端可调用的 Socket.IO/HTTP 接口签名见 [API.md](API.md)。
 
 当前对 `.protocol/stable/` 的覆盖（`0.142.5`）：
 
 | 方向 | 定义 | 已用 | 说明 |
 |---|---|---|---|
-| Client→Server Request | 76 | 37 | 未用的多为 goal/权限档/oauth/windowsSandbox 等主干无关能力 |
+| Client→Server Request | 90 | 45 | 未用的多为 goal/权限档/oauth/windowsSandbox 等主干无关能力 |
 | Client→Server Notification | 1 | 1 | `initialized` |
 | Server→Client Request | 10 | 7 | 未用：`attestation/generate`、`mcpServer/elicitation/request`、`item/tool/call` |
-| Server→Client Notification | 66 | 39 | 未处理的在 `handleNotification` default 分支安全忽略 |
+| Server→Client Notification | 69 | 39 | 未处理的在 `handleNotification` default 分支安全忽略 |
 
 未处理通知走 default 分支不报错，是刻意的宽容策略（未知通知安全忽略，未知 **item** 才降级为 `raw_item` 信封）。`protocol:check` 保证所有 **已用** 方法都在 `.protocol/stable/` 中定义。
 

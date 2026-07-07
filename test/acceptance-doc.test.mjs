@@ -45,7 +45,7 @@ test('bilingual READMEs keep their language contract and stay cross-linked', () 
   assert.doesNotMatch(readmeEn, /^## (当前形态|本地运行|常用命令|核心文件|文档规则)$/m);
   assert.match(readmeEn, /actions\/workflows\/test\.yml\/badge\.svg/, 'README.md must carry the CI badge');
 
-  for (const target of ['docs/PROTOCOL.md', 'docs/EVENTS.md', 'docs/REMOTE_ACCESS.md', 'docs/GUIDE.md']) {
+  for (const target of ['docs/PROTOCOL.md', 'docs/API.md', 'docs/REMOTE_ACCESS.md', 'docs/GUIDE.md']) {
     assert.match(readmeEn, new RegExp(target), `README.md missing link to ${target}`);
     assert.match(readmeZh, new RegExp(target), `README.zh-CN.md missing link to ${target}`);
   }
@@ -59,7 +59,7 @@ test('maintained Chinese docs use Chinese section titles', () => {
     'TESTING.md': readDoc('../docs/TESTING.md'),
     'PROTOCOL_UPGRADE.md': readDoc('../docs/PROTOCOL_UPGRADE.md'),
     'PROTOCOL.md': readDoc('../docs/PROTOCOL.md'),
-    'EVENTS.md': readDoc('../docs/EVENTS.md'),
+    'API.md': readDoc('../docs/API.md'),
     'REMOTE_ACCESS.md': readDoc('../docs/REMOTE_ACCESS.md'),
     'GUIDE.md': readDoc('../docs/GUIDE.md'),
   };
@@ -70,7 +70,7 @@ test('maintained Chinese docs use Chinese section titles', () => {
     'TESTING.md': ['# 测试', '## 必跑门禁', '## 自动化覆盖', '## 验收矩阵', '## 手工冒烟清单', '## 真实 Codex 冒烟边界'],
     'PROTOCOL_UPGRADE.md': ['# 协议升级操作手册', '## 步骤', '## 规则'],
     'PROTOCOL.md': ['# Codex App Server 协议参考', '## 三层集合模型', '## 产品主干接口', '## 实验门控接口', '## 传输与运维约定', '## 与本项目实现的映射', '## 升级与验证'],
-    'EVENTS.md': ['# Socket.IO 事件契约索引', '## 客户端到服务端', '## 服务端到客户端', '## agent:event 信封类型', '## 契约测试位置'],
+    'API.md': ['# 接口参考', '## HTTP 接口', '## Socket.IO 客户端到服务端', '## Socket.IO 服务端到客户端', '## agent:event 信封类型', '## 门控与鉴权', '## 契约测试位置'],
     'REMOTE_ACCESS.md': ['# 远程访问指南', '## HTTPS 与 PWA/Push 的硬限制', '## 方案对比', '## AUTH_TOKEN 实践', '## 排错清单'],
     'GUIDE.md': ['# 使用走查', '## 安装与启动', '## 从手机连接', '## 第一轮对话', '## 审批一条命令', '## 历史与多实例', '## 安装为 PWA'],
   };
@@ -150,4 +150,24 @@ test('readme image references resolve to files in the repo', () => {
     }
   }
   assert.ok(localImages >= 2, 'both READMEs should embed at least one local screenshot');
+});
+
+test('showcase tour exists, is linked, and its screenshots resolve', () => {
+  const showcase = readDoc('../docs/SHOWCASE.md');
+  for (const heading of ['# 功能巡览', '## 流式对话', '## 命令审批', '## 斜杠命令',
+    '## 模型与思考强度', '## 审批策略与沙箱', '## 多实例标签', '## 状态栏']) {
+    assert.match(showcase, new RegExp(`^${heading}$`, 'm'), `SHOWCASE.md missing heading ${heading}`);
+  }
+
+  let images = 0;
+  for (const [, target] of showcase.matchAll(/!\[[^\]]*\]\(([^)\s]+)/g)) {
+    if (/^https?:/.test(target)) continue;
+    images += 1;
+    assert.ok(existsSync(new URL(`../docs/${target}`, import.meta.url)), `SHOWCASE.md references missing image ${target}`);
+  }
+  assert.ok(images >= 6, 'SHOWCASE.md should embed at least six feature screenshots');
+
+  for (const readmePath of ['../README.md', '../README.zh-CN.md']) {
+    assert.match(readDoc(readmePath), /docs\/SHOWCASE\.md/, `${readmePath} must link to the showcase tour`);
+  }
 });

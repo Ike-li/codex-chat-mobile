@@ -12,7 +12,7 @@ A mobile control plane for your local [Codex CLI](https://github.com/openai/code
 |---|---|
 | ![Streaming chat on a phone](docs/assets/chat.png) | ![Approval card on a phone](docs/assets/approval.png) |
 
-> Screenshots from the deterministic mock app-server (`npm run test:e2e` harness) — no real Codex tokens involved.
+> Screenshots from the deterministic mock app-server (`npm run test:e2e` harness) — no real Codex tokens involved. **See the full [feature tour →](docs/SHOWCASE.md)**
 
 ## Features
 
@@ -101,11 +101,12 @@ This is a control plane for a real development machine — treat any remote expo
 
 ## Documentation
 
+- [docs/SHOWCASE.md](docs/SHOWCASE.md) — visual feature tour (what it looks like and what it does)
 - [docs/GUIDE.md](docs/GUIDE.md) — end-to-end walkthrough from install to installing the PWA
 - [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md) — connect from your phone (HTTPS/PWA/Push constraints, Tailscale, tunnels)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — current architecture and security model
 - [docs/PROTOCOL.md](docs/PROTOCOL.md) — Codex app-server protocol reference (methods, events, coverage)
-- [docs/EVENTS.md](docs/EVENTS.md) — Socket.IO event contract index
+- [docs/API.md](docs/API.md) — interface reference (HTTP routes + Socket.IO events with signatures)
 - [docs/TESTING.md](docs/TESTING.md) — test gates, acceptance matrix, and manual smoke checklist
 - [docs/PROTOCOL_UPGRADE.md](docs/PROTOCOL_UPGRADE.md) — Codex app-server protocol upgrade runbook
 - [ROADMAP.md](ROADMAP.md) — shipped / in progress / candidates

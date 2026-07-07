@@ -21,7 +21,7 @@ Delivered and covered by the test gates (`npm run test:ci`):
 
 ## In Progress
 
-- **Open-source documentation pass** — bilingual README, LICENSE (AGPL-3.0), CONTRIBUTING, SECURITY, and the `docs/` set (ARCHITECTURE, TESTING, PROTOCOL, EVENTS, REMOTE_ACCESS, GUIDE, PROTOCOL_UPGRADE); screenshots pending.
+- **Open-source documentation pass** — bilingual README, LICENSE (AGPL-3.0), CONTRIBUTING, SECURITY, and the `docs/` set (ARCHITECTURE, TESTING, PROTOCOL, API, SHOWCASE, REMOTE_ACCESS, GUIDE, PROTOCOL_UPGRADE).
 
 ## Candidates
 

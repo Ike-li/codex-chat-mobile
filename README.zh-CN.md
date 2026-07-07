@@ -12,7 +12,7 @@
 |---|---|
 | ![手机上的流式对话](docs/assets/chat.png) | ![手机上的审批卡片](docs/assets/approval.png) |
 
-> 截图取自确定性 mock app-server（`npm run test:e2e` 用的 harness），不消耗任何真实 Codex 额度。
+> 截图取自确定性 mock app-server（`npm run test:e2e` 用的 harness），不消耗任何真实 Codex 额度。**完整[功能巡览 →](docs/SHOWCASE.md)**
 
 ## 当前形态
 
@@ -47,7 +47,23 @@ CODEX_SANDBOX=workspace-write
 CODEX_INPUT_QUEUE_LIMIT=20
 ```
 
-本机打开 `http://127.0.0.1:3001`。如果要通过局域网或 tunnel 访问，必须设置 `HOST=0.0.0.0` 和非空 `AUTH_TOKEN`。没有 `AUTH_TOKEN` 时，服务启动会被限制为 loopback host。
+完整配置项：
+
+| 变量 | 默认值 | 用途 |
+|---|---|---|
+| `PORT` | `3001` | HTTP 端口 |
+| `HOST` | `127.0.0.1` | 绑定地址；非 loopback 必须配 `AUTH_TOKEN` |
+| `AUTH_TOKEN` | 空 | 非 loopback 访问的共享密钥（timing-safe 比较） |
+| `WORK_DIR` | — | 主 Codex 工作区 |
+| `WORK_DIRS` | 空 | 逗号分隔的额外工作区白名单 |
+| `CODEX_BIN` | `codex` | Codex CLI 二进制路径 |
+| `CODEX_APPROVAL_POLICY` | `on-request` | `untrusted` \| `on-failure` \| `on-request` \| `granular` \| `never` |
+| `CODEX_SANDBOX` | `workspace-write` | `read-only` \| `workspace-write` \| `danger-full-access` |
+| `CODEX_INPUT_QUEUE_LIMIT` | `20` | busy turn 期间最大排队输入数 |
+| `IDLE_TIMEOUT_MS` | `600000` | 空闲实例回收超时 |
+| `VAPID_SUBJECT` / `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | 空 | 启用 Web Push（三项齐全才生效） |
+
+本机打开 `http://127.0.0.1:3001`。如果要通过局域网或 tunnel 访问，必须设置 `HOST=0.0.0.0` 和非空 `AUTH_TOKEN`。没有 `AUTH_TOKEN` 时，服务启动会被限制为 loopback host。手机端连接（HTTPS / PWA / Push 的硬限制）见 [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md)。
 
 ## 常用命令
 
@@ -68,14 +84,15 @@ npm run test:ci
 - `public/index.html`：移动端 UI、PWA 控制、审批卡片和 native 面板。
 - `scripts/mock-codex-app-server.js`：用于 E2E 的确定性 Codex 协议 mock。
 - `.protocol/stable/`：用于协议漂移检查的 app-server 协议基线。
-- `docs/GUIDE.md`：从安装到装成 PWA 的端到端使用走查。
-- `docs/REMOTE_ACCESS.md`：从手机连接（HTTPS/PWA/Push 硬限制、Tailscale、隧道）。
-- `docs/ARCHITECTURE.md`：当前架构和安全模型。
-- `docs/PROTOCOL.md`：Codex app-server 协议参考（方法、事件、覆盖）。
-- `docs/EVENTS.md`：Socket.IO 事件契约索引。
-- `docs/TESTING.md`：测试门禁、验收矩阵和手工冒烟清单。
-- `docs/PROTOCOL_UPGRADE.md`：Codex app-server 协议升级流程。
-- `ROADMAP.md`：已完成 / 进行中 / 候选。
+- [docs/SHOWCASE.md](docs/SHOWCASE.md)：功能巡览（长什么样、能干什么）。
+- [docs/GUIDE.md](docs/GUIDE.md)：从安装到装成 PWA 的端到端使用走查。
+- [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md)：从手机连接（HTTPS/PWA/Push 硬限制、Tailscale、隧道）。
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)：当前架构和安全模型。
+- [docs/PROTOCOL.md](docs/PROTOCOL.md)：Codex app-server 协议参考（方法、事件、覆盖）。
+- [docs/API.md](docs/API.md)：接口参考（HTTP 路由 + Socket.IO 事件签名）。
+- [docs/TESTING.md](docs/TESTING.md)：测试门禁、验收矩阵和手工冒烟清单。
+- [docs/PROTOCOL_UPGRADE.md](docs/PROTOCOL_UPGRADE.md)：Codex app-server 协议升级流程。
+- [ROADMAP.md](ROADMAP.md)：已完成 / 进行中 / 候选。
 
 ## 文档规则
 

@@ -19,7 +19,7 @@ codex app-server
 
 ## 关键数据流
 
-浏览器与网关之间的完整 Socket.IO 事件契约见 [EVENTS.md](EVENTS.md)，app-server 协议面见 [PROTOCOL.md](PROTOCOL.md)。四条主链路：
+浏览器与网关之间的完整接口签名见 [API.md](API.md)，app-server 协议面见 [PROTOCOL.md](PROTOCOL.md)。四条主链路：
 
 - **发消息**：`user:message` → `server.js` 按 `instanceId` 路由 → 桥 `turn/start`（turn 运行中且可 steer 时改发 `turn/steer`，否则按状态入队）→ app-server 通知流（`item/started` → deltas → `item/completed` → `turn/completed`）→ 映射为带自增 `seq` 的 `agent:event` 信封 → Socket.IO 广播 + 写重放缓冲。
 - **审批**：app-server 发来 S→C 审批请求 → `ApprovalBroker` 按 method 精确分类并登记 `approvalId` → 推送 `approval_request` 信封（+ Web Push）→ 前端 `user:approval` 决议 → 桥回填 JSON-RPC response → 广播决议；监听 `serverRequest/resolved` 撤销他端已决弹窗。不存在自动决议路径。
