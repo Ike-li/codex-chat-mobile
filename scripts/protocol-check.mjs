@@ -241,7 +241,7 @@ function resolveConstSet(name, definitions, seen = new Set()) {
 }
 
 function extractFunctionBody(source, functionName) {
-  const nameIndex = source.indexOf(`${functionName}(`);
+  const nameIndex = findDefinitionIndex(source, functionName);
   if (nameIndex === -1) return '';
   const openIndex = source.indexOf('{', nameIndex);
   if (openIndex === -1) return '';
@@ -272,6 +272,20 @@ function extractFunctionBody(source, functionName) {
     }
   }
   return '';
+}
+
+// Locate a method/function definition, skipping property-access call sites such as
+// `this.handleNotification(` so a call that precedes the definition is not mistaken
+// for it (which would slice an empty body and void the coverage extraction).
+function findDefinitionIndex(source, functionName) {
+  const needle = `${functionName}(`;
+  let from = 0;
+  for (;;) {
+    const index = source.indexOf(needle, from);
+    if (index === -1) return -1;
+    if (source[index - 1] !== '.') return index;
+    from = index + needle.length;
+  }
 }
 
 function listTsFiles(dir) {

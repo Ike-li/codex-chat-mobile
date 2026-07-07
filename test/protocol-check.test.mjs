@@ -66,6 +66,41 @@ test('protocol check exempts explicit legacy methods such as turn/failed', () =>
   assert.deepEqual(findMissingProtocolCoverage({ usage, protocol }), []);
 });
 
+test('collectBridgeMethodUsage reads the handleNotification definition, not an earlier call site', () => {
+  // Regression: extractFunctionBody matched `this.handleNotification(` before the real
+  // method definition, so `msg.params || {}` was mistaken for the body and zero cases
+  // were collected — silently voiding the notification coverage gate.
+  const agentAppserverSource = [
+    'class Bridge {',
+    '  onMessage(msg) {',
+    '    this.handleNotification(msg.method, msg.params || {});',
+    '  }',
+    '  handleNotification(method, params) {',
+    '    switch (method) {',
+    "      case 'turn/completed': return this.done(params);",
+    "      case 'item/started': return this.start(params);",
+    '    }',
+    '  }',
+    '}',
+  ].join('\n');
+
+  const usage = collectBridgeMethodUsage({ agentAppserverSource, approvalBrokerSource: '' });
+
+  assert.deepEqual([...usage.serverNotifications].sort(), ['item/started', 'turn/completed']);
+});
+
+test('collectBridgeMethodUsage extracts the real handleNotification cases so notification coverage is enforced', () => {
+  const usage = currentBridgeUsage();
+
+  assert.ok(
+    usage.serverNotifications.size >= 30,
+    `notification coverage set should be populated, got ${usage.serverNotifications.size}`,
+  );
+  for (const method of ['turn/completed', 'item/started', 'item/completed']) {
+    assert.ok(usage.serverNotifications.has(method), `missing handled notification ${method}`);
+  }
+});
+
 test('protocol drift report describes method, type, and generated file changes', () => {
   const dir = mkdtempSync(join(tmpdir(), 'protocol-drift-'));
   try {
