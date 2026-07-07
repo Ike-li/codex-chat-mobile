@@ -1,4 +1,4 @@
-// spec: specs/codex-chat-mobile-playwright-plan.md
+// coverage: docs/TESTING.md
 // seed: e2e/seed.spec.ts
 
 import { test, expect } from '@playwright/test';
