@@ -4,8 +4,16 @@
   "description": "Mobile chat UI that bridges your local Codex CLI to your phone — terminal-equivalent agent access.",
   "type": "module",
   "private": true,
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "author": "Ike-li (https://github.com/Ike-li)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ike-li/codex-chat-mobile.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Ike-li/codex-chat-mobile/issues"
+  },
+  "homepage": "https://github.com/Ike-li/codex-chat-mobile#readme",
   "engines": {
     "node": ">=20"
   },
