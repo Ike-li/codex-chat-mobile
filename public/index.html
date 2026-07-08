@@ -79,12 +79,11 @@
       background: rgba(255, 255, 255, 0.85);
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
-      border-bottom: 1px solid var(--border-light);
-      padding: 12px 16px;
+      padding: 10px 14px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 12px;
+      gap: 8px;
       flex-shrink: 0;
       z-index: 10;
     }
@@ -93,15 +92,16 @@
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 50%;
-      width: 40px;
-      height: 40px;
+      width: 36px;
+      height: 36px;
+      flex-shrink: 0;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 18px;
+      font-size: 16px;
       cursor: pointer;
       color: var(--text);
-      box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+      box-shadow: 0 1px 2px rgba(0,0,0,0.02);
       transition: background 0.15s, transform 0.1s;
     }
     #menu-btn:active {
@@ -116,6 +116,7 @@
       align-items: center;
       text-align: center;
       min-width: 0;
+      overflow: hidden;
       cursor: pointer;
       user-select: none;
       border-radius: 8px;
@@ -134,11 +135,13 @@
       font-weight: 600;
       color: var(--text);
       display: flex;
+      flex-wrap: nowrap;
       align-items: center;
       justify-content: center;
       gap: 6px;
       min-width: 0;
       width: 100%;
+      white-space: nowrap;
     }
 
     #state-label {
@@ -152,6 +155,13 @@
       padding: 3px 6px;
       text-transform: uppercase;
       letter-spacing: 0.5px;
+      white-space: nowrap;
+      /* 长状态(如 AWAITING APPROVAL)自己省略,而非挤裁标题文字 */
+      max-width: 84px;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex-shrink: 1;
     }
 
     #session-meta {
@@ -1070,15 +1080,29 @@
     .pending-device-info { flex: 1; color: var(--text-muted); font-weight: 500; }
     .pending-btns { display: flex; gap: 8px; }
     .approve-btn, .deny-btn {
-      border: none;
+      border: 1px solid transparent;
       border-radius: 999px;
-      padding: 5px 12px;
-      font-size: 11px;
+      padding: 6px 14px;
+      font-size: 12px;
       font-weight: 600;
       cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, transform 0.1s;
     }
-    .approve-btn { background: var(--accent-light); color: white; }
-    .deny-btn { background: var(--error); color: white; }
+    .approve-btn:active, .deny-btn:active { transform: scale(0.96); }
+    /* 批准 = 主操作:OpenAI 绿实心 + 柔和绿阴影 */
+    .approve-btn {
+      background: var(--accent-light);
+      color: #fff;
+      box-shadow: 0 1px 3px rgba(16,163,127,0.25);
+    }
+    .approve-btn:active { background: #0e9070; }
+    /* 拒绝 = 次要操作:白底红字红边,克制不刺眼 */
+    .deny-btn {
+      background: var(--surface);
+      color: var(--error);
+      border-color: #f0c9c9;
+    }
+    .deny-btn:active { background: #fdf0f0; }
 
     #account-login-panel {
       background: #f6fbf8;
@@ -1116,29 +1140,43 @@
       background: var(--surface);
       color: var(--text);
       border-radius: 999px;
-      padding: 6px 10px;
+      padding: 5px 11px;
       font-size: 12px;
       font-weight: 600;
+      white-space: nowrap;
+      flex-shrink: 0;
       cursor: pointer;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.02);
     }
 
+    /* 工具面板(位于抽屉内):11 个 native 控制按钮以换行网格排列 */
+    #drawer-tools {
+      flex-shrink: 0;
+      padding: 12px 12px 14px;
+      border-bottom: 1px solid var(--border-light);
+    }
+    .drawer-section-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 0 4px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
     #native-controls {
       display: flex;
+      flex-wrap: wrap;
       gap: 6px;
-      overflow-x: auto;
-      flex-shrink: 0;
-      padding: 6px 12px;
-      border-bottom: 1px solid var(--border-light);
-      background: rgba(255,255,255,0.78);
-      scrollbar-width: none;
     }
-    #native-controls::-webkit-scrollbar { display: none; }
     .native-control-btn, .native-mini-btn {
       border: 1px solid var(--border);
       background: var(--surface);
       color: var(--text);
       border-radius: 8px;
-      height: 30px;
+      height: 28px;
       padding: 0 10px;
       font: inherit;
       font-size: 11px;
@@ -1210,10 +1248,9 @@
       display: none;
       flex-shrink: 0;
       overflow-x: auto;
-      border-bottom: 1px solid var(--border-light);
       background: rgba(255,255,255,0.8);
       backdrop-filter: blur(8px);
-      padding: 4px;
+      padding: 4px 12px;
       gap: 4px;
     }
     #instance-tabs::-webkit-scrollbar { display: none; }
@@ -1314,6 +1351,22 @@
     </div>
     <button id="new-session-btn">+ 新会话</button>
   </div>
+  <div id="drawer-tools">
+    <div class="drawer-section-label">🛠 工具面板</div>
+    <div id="native-controls">
+      <button id="native-thread-refresh" class="native-control-btn" title="刷新原生会话">Threads</button>
+      <button id="native-compact-btn" class="native-control-btn" title="压缩当前上下文">Compact</button>
+      <button id="native-rollback-btn" class="native-control-btn" title="回退当前会话">Rollback</button>
+      <button id="native-models-btn" class="native-control-btn" title="读取模型能力">Models</button>
+      <button id="native-files-btn" class="native-control-btn" title="只读文件选择">Files</button>
+      <button id="native-account-btn" class="native-control-btn" title="账号与用量">Account</button>
+      <button id="native-mcp-btn" class="native-control-btn" title="MCP 状态">MCP</button>
+      <button id="native-skills-btn" class="native-control-btn" title="Skills 状态">Skills</button>
+      <button id="native-import-btn" class="native-control-btn" title="导入 AGENTS/CLAUDE 配置">Import</button>
+      <button id="native-p3-btn" class="native-control-btn" title="P3 实验功能">Labs</button>
+      <button id="native-admin-btn" class="native-control-btn native-danger" title="Admin 管理">Admin</button>
+    </div>
+  </div>
   <div id="session-list"></div>
   <!-- Floating FAB inside drawer -->
   <button id="drawer-fab-new" class="drawer-fab">
@@ -1368,20 +1421,7 @@
 <!-- ChatGPT device-code login panel -->
 <div id="account-login-panel" hidden></div>
 
-<!-- Native app-server P1 controls -->
-<div id="native-controls">
-  <button id="native-thread-refresh" class="native-control-btn" title="刷新原生会话">Threads</button>
-  <button id="native-compact-btn" class="native-control-btn" title="压缩当前上下文">Compact</button>
-  <button id="native-rollback-btn" class="native-control-btn" title="回退当前会话">Rollback</button>
-  <button id="native-models-btn" class="native-control-btn" title="读取模型能力">Models</button>
-  <button id="native-files-btn" class="native-control-btn" title="只读文件选择">Files</button>
-  <button id="native-account-btn" class="native-control-btn" title="账号与用量">Account</button>
-  <button id="native-mcp-btn" class="native-control-btn" title="MCP 状态">MCP</button>
-  <button id="native-skills-btn" class="native-control-btn" title="Skills 状态">Skills</button>
-  <button id="native-import-btn" class="native-control-btn" title="导入 AGENTS/CLAUDE 配置">Import</button>
-  <button id="native-p3-btn" class="native-control-btn" title="P3 实验功能">Labs</button>
-  <button id="native-admin-btn" class="native-control-btn native-danger" title="Admin 管理">Admin</button>
-</div>
+<!-- Native app-server data panel (controls live in the drawer's 工具面板 section) -->
 <div id="native-panel" hidden></div>
 
 <!-- Messages Container -->
@@ -2366,6 +2406,7 @@
     renderSessionMeta();
     renderInstanceTabs();
     updateFloatingBadges();
+    if (currentSessionId && socket.connected) refreshNativeThreads();
     checkEmptyState();
   }
 
@@ -2606,6 +2647,7 @@
               return;
             }
             clearMessages();
+            loadNativeThreadHistory(s);
           });
         } else {
           socket.emit('session:select', { sessionId: s.id });
@@ -3168,25 +3210,45 @@
 
   function loadHistory(s) {
     socket.emit('session:history', { sessionId: s.id }, data => {
-      const msgs = data?.messages || [];
-      if (msgs.length === 0) {
-        appendSystem('该会话无历史消息', false);
+      renderHistoryMessages(data?.messages || [], data?.title || s.title || '历史会话');
+    });
+  }
+
+  function loadNativeThreadHistory(s) {
+    socket.emit('thread:history', { threadId: s.id, cwd: s.cwd }, data => {
+      if (!data?.ok) {
+        appendSystem(data?.error || 'Thread history failed', true);
         return;
       }
-      appendSystem(`📋 ${data.title || s.title || '历史会话'}（${msgs.length} 条消息）`, false);
-      for (const m of msgs.slice(-30)) {
-        if (m.role === 'user') {
-          appendUserBubble(m.content);
-        } else {
-          const el = document.createElement('div');
-          el.className = 'msg codex';
-          el.innerHTML = `<div class="bubble" style="white-space:pre-wrap;font-size:13px;">${escHtml(m.content.slice(0, 500))}${m.content.length > 500 ? ' ...' : ''}</div>`;
-          messagesEl.appendChild(el);
-        }
-      }
-      scrollBottom();
-      checkEmptyState();
+      renderHistoryMessages(data.messages || [], s.title || data.thread?.name || data.thread?.preview || 'Native thread');
     });
+  }
+
+  function renderHistoryMessages(msgs, title) {
+    if (msgs.length === 0) {
+      appendSystem('该会话无历史消息', false);
+      return;
+    }
+    appendSystem(`📋 ${title || '历史会话'}（${msgs.length} 条消息）`, false);
+    for (const m of msgs.slice(-30)) {
+      if (m.role === 'user') {
+        appendHistoryUserBubble(m.content);
+      } else {
+        const el = document.createElement('div');
+        el.className = 'msg codex';
+        el.innerHTML = `<div class="bubble" style="white-space:pre-wrap;font-size:13px;">${escHtml(m.content.slice(0, 500))}${m.content.length > 500 ? ' ...' : ''}</div>`;
+        messagesEl.appendChild(el);
+      }
+    }
+    scrollBottom();
+    checkEmptyState();
+  }
+
+  function appendHistoryUserBubble(text) {
+    const el = document.createElement('div');
+    el.className = 'msg user';
+    el.innerHTML = `<div class="bubble">${escHtml(text || '')}</div>`;
+    messagesEl.appendChild(el);
   }
 
   function appendQueuedBubble(payload) {
@@ -3791,6 +3853,13 @@
   $('native-import-btn').onclick = detectExternalAgentConfig;
   $('native-p3-btn').onclick = openP3Panel;
   $('native-admin-btn').onclick = openAdminPanel;
+  // 工具按钮在抽屉里:点任一按钮后关闭抽屉,让主区的数据面板可见
+  const nativeControlsRegion = $('native-controls');
+  if (nativeControlsRegion) {
+    nativeControlsRegion.addEventListener('click', (e) => {
+      if (e.target.closest('.native-control-btn')) closeDrawer();
+    });
+  }
   document.querySelectorAll('#quick-actions [data-command]').forEach(btn => {
     btn.onclick = () => {
       inputEl.value = btn.dataset.command;

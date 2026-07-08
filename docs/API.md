@@ -49,6 +49,7 @@ Express 路由集中在 `server.js`。静态资源经 `express.static` 提供 `p
 |---|---|---|
 | `thread:list` | `archived`、`limit`(50)、`cursor`、`searchTerm` | `{ok:true, threads, nextCursor, backwardsCursor, archived}` |
 | `thread:select` | **threadId**\|**sessionId**、`title` | `{ok:true, sessionId, instanceId}` |
+| `thread:history` | **threadId**\|**sessionId**、`cwd` | `{ok:true, thread, messages, source:"thread/read"}` |
 | `thread:archive` / `thread:unarchive` / `thread:delete` | **threadId** | `{ok:true, threadId}` |
 | `thread:rename` | **threadId**、**name** | `{ok:true, threadId, name}` |
 | `thread:compact` | **threadId** | `{ok:true, threadId}` |

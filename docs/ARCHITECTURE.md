@@ -34,8 +34,9 @@ codex app-server
 
 - `server.js` 中的 `agents` map：按 `instanceId` 维护活跃 app-server 会话。
 - `viewingInstanceId`：当前浏览器壳正在查看的实例。
-- `sessions.js`：轻量工作区/会话元数据指针。
-- Codex 原生历史：通过 `history.js` 读取 Codex session JSONL。
+- app-server thread：跨 Codex App / Web 的会话主事实源，通过 `thread/list`、`thread/read`、`thread/resume` 读取和续接。
+- `sessions.js`：轻量工作区/当前指针兼容层，不作为消息事实源。
+- Codex JSONL 历史：通过 `history.js` 读取，仅作为 legacy/fallback 历史入口。
 - 上传和审计文件：本地 owner-only 文件。
 - 协议基线：`.protocol/stable/`，由当前 pin 住的 Codex CLI 版本生成。
 

@@ -37,7 +37,7 @@ npm run test:e2e
 | 案例 3 | 产生失败 + 重试恢复 + 长日志移动体验 | `agent-appserver.js`（error/backpressure）、`public/index.html`（retry/copy） | 协议错误测试、UI retry/copy 覆盖、移动视口 E2E |
 | 案例 4 | 文件上传 + 附件注入 + 安全落盘 | `uploads.js`、`file-security.js` | uploads 测试、附件 E2E、owner-only 文件断言 |
 | 案例 5 | 状态栏 + git 上下文 + token/context usage | `statusline.js`、`agent-appserver.js`（`tokenUsage`） | statusline 测试、public UI 契约测试 |
-| 案例 6 | 历史浏览 + Codex 原生会话 + 跨端一致性 | `history.js`、`agent-appserver.js`（`thread/*`） | history 测试、native thread 面板测试 |
+| 案例 6 | 历史浏览 + app-server thread 主事实源 + Codex App/Web 跨端一致性 | `agent-appserver.js`（`thread/*`）、`server.js`（`thread:history`）、`history.js` fallback | thread history 测试、native thread 面板测试 |
 | 案例 7 | 多工作目录 + 实例切换 + 隔离 | `server.js`（`agents` map / workdir 路由）、`sessions.js` | route/workdir 测试、多实例 E2E |
 | 案例 8 | Web Push + Service Worker | `push.js`、`public/js`（sw） | push decision 测试、PWA/SW E2E |
 | 案例 9 | 模型切换 + 权限档切换 | `agent-appserver.js`（`model/list` / `turn/start` override）、`public/index.html` | model/permission UI 契约测试、popover E2E |

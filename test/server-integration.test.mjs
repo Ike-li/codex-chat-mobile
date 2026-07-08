@@ -317,6 +317,56 @@ test('server exposes P1 native app-server controls over Socket.IO', async () => 
   }
 });
 
+test('server reads and resumes native app-server threads without local session metadata', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ccm-native-thread-history-test-'));
+  const rpcLog = join(root, 'rpc.jsonl');
+  const codexBin = createFakeCodexBin(root);
+  const fixture = await startIsolatedServer({ codexBin, rpcLog });
+  try {
+    const socket = await connectSocket(fixture.url, fixture.authToken);
+    try {
+      await waitForAgentEvent(socket, 'init');
+
+      const history = await emitWithAck(socket, 'thread:history', { threadId: 'thr_fake' });
+      assert.equal(history.ok, true);
+      assert.equal(history.source, 'thread/read');
+      assert.equal(history.thread.id, 'thr_fake');
+      assert.deepEqual(history.messages, [
+        { role: 'user', content: 'hello from native thread' },
+        { role: 'assistant', content: 'hello from Codex app-server' },
+      ]);
+
+      const selected = await emitWithAck(socket, 'thread:select', {
+        threadId: 'thr_fake',
+        cwd: fixture.workDir,
+        title: 'Fake thread',
+      });
+      assert.equal(selected.ok, true);
+      assert.equal(selected.sessionId, 'thr_fake');
+
+      socket.emit('user:message', { text: 'continue native thread' });
+      await waitForAgentEventMatching(socket, 'status', event => event.payload?.reason === 'turn_submitted');
+
+      const calls = readFileSync(rpcLog, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      const resume = calls.find(call => call.method === 'thread/resume');
+      assert.ok(resume, 'selected native thread should resume through app-server');
+      assert.equal(resume.params.threadId, 'thr_fake');
+
+      const turnStart = calls.find(call =>
+        call.method === 'turn/start'
+        && call.params?.input?.[0]?.text === 'continue native thread'
+      );
+      assert.ok(turnStart, 'follow-up should be sent to the selected native thread');
+      assert.equal(turnStart.params.threadId, 'thr_fake');
+    } finally {
+      socket.disconnect();
+    }
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('server gates P2 admin app-server controls with unlock, per-action confirmation, and audit log', async () => {
   const root = mkdtempSync(join(tmpdir(), 'ccm-p2-admin-test-'));
   const rpcLog = join(root, 'rpc.jsonl');
@@ -698,7 +748,11 @@ rl.on('line', line => {
 	  if (message.method === 'command/exec/write') return send({ id: message.id, result: {} });
 	  if (message.method === 'command/exec/resize') return send({ id: message.id, result: {} });
 	  if (message.method === 'command/exec/terminate') return send({ id: message.id, result: {} });
-	  if (message.method === 'thread/read') return send({ id: message.id, result: { thread: { id: message.params.threadId, turns: [{ id: turnId, items: [{ id: 'item_fake' }] }] } } });
+	  if (message.method === 'thread/read') return send({ id: message.id, result: { thread: { id: message.params.threadId, turns: [{ id: turnId, items: [
+	    { type: 'userMessage', id: 'u1', content: [{ type: 'text', text: 'hello from native thread', text_elements: [] }] },
+	    { type: 'agentMessage', id: 'a1', text: 'hello from Codex app-server' },
+	    { id: 'item_fake' }
+	  ] }] } } });
 	  if (message.method === 'thread/fork') {
     send({ id: message.id, result: { thread: { id: 'thr_forked', forkedFromId: threadId } } });
     setTimeout(() => process.exit(0), 20);

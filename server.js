@@ -602,6 +602,28 @@ function normalizeThread(thread, { archived = false } = {}) {
   };
 }
 
+function normalizeThreadHistoryMessages(thread) {
+  const messages = [];
+  const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+  for (const turn of turns) {
+    const items = Array.isArray(turn?.items) ? turn.items : [];
+    for (const item of items) {
+      if (item?.type === 'userMessage') {
+        const content = (Array.isArray(item.content) ? item.content : [])
+          .filter(part => part?.type === 'text' && typeof part.text === 'string')
+          .map(part => part.text.trim())
+          .filter(Boolean)
+          .join('\n');
+        if (content) messages.push({ role: 'user', content });
+      } else if (item?.type === 'agentMessage') {
+        const content = typeof item.text === 'string' ? item.text.trim() : '';
+        if (content) messages.push({ role: 'assistant', content });
+      }
+    }
+  }
+  return messages;
+}
+
 function emitServerEnvelope(socket, type, payload) {
   socket.emit('agent:event', {
     seq: 0,
@@ -896,6 +918,24 @@ io.on('connection', socket => {
       });
       sendActiveStatus(socket, 'thread_select');
       ackOk(ack, { sessionId: threadId, instanceId: agent.instanceId });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'thread:history', async (payload = {}, ack) => {
+    try {
+      const threadId = payload?.threadId || payload?.sessionId;
+      if (typeof threadId !== 'string' || !threadId) throw new Error('无效 threadId');
+      const thread = await ensureControlAgent(payload?.cwd).readThread({
+        threadId,
+        includeTurns: true,
+      });
+      ackOk(ack, {
+        thread,
+        messages: normalizeThreadHistoryMessages(thread),
+        source: 'thread/read',
+      });
     } catch (err) {
       ackError(ack, err);
     }

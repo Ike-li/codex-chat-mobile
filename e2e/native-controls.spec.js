@@ -45,6 +45,13 @@ async function expectNativePanelOpen(page, label, expectedPattern = /.+/) {
 }
 
 async function clickNativeControl(page, selector) {
+  // 工具按钮已收进左侧抽屉;点击某按钮会关闭抽屉,故每次点击前按需重新打开。
+  const drawer = page.locator('#drawer');
+  const isOpen = await drawer.evaluate(el => el.classList.contains('open')).catch(() => false);
+  if (!isOpen) {
+    await page.locator('#menu-btn').click();
+    await expect(drawer).toHaveClass(/open/);
+  }
   await expect(page.locator(selector)).toBeVisible();
   await page.locator(selector).dispatchEvent('click');
 }
@@ -57,7 +64,7 @@ test.describe('Native Controls Browser Panels', () => {
     await page.goto('/');
     await expect(page.locator('#state-label')).not.toHaveText('offline', { timeout: 10000 });
 
-    // 2. Click #native-thread-refresh.
+    // 2. Click #native-thread-refresh.(工具按钮已移入抽屉,clickNativeControl 会按需打开抽屉)
     await clickNativeControl(page, '#native-thread-refresh');
     await expectNativePanelOpen(page, 'Threads', /Native Threads|No native threads|Thread list failed/i);
 

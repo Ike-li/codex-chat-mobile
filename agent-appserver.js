@@ -938,6 +938,16 @@ export class CodexAppServerSession {
     });
   }
 
+  async readThread(options = {}) {
+    await this.ensureInitialized();
+    const threadId = requireThreadId(options.threadId || this.sessionId, 'read thread');
+    const response = await this.request('thread/read', {
+      threadId,
+      includeTurns: options.includeTurns !== false,
+    });
+    return response?.thread ?? response ?? null;
+  }
+
   async listModels(options = {}) {
     await this.ensureInitialized();
     return this.request('model/list', definedParams({
@@ -1164,12 +1174,13 @@ export class CodexAppServerSession {
   }
 
   async listThreadTurns(options = {}) {
-    await this.ensureInitialized();
-    const threadId = requireThreadId(options.threadId || this.sessionId, 'list thread turns');
-    const response = await this.request('thread/read', { threadId, includeTurns: true });
+    const thread = await this.readThread({
+      threadId: options.threadId || this.sessionId,
+      includeTurns: true,
+    });
     return {
-      thread: response?.thread ?? response ?? null,
-      turns: response?.thread?.turns ?? response?.turns ?? [],
+      thread,
+      turns: thread?.turns ?? [],
       source: 'thread/read',
     };
   }

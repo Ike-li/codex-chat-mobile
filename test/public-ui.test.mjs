@@ -161,6 +161,16 @@ test('client exposes P1 native app-server controls and readonly status panels', 
   assert.match(html, /\$\('native-files-btn'\)\.onclick = \(\) => openFileBrowser\(serverCwd\)/);
 });
 
+test('client loads app-server thread history when selecting native threads', () => {
+  assert.match(html, /socket\.emit\('thread:history'/);
+  assert.match(html, /function loadNativeThreadHistory/);
+  assert.match(html, /renderHistoryMessages/);
+  assert.match(html, /thread:select', \{ threadId: s\.id, cwd: s\.cwd, title: s\.title \}/);
+  assert.match(html, /loadNativeThreadHistory\(s\)/);
+  assert.match(html, /source === 'codex'/);
+  assert.match(html, /session:history/);
+});
+
 test('client exposes P2 admin controls behind unlock and per-action confirmation', () => {
   for (const id of [
     'native-admin-btn',
