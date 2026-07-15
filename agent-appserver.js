@@ -1,14 +1,14 @@
-// agent-appserver.js —— Codex 会话桥（app-server 模式，唯一后端）。
-// 长驻 `codex app-server` 子进程，走 JSON-RPC over stdio（NDJSON）。
-// 与 server.js 的 CodexAppServerSession 接口一致（send/abort/dispose/emit/eventsSince）。
-//
-// 进程长驻、原生流式（item/agentMessage/delta）、支持手机端审批。
-import { spawn } from 'node:child_process';
+// agent-appserver.js —— 单 thread 语义 runtime（app-server 是唯一后端）。
+// 生产环境由 AppServerHost/AppServerTransport 共享一个 stdio JSON-RPC 子进程；
+// 本类负责 start/resume/turn、队列、中断、事件映射和审批。
+// CodexAppServerSession 仅保留为迁移期兼容导出名。
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { AppServerTransport } from './app-server-transport.js';
 import { ApprovalBroker } from './approval-broker.js';
 import { writeOwnerOnlyFile } from './file-security.js';
 import { sanitize, sanitizePath } from './sanitizer.js';
+import { buildUserInputs } from './user-inputs.js';
 
 const BUFFER_CAP = 500;
 const TOOL_SUMMARY_CAP = 600;
@@ -20,14 +20,25 @@ const MAX_BACKPRESSURE_DELAY_MS = 5000;
 const RPC_SUMMARY_CAP = 240;
 const SENSITIVE_RPC_KEY_RE = /(token|secret|password|passwd|credential|authorization|api[_-]?key|private[_-]?key|refreshToken|accessToken|chatgptAuthTokens|dataBase64)/i;
 const CONTENT_RPC_KEY_RE = /^(text|input|prompt|content|delta|aggregatedOutput|output|diff|data)$/i;
+const LEGACY_APPROVAL_METHODS = new Set(['applyPatchApproval', 'execCommandApproval']);
+
+function inputPartEventMeta(parts) {
+  return (Array.isArray(parts) ? parts : []).map(part => {
+    if (part?.kind === 'mention' || part?.kind === 'skill') {
+      return { kind: part.kind, name: part.name || '' };
+    }
+    if (part?.kind === 'imageUrl') return { kind: 'imageUrl' };
+    return null;
+  }).filter(Boolean);
+}
 
 let instanceCounter = 0;
 function nextEpoch() {
   return `${Date.now()}.${++instanceCounter}`;
 }
 
-export class CodexAppServerSession {
-  constructor({ instanceId, resumeId, cwd, codexBin, idleTimeoutMs, onEvent, onSessionId, onExit, rpcLogPath, experimentalApi = false }) {
+export class ThreadRuntime {
+  constructor({ instanceId, resumeId, cwd, codexBin, idleTimeoutMs, onEvent, onSessionId, onExit, rpcLogPath, experimentalApi = false, transportFactory, host }) {
     this.instanceId = instanceId;
     this.cwd = cwd;
     this.codexBin = codexBin || 'codex';
@@ -41,9 +52,13 @@ export class CodexAppServerSession {
     this.seq = 0;
     this.buffer = [];
     this.bufferTrimmed = false;
+    this.bufferCap = numberFromEnv('CODEX_EVENT_BUFFER_CAP', BUFFER_CAP);
     this.firstMessage = null;
 
     this.child = null;
+    this.host = host || null;
+    this.transport = null;
+    this.transportFactory = transportFactory || (options => new AppServerTransport(options));
     this.busy = false;
     this.disposed = false;
     this.lastActivity = Date.now();
@@ -76,6 +91,7 @@ export class CodexAppServerSession {
     this.inputQueueLimit = numberFromEnv('CODEX_INPUT_QUEUE_LIMIT', DEFAULT_INPUT_QUEUE_LIMIT);
     this.interruptTimeoutMs = numberFromEnv('CODEX_INTERRUPT_TIMEOUT_MS', DEFAULT_INTERRUPT_TIMEOUT_MS);
     this.currentTurnId = null;
+    this.threadStatus = null;
     this.drainScheduled = false;
     this.experimentalApi = experimentalApi === true;
     // 审批/沙箱（仅 app-server 后端）：默认 on-request + workspace-write，可经环境变量覆盖。
@@ -86,38 +102,63 @@ export class CodexAppServerSession {
   // ---- 子进程与 JSON-RPC 底层 ----
   spawnIfNeeded() {
     if (this.child) return;
-    this.child = spawn(this.codexBin, ['app-server'], {
-      cwd: this.cwd,
-      env: process.env,
-      stdio: ['pipe', 'pipe', 'pipe'] // 需要 stdin 写 JSON-RPC，故 pipe（与 exec 模式不同）
-    });
-    this.child.stdout.on('data', d => this.onStdout(d));
-    this.child.stderr.on('data', d => {
-      if (process.env.LOG_STDERR) console.error('[codex]', sanitize(d.toString()));
-    });
-    this.child.on('close', () => {
-      this.busy = false;
-      this.child = null;
-      this.initialized = null;
-      this.ready = null;
-      this.clearQueue('process_exit');
-      this.approvalBroker.clearPending();
-      this.clearBackpressureRetries(new Error('app-server 进程已退出'));
-      this.rejectAllPending(new Error('app-server 进程已退出'));
-      clearInterval(this.idleTimer); this.idleTimer = null;
-      if (!this.disposed) this.emitStatus('process_exit');
-      if (!this.disposed) this.onExit?.();
-    });
-    this.child.on('error', err => {
-      this.busy = false;
-      this.child = null;
-      this.clearQueue('process_error');
-      this.clearBackpressureRetries(err);
-      this.rejectAllPending(err);
-      this.emit('error', { message: `codex app-server 启动失败：${sanitize(err.message)}`, recoverable: false });
-      this.emitStatus('process_error');
-    });
+    if (this.host) {
+      this.host.attach(this);
+      this.child = this.host.start();
+      this.idleTimer = setInterval(() => this.checkIdle(), 30_000);
+      return;
+    }
+    if (!this.transport) {
+      this.transport = this.transportFactory({
+        codexBin: this.codexBin,
+        cwd: this.cwd,
+        onMessage: message => {
+          this.lastActivity = Date.now();
+          this.handleFrame(message, { observed: true });
+        },
+        onFrame: event => this.observeTransportFrame(event),
+        onStderr: chunk => {
+          if (process.env.LOG_STDERR) console.error('[codex]', sanitize(chunk.toString()));
+        },
+        onActivity: () => {
+          this.lastActivity = Date.now();
+        },
+        onExit: () => this.handleTransportExit(),
+        onError: error => {
+          if (!this.transport?.child) this.handleTransportError(error);
+        },
+      });
+    }
+    this.child = this.transport.start();
     this.idleTimer = setInterval(() => this.checkIdle(), 30_000);
+  }
+
+  handleTransportExit() {
+    this.busy = false;
+    this.currentTurnId = null;
+    this.child = null;
+    this.initialized = null;
+    this.ready = null;
+    this.clearQueue('process_exit');
+    this.approvalBroker.clearPending();
+    this.clearBackpressureRetries(new Error('app-server 进程已退出'));
+    this.rejectAllPending(new Error('app-server 进程已退出'));
+    clearInterval(this.idleTimer); this.idleTimer = null;
+    if (!this.disposed) this.emitStatus('process_exit');
+    if (!this.disposed) this.onExit?.();
+  }
+
+  handleTransportError(err) {
+    this.busy = false;
+    this.currentTurnId = null;
+    this.child = null;
+    this.initialized = null;
+    this.ready = null;
+    this.clearQueue('process_error');
+    this.clearBackpressureRetries(err);
+    this.rejectAllPending(err);
+    this.emit('error', { message: `codex app-server 启动失败：${sanitize(err.message)}`, recoverable: false });
+    this.emitStatus('process_error');
   }
 
   rejectAllPending(err) {
@@ -146,9 +187,13 @@ export class CodexAppServerSession {
   handleLine(line) {
     let msg;
     try { msg = JSON.parse(line); } catch { return; }
+    this.handleFrame(msg);
+  }
+
+  handleFrame(msg, { observed = false } = {}) {
     // server→client 请求：有 method 且有 id（无 result/error）→ 必须回应，否则 agent 挂起。
     if (msg.method && msg.id !== undefined) {
-      this.observeRpc('server_request', { direction: 'inbound', id: msg.id, method: msg.method, params: msg.params || {} });
+      if (!observed) this.observeRpc('server_request', { direction: 'inbound', id: msg.id, method: msg.method, params: msg.params || {} });
       this.handleServerRequest(msg.id, msg.method, msg.params || {});
       return;
     }
@@ -157,13 +202,15 @@ export class CodexAppServerSession {
       const p = this.pending.get(msg.id);
       if (p) {
         this.pending.delete(msg.id);
-        this.observeRpc('response', {
-          direction: 'inbound',
-          id: msg.id,
-          method: p.method || null,
-          result: msg.result,
-          error: msg.error,
-        });
+        if (!observed) {
+          this.observeRpc('response', {
+            direction: 'inbound',
+            id: msg.id,
+            method: p.method || null,
+            result: msg.result,
+            error: msg.error,
+          });
+        }
         if (msg.error) p.reject(rpcError(msg.error));
         else p.resolve(msg.result);
       }
@@ -171,14 +218,41 @@ export class CodexAppServerSession {
     }
     // 通知。
     if (msg.method) {
-      this.observeRpc('notification', { direction: 'inbound', method: msg.method, params: msg.params || {} });
+      if (!observed) this.observeRpc('notification', { direction: 'inbound', method: msg.method, params: msg.params || {} });
       this.handleNotification(msg.method, msg.params || {});
+    }
+  }
+
+  observeTransportFrame({ direction, method, frame }) {
+    if (direction === 'inbound' && (method === 'turn/start' || method === 'turn/steer')) {
+      this.recordCurrentTurn(frame?.result);
+    }
+    const details = {
+      direction,
+      id: frame?.id,
+      method: method || frame?.method || null,
+      params: frame?.params,
+      result: frame?.result,
+      error: frame?.error,
+    };
+    if (frame?.method && frame?.id !== undefined && direction === 'inbound') {
+      this.observeRpc('server_request', details);
+    } else if (frame?.method && frame?.id !== undefined) {
+      this.observeRpc('request', details);
+    } else if (frame?.method) {
+      this.observeRpc('notification', details);
+    } else if (frame?.id !== undefined) {
+      this.observeRpc('response', details);
     }
   }
 
   // server→client 请求处理。审批类透传给手机；其余安全兜底回应，避免 agent 挂起。
   handleServerRequest(rpcId, method, params) {
-    if (this.approvalBroker.handleRequest(rpcId, method, params)) {
+    const requestParams = normalizeServerRequestParams(this, rpcId, method, params);
+    if (!this.currentTurnId && typeof requestParams?.turnId === 'string' && requestParams.turnId) {
+      this.currentTurnId = requestParams.turnId;
+    }
+    if (this.approvalBroker.handleRequest(rpcId, method, requestParams)) {
       this.emitStatus('approval_requested');
     } else if (method === 'account/chatgptAuthTokens/refresh') {
       this.respondError(rpcId, -32601, `Unsupported server request: ${method}`);
@@ -197,12 +271,16 @@ export class CodexAppServerSession {
 
   respond(rpcId, result) {
     if (!this.child) return;
+    if (this.host) return this.host.respond(this, rpcId, result);
+    if (this.transport) return this.transport.respond(rpcId, result);
     this.observeRpc('response', { direction: 'outbound', id: rpcId, result });
     this.child.stdin.write(JSON.stringify({ id: rpcId, result }) + '\n');
   }
 
   respondError(rpcId, code, message) {
     if (!this.child) return;
+    if (this.host) return this.host.respondError(this, rpcId, code, message);
+    if (this.transport) return this.transport.respondError(rpcId, code, message);
     this.observeRpc('response', { direction: 'outbound', id: rpcId, error: { code, message } });
     this.child.stdin.write(JSON.stringify({ id: rpcId, error: { code, message } }) + '\n');
   }
@@ -235,6 +313,42 @@ export class CodexAppServerSession {
       const resolveOnce = finish(resolve);
       const rejectOnce = finish(reject);
 
+      const handleAttemptError = (err, attempt) => {
+        if (isBackpressureError(err) && attempt < maxBackpressureRetries) {
+          const delayMs = backpressureDelayMs(attempt, backpressureBaseMs);
+          this.emit('system', {
+            message: `Codex app-server 拥塞，${delayMs}ms 后重试 ${method}（${attempt + 1}/${maxBackpressureRetries}）`,
+            isError: false,
+            code: -32001,
+            method,
+            retryAfterMs: delayMs,
+            attempt: attempt + 1,
+            maxRetries: maxBackpressureRetries,
+          });
+          this.emitStatus('backpressure_retry');
+          const retry = {
+            timer: null,
+            reject: rejectOnce,
+          };
+          retry.timer = setTimeout(() => {
+            this.backpressureRetries.delete(retry);
+            sendAttempt(attempt + 1);
+          }, delayMs);
+          this.backpressureRetries.add(retry);
+          return;
+        }
+        if (isBackpressureError(err)) {
+          this.emit('system', {
+            message: `Codex app-server 仍然拥塞，超过重试上限（${maxBackpressureRetries}）`,
+            isError: true,
+            code: -32001,
+            method,
+          });
+          this.emitStatus('backpressure_failed');
+        }
+        rejectOnce(err);
+      };
+
       const sendAttempt = attempt => {
         if (settled) return;
         if (this.disposed) {
@@ -242,6 +356,20 @@ export class CodexAppServerSession {
           return;
         }
         this.spawnIfNeeded();
+        if (this.host) {
+          this.host.request(this, method, params, { timeoutMs }).then(
+            resolveOnce,
+            err => handleAttemptError(err, attempt),
+          );
+          return;
+        }
+        if (this.transport) {
+          this.transport.request(method, params, { timeoutMs }).then(
+            resolveOnce,
+            err => handleAttemptError(err, attempt),
+          );
+          return;
+        }
         const id = ++this.rpcId;
         let timer = null;
         const cleanup = () => {
@@ -262,39 +390,7 @@ export class CodexAppServerSession {
           },
           reject: err => {
             cleanup();
-            if (isBackpressureError(err) && attempt < maxBackpressureRetries) {
-              const delayMs = backpressureDelayMs(attempt, backpressureBaseMs);
-              this.emit('system', {
-                message: `Codex app-server 拥塞，${delayMs}ms 后重试 ${method}（${attempt + 1}/${maxBackpressureRetries}）`,
-                isError: false,
-                code: -32001,
-                method,
-                retryAfterMs: delayMs,
-                attempt: attempt + 1,
-                maxRetries: maxBackpressureRetries,
-              });
-              this.emitStatus('backpressure_retry');
-              const retry = {
-                timer: null,
-                reject: rejectOnce,
-              };
-              retry.timer = setTimeout(() => {
-                this.backpressureRetries.delete(retry);
-                sendAttempt(attempt + 1);
-              }, delayMs);
-              this.backpressureRetries.add(retry);
-              return;
-            }
-            if (isBackpressureError(err)) {
-              this.emit('system', {
-                message: `Codex app-server 仍然拥塞，超过重试上限（${maxBackpressureRetries}）`,
-                isError: true,
-                code: -32001,
-                method,
-              });
-              this.emitStatus('backpressure_failed');
-            }
-            rejectOnce(err);
+            handleAttemptError(err, attempt);
           },
         });
         try {
@@ -313,6 +409,8 @@ export class CodexAppServerSession {
 
   notify(method, params) {
     this.spawnIfNeeded();
+    if (this.host) return this.host.notify(this, method, params);
+    if (this.transport) return this.transport.notify(method, params);
     this.observeRpc('notification', { direction: 'outbound', method, params });
     this.child.stdin.write(JSON.stringify({ method, params }) + '\n');
   }
@@ -320,23 +418,29 @@ export class CodexAppServerSession {
   // initialize app-server，只执行一次；登录等非 thread 操作也复用它。
   ensureInitialized() {
     if (this.initialized) return this.initialized;
-    this.initialized = (async () => {
-      await this.request('initialize', {
-        clientInfo: { name: 'codex-chat-mobile', title: 'Codex Chat Mobile', version: '0.1.0' },
-        capabilities: {
-          experimentalApi: this.experimentalApi,
-          requestAttestation: false,
-        },
-      });
-      this.notify('initialized', {});
-    })();
-    return this.initialized;
+    const initialized = this.host
+      ? this.host.ensureInitialized(this)
+      : (async () => {
+        await this.request('initialize', {
+          clientInfo: { name: 'codex-chat-mobile', title: 'Codex Chat Mobile', version: '0.1.0' },
+          capabilities: {
+            experimentalApi: this.experimentalApi,
+            requestAttestation: false,
+          },
+        });
+        this.notify('initialized', {});
+      })();
+    this.initialized = initialized;
+    initialized.catch(() => {
+      if (this.initialized === initialized) this.initialized = null;
+    });
+    return initialized;
   }
 
   // initialize + 建/续 thread，只执行一次。
   ensureReady() {
     if (this.ready) return this.ready;
-    this.ready = (async () => {
+    const ready = (async () => {
       await this.ensureInitialized();
       if (this.sessionId) {
         if (process.env.LOG_STDERR) console.error('[appserver] thread/resume', { approvalPolicy: this.approvalPolicy, sandbox: this.sandbox });
@@ -350,110 +454,209 @@ export class CodexAppServerSession {
       this.emit('init', { sessionId: this.sessionId, cwd: this.cwd });
       this.emitStatus('ready');
     })();
-    return this.ready;
+    this.ready = ready;
+    ready.catch(() => {
+      if (this.ready === ready) this.ready = null;
+    });
+    return ready;
   }
 
-  async send(text, savedAttachments) {
+  async send(text, savedAttachments, parts) {
     text = typeof text === 'string' ? text.trim() : '';
-    if (!text) return false;
+    const hasAttachments = Array.isArray(savedAttachments) && savedAttachments.length > 0;
+    const hasParts = Array.isArray(parts) && parts.length > 0;
+    if (!text && !hasAttachments && !hasParts) return false;
     if (this.disposed) return false;
     if (this.busy) {
-      if (this.currentTurnId) return this.steerTurn(text, savedAttachments);
-      return this.enqueueInput(text, savedAttachments);
+      if (this.currentTurnId) return this.steerTurn(text, savedAttachments, parts);
+      return this.enqueueInput(text, savedAttachments, parts);
     }
 
-    return this.startTurn(text, savedAttachments);
+    return this.startTurn(text, savedAttachments, parts);
   }
 
-  enqueueInput(text, savedAttachments) {
+  async dispatchUserMessage({ text, savedAttachments, parts, clientRequestId } = {}) {
+    text = typeof text === 'string' ? text.trim() : '';
+    const hasAttachments = Array.isArray(savedAttachments) && savedAttachments.length > 0;
+    const hasParts = Array.isArray(parts) && parts.length > 0;
+    if ((!text && !hasAttachments && !hasParts) || this.disposed) {
+      return { accepted: false, state: 'rejected', clientRequestId, reason: 'invalid_message' };
+    }
+    if (this.busy) {
+      if (this.currentTurnId) {
+        return this.steerTurnDispatch(text, savedAttachments, parts, clientRequestId);
+      }
+      return this.enqueueInputDispatch(text, savedAttachments, parts, clientRequestId);
+    }
+    return this.startTurnDispatch(text, savedAttachments, parts, clientRequestId);
+  }
+
+  enqueueInput(text, savedAttachments, parts) {
+    return this.enqueueInputDispatch(text, savedAttachments, parts).accepted;
+  }
+
+  enqueueInputDispatch(text, savedAttachments, parts, clientRequestId) {
     if (this.inputQueue.length >= this.inputQueueLimit) {
       this.emit('system', { message: `输入队列已满（上限 ${this.inputQueueLimit} 条），请等待当前任务完成后再发送`, isError: true });
       this.emitStatus('queue_full');
-      return false;
+      return {
+        accepted: false,
+        state: 'rejected',
+        clientRequestId,
+        threadId: this.sessionId,
+        reason: 'queue_full',
+      };
     }
-    const entry = { text, savedAttachments, queuedAt: Date.now() };
+    const entry = { text, savedAttachments, parts, clientRequestId, queuedAt: Date.now() };
     this.inputQueue.push(entry);
-    this.emit('queued_message', {
+    const queuedMessage = {
       text,
       queuedAt: entry.queuedAt,
       position: this.inputQueue.length,
       queueLength: this.inputQueue.length
-    });
+    };
+    if (clientRequestId) queuedMessage.clientRequestId = clientRequestId;
+    this.emit('queued_message', queuedMessage);
     this.emitStatus('queued');
-    return true;
+    return {
+      accepted: true,
+      state: 'queued',
+      clientRequestId,
+      threadId: this.sessionId,
+      position: this.inputQueue.length,
+      queuedAt: entry.queuedAt,
+    };
   }
 
-  async startTurn(text, savedAttachments) {
+  async startTurn(text, savedAttachments, parts) {
+    const outcome = await this.startTurnDispatch(text, savedAttachments, parts);
+    return outcome.accepted;
+  }
+
+  async startTurnDispatch(text, savedAttachments, parts, clientRequestId) {
     this.busy = true;
     this.lastActivity = Date.now();
-    // 有附件时注入路径到 prompt
-    const promptText = savedAttachments?.length
-      ? this.buildPromptText(text, savedAttachments)
-      : text;
     if (this.firstMessage === null) this.firstMessage = text;
     // user_message 带附件元数据（不含服务端路径）
     const attachMeta = savedAttachments?.length
       ? savedAttachments.map(a => ({ name: a.name, mimeType: a.mimeType, size: a.size }))
       : undefined;
-    this.emit('user_message', { text, attachments: attachMeta });
+    const userMessage = { text, attachments: attachMeta };
+    const partMeta = inputPartEventMeta(parts);
+    if (partMeta.length) userMessage.parts = partMeta;
+    if (clientRequestId) userMessage.clientRequestId = clientRequestId;
+    this.emit('user_message', userMessage);
     this.emitStatus('turn_started');
 
     try {
       await this.ensureReady();
       // turn/start 立即返回 inProgress；完成经 turn/completed 通知。
-      const turnStart = await this.request('turn/start', {
+      const params = {
         threadId: this.sessionId,
         cwd: this.cwd,
-        input: [{ type: 'text', text: promptText }]
-      });
+        input: buildUserInputs({ text, attachments: savedAttachments, parts })
+      };
+      if (clientRequestId) params.clientUserMessageId = clientRequestId;
+      const turnStart = await this.request('turn/start', params);
+      const turnId = turnStart?.turn?.id ?? turnStart?.turnId ?? null;
+      const outcome = {
+        accepted: true,
+        state: 'submitted',
+        clientRequestId,
+        threadId: this.sessionId,
+        turnId,
+      };
+      if (!this.busy) {
+        this.emitMessageReceipt(outcome);
+        return outcome;
+      }
       this.recordCurrentTurn(turnStart);
       this.emitStatus('turn_submitted');
+      this.emitMessageReceipt(outcome);
+      return outcome;
     } catch (err) {
       this.busy = false;
       this.emit('error', { message: `turn/start 失败：${sanitize(String(err?.message || err))}`, recoverable: true });
       this.emitStatus('turn_start_failed');
-      return false;
+      return {
+        accepted: false,
+        state: 'rejected',
+        clientRequestId,
+        threadId: this.sessionId,
+        reason: 'turn_start_failed',
+      };
     }
-    return true;
   }
 
-  async steerTurn(text, savedAttachments) {
+  async steerTurn(text, savedAttachments, parts) {
+    const outcome = await this.steerTurnDispatch(text, savedAttachments, parts);
+    return outcome.accepted;
+  }
+
+  async steerTurnDispatch(text, savedAttachments, parts, clientRequestId) {
     const expectedTurnId = this.currentTurnId;
-    const promptText = savedAttachments?.length
-      ? this.buildPromptText(text, savedAttachments)
-      : text;
     const attachMeta = savedAttachments?.length
       ? savedAttachments.map(a => ({ name: a.name, mimeType: a.mimeType, size: a.size }))
       : undefined;
-    this.emit('user_message', { text, attachments: attachMeta });
+    const userMessage = { text, attachments: attachMeta };
+    const partMeta = inputPartEventMeta(parts);
+    if (partMeta.length) userMessage.parts = partMeta;
+    if (clientRequestId) userMessage.clientRequestId = clientRequestId;
+    this.emit('user_message', userMessage);
 
     try {
       await this.ensureReady();
-      const steer = await this.request('turn/steer', {
+      const params = {
         threadId: this.sessionId,
-        input: [{ type: 'text', text: promptText }],
+        input: buildUserInputs({ text, attachments: savedAttachments, parts }),
         expectedTurnId
-      });
+      };
+      if (clientRequestId) params.clientUserMessageId = clientRequestId;
+      const steer = await this.request('turn/steer', params);
       this.recordCurrentTurn(steer);
+      const turnId = steer?.turn?.id ?? steer?.turnId ?? expectedTurnId;
       this.emit('system', {
         message: '已向当前运行任务追加指令',
         isError: false,
-        turnId: steer?.turnId || expectedTurnId
+        turnId
       });
       this.emitStatus('steer_submitted');
+      const outcome = {
+        accepted: true,
+        state: 'steered',
+        clientRequestId,
+        threadId: this.sessionId,
+        turnId,
+      };
+      this.emitMessageReceipt(outcome);
+      return outcome;
     } catch (err) {
       this.emit('error', { message: `turn/steer 失败：${sanitize(String(err?.message || err))}`, recoverable: true });
       this.emitStatus('steer_failed');
-      return false;
+      return {
+        accepted: false,
+        state: 'rejected',
+        clientRequestId,
+        threadId: this.sessionId,
+        reason: 'steer_failed',
+      };
     }
-    return true;
   }
 
-  buildPromptText(text, savedAttachments) {
-    const base = (text || '').trim();
-    if (!savedAttachments || savedAttachments.length === 0) return base;
-    const block = '[附件] 已上传到工作目录，可用 Read 读取：\n' + savedAttachments.map(a => a.absPath).join('\n');
-    return base ? `${base}\n\n${block}` : block;
+  emitMessageReceipt(outcome) {
+    if (!outcome?.clientRequestId) return;
+    if (!outcome.accepted && outcome.state !== 'rejected') return;
+    const receipt = {
+      clientRequestId: outcome.clientRequestId,
+      state: outcome.state,
+      threadId: outcome.threadId,
+      turnId: outcome.turnId ?? null,
+    };
+    if (outcome.state === 'rejected') {
+      receipt.errorCode = outcome.reason || 'dispatch_rejected';
+      if (outcome.receiptReason) receipt.reason = outcome.receiptReason;
+    }
+    this.emit('message_receipt', receipt);
   }
 
   scheduleDrain() {
@@ -471,13 +674,22 @@ export class CodexAppServerSession {
   async drainQueue() {
     if (this.disposed || this.busy || this.inputQueue.length === 0) return false;
     const next = this.inputQueue.shift();
-    this.emit('dequeued_message', {
+    const dequeuedMessage = {
       text: next.text,
       queuedAt: next.queuedAt,
       queueLength: this.inputQueue.length
-    });
+    };
+    if (next.clientRequestId) dequeuedMessage.clientRequestId = next.clientRequestId;
+    this.emit('dequeued_message', dequeuedMessage);
     this.emitStatus('dequeued');
-    return this.startTurn(next.text, next.savedAttachments);
+    const outcome = await this.startTurnDispatch(
+      next.text,
+      next.savedAttachments,
+      next.parts,
+      next.clientRequestId,
+    );
+    if (!outcome.accepted) this.emitMessageReceipt(outcome);
+    return outcome.accepted;
   }
 
   // ---- app-server 通知 → 统一信封 ----
@@ -546,6 +758,17 @@ export class CodexAppServerSession {
       case 'thread/tokenUsage/updated':
         this.lastUsage = params.tokenUsage?.last ?? params.tokenUsage;
         this.emit('usage', { usage: params.tokenUsage?.last ?? params.tokenUsage });
+        break;
+      case 'thread/status/changed':
+        if (params.threadId && this.sessionId && params.threadId !== this.sessionId) break;
+        this.threadStatus = params.status || null;
+        if (params.status?.type === 'active') this.busy = true;
+        if (['idle', 'notLoaded', 'systemError'].includes(params.status?.type)) this.busy = false;
+        this.emit('thread_status', {
+          threadId: params.threadId || this.sessionId || null,
+          status: this.threadStatus,
+        });
+        this.emitStatus('thread_status_changed');
         break;
       case 'thread/archived':
         this.emitThreadEvent('archived', params);
@@ -1214,7 +1437,13 @@ export class CodexAppServerSession {
     clearInterval(this.idleTimer); this.idleTimer = null;
     this.clearQueue('dispose', false);
     this.clearBackpressureRetries(new Error('disposed'));
-    if (this.child) {
+    if (this.host) {
+      this.host.detach(this);
+      this.child = null;
+    } else if (this.transport) {
+      this.transport.dispose();
+      this.child = null;
+    } else if (this.child) {
       try { this.child.kill('SIGTERM'); } catch { /* noop */ }
       this.child = null;
     }
@@ -1233,7 +1462,7 @@ export class CodexAppServerSession {
       payload
     };
     this.buffer.push(envelope);
-    if (this.buffer.length > BUFFER_CAP) {
+    if (this.buffer.length > this.bufferCap) {
       this.buffer.shift();
       this.bufferTrimmed = true;
     }
@@ -1248,8 +1477,20 @@ export class CodexAppServerSession {
   }
 
   clearQueue(reason, emitEvent = true) {
-    const dropped = this.inputQueue.length;
+    const droppedEntries = this.inputQueue;
+    const dropped = droppedEntries.length;
     this.inputQueue = [];
+    for (const entry of droppedEntries) {
+      if (!entry.clientRequestId) continue;
+      this.emitMessageReceipt({
+        accepted: false,
+        state: 'rejected',
+        clientRequestId: entry.clientRequestId,
+        threadId: this.sessionId,
+        reason: 'queue_cleared',
+        receiptReason: reason,
+      });
+    }
     if (emitEvent && dropped > 0 && !this.disposed) {
       this.emit('queue_cleared', { reason, dropped });
     }
@@ -1265,6 +1506,8 @@ export class CodexAppServerSession {
       state,
       sessionId: this.sessionId,
       instanceId: this.instanceId,
+      turnId: this.currentTurnId,
+      threadStatus: this.threadStatus,
       cwd: this.cwd,
       busy: this.busy,
       queueLength: this.inputQueue.length,
@@ -1313,6 +1556,26 @@ export class CodexAppServerSession {
     }
   }
 }
+
+function normalizeServerRequestParams(runtime, rpcId, method, params) {
+  if (!LEGACY_APPROVAL_METHODS.has(method)) return params;
+  const source = params && typeof params === 'object' ? params : {};
+  const fallbackId = `legacy_request_${String(rpcId)}`;
+  const itemId = typeof source.itemId === 'string' && source.itemId
+    ? source.itemId
+    : (typeof source.callId === 'string' && source.callId
+      ? source.callId
+      : (typeof source.approvalId === 'string' && source.approvalId ? source.approvalId : fallbackId));
+  return {
+    ...source,
+    threadId: source.threadId || source.conversationId || runtime.sessionId || null,
+    turnId: source.turnId || runtime.currentTurnId || `legacy_turn_${String(rpcId)}`,
+    itemId,
+  };
+}
+
+// Compatibility export for existing integrations while the runtime split rolls out.
+export { ThreadRuntime as CodexAppServerSession };
 
 function truncate(s, cap) {
   if (typeof s !== 'string') return '';

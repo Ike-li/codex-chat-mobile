@@ -60,6 +60,7 @@ export class ApprovalBroker {
     if (!this.pendingApprovals.has(id)) return false;
 
     const record = this.pending.get(id) || { method: 'item/commandExecution/requestApproval', params: null };
+    if (!approvalTargetMatches(record.params, extra)) return false;
     const result = this.resultFor(record.method, record.params, decision || 'decline', extra);
     this.pendingApprovals.delete(id);
     this.pending.delete(id);
@@ -205,13 +206,46 @@ export class ApprovalBroker {
         event,
         approvalId,
         method,
-        ...detail,
+        ...auditMetadata(event, detail),
       });
       writeOwnerOnlyFile(this.auditPath, previous + line + '\n');
     } catch {
       // Audit failures must not block the protocol response path.
     }
   }
+}
+
+function auditMetadata(event, detail = {}) {
+  if (event === 'request') {
+    return {
+      ...(Array.isArray(detail.availableDecisions)
+        ? { availableDecisionCount: detail.availableDecisions.length }
+        : {}),
+      ...(Array.isArray(detail.questions) ? { questionCount: detail.questions.length } : {}),
+      ...(Array.isArray(detail.changes) ? { changeCount: detail.changes.length } : {}),
+    };
+  }
+  if (event === 'decision') {
+    const answers = detail.result?.answers;
+    const answerCount = answers && typeof answers === 'object'
+      ? Object.values(answers).reduce((count, answer) => (
+          count + (Array.isArray(answer?.answers) ? answer.answers.length : 0)
+        ), 0)
+      : 0;
+    return {
+      ...(typeof detail.decision === 'string' ? { decision: detail.decision } : {}),
+      ...(answers ? { answerCount } : {}),
+    };
+  }
+  return {};
+}
+
+function approvalTargetMatches(params, extra) {
+  for (const key of ['threadId', 'turnId', 'itemId']) {
+    if (extra?.[key] === undefined) continue;
+    if (params?.[key] === undefined || String(params[key]) !== String(extra[key])) return false;
+  }
+  return true;
 }
 
 function commandText(value) {

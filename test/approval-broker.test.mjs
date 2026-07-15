@@ -223,17 +223,23 @@ test('resolved and repeated approval decisions are idempotent', () => {
   assert.equal(broker.handleResolved({ requestId: '71', threadId: 'thr' }), null);
 });
 
-test('approval requests and decisions are written to an owner-only audit log', () => {
+test('approval audit is owner-only and records metadata without commands, questions, or answers', () => {
   const dir = mkdtempSync(join(tmpdir(), 'approval-broker-'));
   const auditPath = join(dir, 'approval-audit.jsonl');
   try {
     const { broker } = makeBroker({ auditPath });
     assert.equal(broker.handleRequest(80, 'item/commandExecution/requestApproval', {
-      command: 'npm test',
-      cwd: '/work',
-      reason: 'audit this',
+      command: 'printf command-secret',
+      cwd: '/private/work-secret',
+      reason: 'reason-secret',
     }), true);
     assert.equal(broker.respondApproval(80, 'decline'), true);
+    assert.equal(broker.handleRequest(81, 'item/tool/requestUserInput', {
+      questions: [{ id: 'secret-q', question: 'question-secret', isSecret: true }],
+    }), true);
+    assert.equal(broker.respondApproval(81, null, {
+      answers: { 'secret-q': ['answer-secret'] },
+    }), true);
 
     const mode = statSync(auditPath).mode & 0o777;
     assert.equal(mode, 0o600);
@@ -243,7 +249,18 @@ test('approval requests and decisions are written to an owner-only audit log', (
     assert.equal(lines[0].method, 'item/commandExecution/requestApproval');
     assert.equal(lines[1].event, 'decision');
     assert.equal(lines[1].decision, 'decline');
-    assert.deepEqual(lines[1].result, { decision: 'decline' });
+    assert.equal(lines[2].questionCount, 1);
+    assert.equal(lines[3].answerCount, 1);
+    const audit = readFileSync(auditPath, 'utf8');
+    for (const secret of [
+      'command-secret',
+      '/private/work-secret',
+      'reason-secret',
+      'question-secret',
+      'answer-secret',
+    ]) {
+      assert.doesNotMatch(audit, new RegExp(secret));
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

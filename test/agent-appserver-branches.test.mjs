@@ -48,6 +48,14 @@ test('constructor: 缺省 codexBin/idleTimeout 使用默认值', () => {
   assert.equal(s.idleTimeoutMs, 600000);
 });
 
+test('statusPayload exposes the active turn routing identity', () => {
+  const { session } = makeSession();
+  session.sessionId = 'thr_status';
+  session.currentTurnId = 'turn_status';
+
+  assert.equal(session.statusPayload('routing').turnId, 'turn_status');
+});
+
 // ---- JSON-RPC 请求/响应闭环 ----
 
 test('request: 写出 {method,id,params} 并在响应到达时 resolve', async () => {
@@ -306,6 +314,70 @@ test('ensureReady: 只执行一次(缓存 ready promise)', async () => {
   assert.equal(starts, 1);
 });
 
+test('ensureInitialized: 初始化失败后下一次调用会重新尝试', async () => {
+  const { session } = makeSession();
+  session.child = fakeChild().child;
+  let attempts = 0;
+  session.request = async method => {
+    assert.equal(method, 'initialize');
+    attempts++;
+    if (attempts === 1) throw new Error('temporary initialize failure');
+    return {};
+  };
+  session.notify = () => {};
+
+  await assert.rejects(session.ensureInitialized(), /temporary initialize failure/);
+  await session.ensureInitialized();
+
+  assert.equal(attempts, 2);
+});
+
+test('ensureReady: thread 恢复失败后重试且不重复初始化', async () => {
+  const { session } = makeSession({ resumeId: 'thr_retry' });
+  session.child = fakeChild().child;
+  let initializeAttempts = 0;
+  let resumeAttempts = 0;
+  session.request = async method => {
+    if (method === 'initialize') {
+      initializeAttempts++;
+      return {};
+    }
+    assert.equal(method, 'thread/resume');
+    resumeAttempts++;
+    if (resumeAttempts === 1) throw new Error('temporary resume failure');
+    return {};
+  };
+  session.notify = () => {};
+
+  await assert.rejects(session.ensureReady(), /temporary resume failure/);
+  await session.ensureReady();
+
+  assert.equal(initializeAttempts, 1);
+  assert.equal(resumeAttempts, 2);
+});
+
+test('transport error 后下一次 ensureReady 会重新初始化并恢复 thread', async () => {
+  const { session } = makeSession({ resumeId: 'thr_after_error' });
+  session.child = fakeChild().child;
+  const calls = [];
+  session.request = async method => {
+    calls.push(method);
+    return {};
+  };
+  session.notify = () => {};
+
+  await session.ensureReady();
+  session.handleTransportError(new Error('transport failed'));
+  await session.ensureReady();
+
+  assert.deepEqual(calls, [
+    'initialize',
+    'thread/resume',
+    'initialize',
+    'thread/resume',
+  ]);
+});
+
 // ---- 输入队列与回合失败 ----
 
 test('enqueueInput: 队列满时拒绝并发系统错误', () => {
@@ -356,15 +428,18 @@ test('steerTurn: turn/steer 抛错 → recoverable error 且不破坏当前 turn
   assert.equal(err.payload.recoverable, true);
 });
 
-test('startTurn: 带附件 → 注入路径且 user_message 只含元数据(无 absPath)', async () => {
+test('startTurn: 带附件 → 结构化 mention 且 user_message 只含元数据(无 absPath)', async () => {
   const { session, events } = makeSession();
   session.sessionId = 'thr_att';
   session.child = fakeChild().child;
   session.ensureReady = async () => {};
   let sentInput = null;
-  session.request = async (m, p) => { if (m === 'turn/start') sentInput = p.input[0].text; return {}; };
-  await session.startTurn('读文件', [{ name: 'a.txt', mimeType: 'text/plain', size: 10, absPath: '/w/.ccm-uploads/a.txt' }]);
-  assert.match(sentInput, /\/w\/\.ccm-uploads\/a\.txt/); // 路径注入 prompt
+  session.request = async (m, p) => { if (m === 'turn/start') sentInput = p.input; return {}; };
+  await session.startTurn('读文件', [{ kind: 'file', name: 'a.txt', mimeType: 'text/plain', size: 10, absPath: '/w/.ccm-uploads/a.txt' }]);
+  assert.deepEqual(sentInput, [
+    { type: 'text', text: '读文件', text_elements: [] },
+    { type: 'mention', name: 'a.txt', path: '/w/.ccm-uploads/a.txt' },
+  ]);
   const um = byType(events, 'user_message').at(-1);
   assert.equal(um.payload.text, '读文件');
   assert.deepEqual(um.payload.attachments, [{ name: 'a.txt', mimeType: 'text/plain', size: 10 }]); // 不含 absPath
@@ -434,22 +509,6 @@ test('item/started(mcpToolCall): arguments 为字符串时原样截断', () => {
   const { session, events } = makeSession();
   session.handleNotification('item/started', { item: { type: 'mcpToolCall', id: 'm3', serverName: 's', toolName: 't', arguments: 'raw-string-args' } });
   assert.match(byType(events, 'mcp_use').at(-1).payload.inputSummary, /raw-string-args/);
-});
-
-// ---- buildPromptText 附件块 ----
-
-test('buildPromptText: 有附件无正文 → 仅附件块', () => {
-  const { session } = makeSession();
-  const out = session.buildPromptText('', [{ absPath: '/w/a.txt' }]);
-  assert.match(out, /\[附件\]/);
-  assert.match(out, /\/w\/a\.txt/);
-  assert.ok(!out.startsWith('\n'));
-});
-
-test('buildPromptText: 有正文有附件 → 正文 + 附件块', () => {
-  const { session } = makeSession();
-  const out = session.buildPromptText('看这个', [{ absPath: '/w/a.txt' }]);
-  assert.match(out, /看这个[\s\S]*\[附件\][\s\S]*\/w\/a\.txt/);
 });
 
 // ---- 中断/回应/清理的边界 ----
@@ -528,6 +587,20 @@ test('spawnIfNeeded: 子进程退出 → busy 复位、child 置空、onExit 触
   assert.equal(session.busy, false);
   assert.equal(session.child, null);
   assert.equal(session.idleTimer, null);
+});
+
+test('transport termination clears the stale turn before any restart input can steer it', () => {
+  const exited = makeSession().session;
+  exited.busy = true;
+  exited.currentTurnId = 'turn_before_exit';
+  exited.handleTransportExit();
+  assert.equal(exited.currentTurnId, null);
+
+  const errored = makeSession().session;
+  errored.busy = true;
+  errored.currentTurnId = 'turn_before_error';
+  errored.handleTransportError(new Error('transport failed'));
+  assert.equal(errored.currentTurnId, null);
 });
 
 // ---- 协议字段缺省时的降级(对上游省略可选字段的鲁棒性)----

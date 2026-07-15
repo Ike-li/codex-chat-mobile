@@ -73,6 +73,217 @@ test('turn/completed: → result 且 busy 置为 false', () => {
   assert.equal(session.busy, false);
 });
 
+test('turn completed before turn/start continuation does not resurrect its turn id or submitted status', async () => {
+  const { session, events } = makeSession();
+  session.ensureReady = async () => {};
+  session.sessionId = 'thr-fast';
+  session.request = async method => {
+    assert.equal(method, 'turn/start');
+    const response = { turn: { id: 'turn-fast', status: 'inProgress' } };
+    session.observeTransportFrame({ direction: 'inbound', method, frame: { result: response } });
+    session.handleNotification('turn/completed', {
+      threadId: 'thr-fast',
+      turn: { id: 'turn-fast', status: 'completed' },
+    });
+    return response;
+  };
+
+  assert.equal(await session.startTurn('fast completion'), true);
+  assert.equal(session.busy, false);
+  assert.equal(session.currentTurnId, null);
+  assert.equal(byType(events, 'status').some(event => event.payload.reason === 'turn_submitted'), false);
+});
+
+test('dispatchUserMessage returns a submitted outcome and maps clientRequestId to clientUserMessageId', async () => {
+  const { session, events } = makeSession();
+  session.sessionId = 'thr-submit';
+  session.ensureReady = async () => {};
+  let request;
+  session.request = async (method, params) => {
+    request = { method, params };
+    return { turn: { id: 'turn-submit', status: 'inProgress' } };
+  };
+
+  const outcome = await session.dispatchUserMessage({
+    text: 'submit once',
+    clientRequestId: 'req-submit',
+  });
+
+  assert.deepEqual(outcome, {
+    accepted: true,
+    state: 'submitted',
+    clientRequestId: 'req-submit',
+    threadId: 'thr-submit',
+    turnId: 'turn-submit',
+  });
+  assert.deepEqual(request, {
+    method: 'turn/start',
+    params: {
+      threadId: 'thr-submit',
+      clientUserMessageId: 'req-submit',
+      cwd: '/tmp/work',
+      input: [{ type: 'text', text: 'submit once', text_elements: [] }],
+    },
+  });
+  assert.equal(byType(events, 'user_message')[0].payload.clientRequestId, 'req-submit');
+});
+
+test('dispatchUserMessage accepts an attachment-only mention without injecting a path into text', async () => {
+  const { session } = makeSession();
+  session.sessionId = 'thr-attachment-only';
+  session.ensureReady = async () => {};
+  let request;
+  session.request = async (method, params) => {
+    request = { method, params };
+    return { turn: { id: 'turn-attachment-only', status: 'inProgress' } };
+  };
+
+  const outcome = await session.dispatchUserMessage({
+    text: '',
+    savedAttachments: [{
+      kind: 'file',
+      absPath: '/tmp/work/.ccm-uploads/report.txt',
+      name: 'report.txt',
+      mimeType: 'text/plain',
+      size: 12,
+    }],
+    clientRequestId: 'req-attachment-only',
+  });
+
+  assert.equal(outcome.accepted, true);
+  assert.deepEqual(request.params.input, [{
+    type: 'mention',
+    name: 'report.txt',
+    path: '/tmp/work/.ccm-uploads/report.txt',
+  }]);
+});
+
+test('dispatchUserMessage redacts structured part paths from the user_message event', async () => {
+  const { session, events } = makeSession();
+  session.sessionId = 'thr-part-event';
+  session.ensureReady = async () => {};
+  session.request = async () => ({ turn: { id: 'turn-part-event', status: 'inProgress' } });
+
+  await session.dispatchUserMessage({
+    text: '',
+    parts: [{ kind: 'mention', name: 'src/server.js', path: '/tmp/work/src/server.js' }],
+    clientRequestId: 'req-part-event',
+  });
+
+  assert.deepEqual(byType(events, 'user_message')[0].payload.parts, [{
+    kind: 'mention',
+    name: 'src/server.js',
+  }]);
+});
+
+test('dispatchUserMessage returns a steered outcome with the same client message id', async () => {
+  const { session, events } = makeSession();
+  session.sessionId = 'thr-steer-id';
+  session.busy = true;
+  session.currentTurnId = 'turn-active';
+  session.ensureReady = async () => {};
+  let request;
+  session.request = async (method, params) => {
+    request = { method, params };
+    return { turnId: 'turn-active' };
+  };
+
+  const outcome = await session.dispatchUserMessage({
+    text: 'adjust once',
+    clientRequestId: 'req-steer',
+  });
+
+  assert.deepEqual(outcome, {
+    accepted: true,
+    state: 'steered',
+    clientRequestId: 'req-steer',
+    threadId: 'thr-steer-id',
+    turnId: 'turn-active',
+  });
+  assert.deepEqual(request, {
+    method: 'turn/steer',
+    params: {
+      threadId: 'thr-steer-id',
+      clientUserMessageId: 'req-steer',
+      input: [{ type: 'text', text: 'adjust once', text_elements: [] }],
+      expectedTurnId: 'turn-active',
+    },
+  });
+  assert.equal(byType(events, 'user_message')[0].payload.clientRequestId, 'req-steer');
+});
+
+test('dispatchUserMessage preserves clientRequestId through queued and dequeued submission', async () => {
+  const { session, events } = makeSession();
+  session.sessionId = 'thr-queue-id';
+  session.busy = true;
+  session.currentTurnId = null;
+  session.ensureReady = async () => {};
+  let request;
+  session.request = async (method, params) => {
+    request = { method, params };
+    return { turn: { id: 'turn-queued', status: 'inProgress' } };
+  };
+
+  const outcome = await session.dispatchUserMessage({
+    text: 'queue once',
+    clientRequestId: 'req-queued-runtime',
+  });
+
+  assert.equal(outcome.accepted, true);
+  assert.equal(outcome.state, 'queued');
+  assert.equal(outcome.clientRequestId, 'req-queued-runtime');
+  assert.equal(outcome.threadId, 'thr-queue-id');
+  assert.equal(outcome.position, 1);
+  assert.equal(typeof outcome.queuedAt, 'number');
+  assert.equal(session.inputQueue[0].clientRequestId, 'req-queued-runtime');
+  assert.equal(byType(events, 'queued_message')[0].payload.clientRequestId, 'req-queued-runtime');
+
+  session.busy = false;
+  await session.drainQueue();
+
+  assert.equal(byType(events, 'dequeued_message')[0].payload.clientRequestId, 'req-queued-runtime');
+  assert.equal(byType(events, 'user_message')[0].payload.clientRequestId, 'req-queued-runtime');
+  assert.equal(request.method, 'turn/start');
+  assert.equal(request.params.clientUserMessageId, 'req-queued-runtime');
+  assert.deepEqual(byType(events, 'message_receipt').at(-1).payload, {
+    clientRequestId: 'req-queued-runtime',
+    state: 'submitted',
+    threadId: 'thr-queue-id',
+    turnId: 'turn-queued',
+  });
+});
+
+test('queued message emits a rejected receipt when turn/start fails after dequeue', async () => {
+  const { session, events } = makeSession();
+  session.sessionId = 'thr-queue-failure';
+  session.busy = true;
+  session.currentTurnId = null;
+  session.ensureReady = async () => {};
+  session.request = async method => {
+    assert.equal(method, 'turn/start');
+    throw new Error('mock turn/start failure');
+  };
+
+  const queued = await session.dispatchUserMessage({
+    text: 'fail after dequeue',
+    clientRequestId: 'req-queue-failure',
+  });
+  assert.equal(queued.state, 'queued');
+
+  session.busy = false;
+  assert.equal(await session.drainQueue(), false);
+
+  const receipts = byType(events, 'message_receipt');
+  assert.equal(receipts.length, 1);
+  assert.deepEqual(receipts[0].payload, {
+    clientRequestId: 'req-queue-failure',
+    state: 'rejected',
+    threadId: 'thr-queue-failure',
+    turnId: null,
+    errorCode: 'turn_start_failed',
+  });
+});
+
 test('turn/failed: → error', () => {
   const { session, events } = makeSession();
   session.handleNotification('turn/failed', { turn: { error: { message: 'boom' } } });
@@ -87,10 +298,29 @@ test('thread/tokenUsage/updated: → usage', () => {
 
 test('未接管的通知被安全忽略', () => {
   const { session, events } = makeSession();
-  for (const m of ['thread/status/changed', 'mcpServer/unknown']) {
+  for (const m of ['mcpServer/unknown']) {
     assert.doesNotThrow(() => session.handleNotification(m, {}));
   }
   assert.equal(events.length, 0);
+});
+
+test('thread/status/changed becomes the runtime activity source', () => {
+  const { session, events } = makeSession();
+  session.sessionId = 'thr-status';
+
+  session.handleNotification('thread/status/changed', {
+    threadId: 'thr-status',
+    status: { type: 'active', activeFlags: [] },
+  });
+
+  assert.equal(session.busy, true);
+  assert.deepEqual(session.statusPayload('thread-status').threadStatus, {
+    type: 'active', activeFlags: [],
+  });
+  assert.deepEqual(byType(events, 'thread_status')[0].payload, {
+    threadId: 'thr-status',
+    status: { type: 'active', activeFlags: [] },
+  });
 });
 
 test('handleLine: server→client 审批请求 → approval_request + 记录 pending', () => {
@@ -297,7 +527,7 @@ test('send: busy turn with active currentTurnId steers instead of queueing', asy
   assert.deepEqual(requests.map(r => r.method), ['turn/start', 'turn/steer']);
   assert.deepEqual(requests[1].params, {
     threadId: 'thr_steer',
-    input: [{ type: 'text', text: 'please adjust course' }],
+    input: [{ type: 'text', text: 'please adjust course', text_elements: [] }],
     expectedTurnId: 'turn_active',
   });
   assert.equal(session.inputQueue.length, 0);
@@ -352,6 +582,34 @@ test('abort: interrupts active turn and clears queued phone input', async () => 
   assert.equal(session.busy, false);
   assert.equal(session.inputQueue.length, 0);
   assert.equal(byType(events, 'queue_cleared').at(-1).payload.dropped, 1);
+});
+
+test('abort rejects each durable queued message before the aggregate queue-cleared event', async () => {
+  const { session, events } = makeSession();
+  session.sessionId = 'thr_abort_receipts';
+  session.busy = true;
+  session.currentTurnId = null;
+
+  await session.dispatchUserMessage({
+    text: 'durable queued message',
+    clientRequestId: 'req-abort-queued',
+  });
+  session.enqueueInput('legacy queued message');
+  await session.abort();
+
+  const receipts = byType(events, 'message_receipt');
+  assert.equal(receipts.length, 1);
+  assert.deepEqual(receipts[0].payload, {
+    clientRequestId: 'req-abort-queued',
+    state: 'rejected',
+    threadId: 'thr_abort_receipts',
+    turnId: null,
+    errorCode: 'queue_cleared',
+    reason: 'interrupt',
+  });
+  const receiptIndex = events.indexOf(receipts[0]);
+  const clearedIndex = events.indexOf(byType(events, 'queue_cleared')[0]);
+  assert.ok(receiptIndex < clearedIndex);
 });
 
 test('forkThread: sends thread/fork with stable protocol fields', async () => {
@@ -794,18 +1052,6 @@ test('dispose: 标记 disposed 并清理', () => {
   session.dispose();
   assert.equal(session.disposed, true);
   assert.equal(session.child, null);
-});
-
-test('buildPromptText: 空文本 + 空附件返回空字符串', () => {
-  const { session } = makeSession();
-  assert.equal(session.buildPromptText('', []), '');
-  assert.equal(session.buildPromptText(null, null), '');
-});
-
-test('buildPromptText: 仅文本无附件返回原文', () => {
-  const { session } = makeSession();
-  assert.equal(session.buildPromptText('hello', null), 'hello');
-  assert.equal(session.buildPromptText('hello', []), 'hello');
 });
 
 test('send: 空文本返回 false', async () => {
