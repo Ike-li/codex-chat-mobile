@@ -27,3 +27,24 @@ test('pushDecision sends approval and user input notifications but not revoked n
 
   assert.equal(pushDecision({ type: 'approval_revoked', payload: { approvalId: 1 } }), null);
 });
+
+test('approval push uses a stable needs-you deep link without exposing command text by default', async () => {
+  const { pushDecision } = await importServerWithoutStarting();
+  const notification = pushDecision({
+    type: 'approval_request',
+    sessionId: 'thr mobile/one',
+    payload: {
+      needId: 'need_abc123',
+      approvalId: 42,
+      command: 'rm -rf private-project',
+    },
+  });
+
+  assert.equal(notification.tag, 'need:need_abc123');
+  assert.deepEqual(notification.data, {
+    needId: 'need_abc123',
+    threadId: 'thr mobile/one',
+    url: '/?thread=thr%20mobile%2Fone&need=need_abc123',
+  });
+  assert.doesNotMatch(notification.body, /private-project/);
+});

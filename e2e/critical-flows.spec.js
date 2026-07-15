@@ -133,6 +133,8 @@ test.describe('关键用户旅程', () => {
 
     // Should reconnect
     await expect(page.locator('#state-label')).not.toHaveText('offline', { timeout: 10000 });
+    await expect(page.locator('.msg.user').filter({ hasText: 'before refresh' }).last()).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('.msg.codex').filter({ hasText: 'Mock response to: before refresh' }).last()).toBeVisible({ timeout: 10000 });
   });
 
   test('审批流程：发送需要审批的命令并批准', async ({ page }) => {

@@ -5,7 +5,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const TRUSTED_DEVICES_FILE = join(HERE, '..', 'data', 'trusted-devices.json');
+const DATA_DIR = process.env.CODEX_DATA_DIR || join(HERE, '..', 'data');
+const TRUSTED_DEVICES_FILE = join(DATA_DIR, 'trusted-devices.json');
 
 const args = process.argv.slice(2);
 const command = args[0] || 'help';

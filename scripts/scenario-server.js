@@ -32,7 +32,7 @@ function makeState() {
     busy: false,
     lastUserText: '',
     awaitingApproval: null,
-    sessions: [{
+    threads: [{
       id: SESSION_ID,
       title: 'Scenario acceptance',
       cwd: WORK_DIR,
@@ -225,7 +225,6 @@ function delay(ms) {
 io.on('connection', socket => {
   const state = makeState();
   emitServer(socket, 'init', { sessionId: SESSION_ID, cwd: WORK_DIR, versions: { codex: 'scenario-codex 0.0.0' } });
-  emitServer(socket, 'session_list', { sessions: state.sessions, currentSessionId: SESSION_ID });
   emitStatus(socket, state, 'connect');
 
   socket.on('user:message', payload => {
@@ -243,14 +242,29 @@ io.on('connection', socket => {
     emitServer(socket, 'init', { sessionId: SESSION_ID, cwd: WORK_DIR, versions: { codex: 'scenario-codex 0.0.0' } });
     if (typeof ack === 'function') ack({ ok: true });
   });
-  socket.on('session:list', (_payload, ack) => {
-    const response = { sessions: state.sessions, currentSessionId: SESSION_ID };
-    if (typeof ack === 'function') ack(response);
-    else emitServer(socket, 'session_list', response);
+  socket.on('thread:list', (_payload, ack) => {
+    if (typeof ack === 'function') {
+      ack({ ok: true, threads: state.threads, nextCursor: null, backwardsCursor: null });
+    }
   });
-  socket.on('session:select', (_payload, ack) => {
+  socket.on('thread:select', (payload, ack) => {
+    const threadId = payload?.threadId || SESSION_ID;
     emitServer(socket, 'init', { sessionId: SESSION_ID, cwd: WORK_DIR, versions: { codex: 'scenario-codex 0.0.0' } });
-    if (typeof ack === 'function') ack({ ok: true, sessionId: SESSION_ID });
+    if (typeof ack === 'function') {
+      ack({ ok: true, sessionId: threadId, threadId, instanceId: 'scenario', cwd: WORK_DIR });
+    }
+  });
+  socket.on('thread:history', (payload, ack) => {
+    const threadId = payload?.threadId || SESSION_ID;
+    const messages = state.lastUserText ? [{ role: 'user', content: state.lastUserText }] : [];
+    if (typeof ack === 'function') {
+      ack({
+        ok: true,
+        thread: { id: threadId, name: 'Scenario acceptance', cwd: WORK_DIR, turns: [] },
+        messages,
+        source: 'thread/read',
+      });
+    }
   });
   socket.on('catch-up', ({ lastSeq } = {}, ack) => {
     const events = (buffers.get(socket.id) || []).filter(e => e.seq > Number(lastSeq || 0));

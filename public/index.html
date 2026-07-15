@@ -353,10 +353,27 @@
       font-size: 14px;
       font-weight: 500;
       color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .session-title-copy {
+      min-width: 0;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    .thread-status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex: 0 0 8px;
+      background: #a6a6a6;
+    }
+    .thread-status-dot.running { background: #10a37f; animation: pulse 1.2s infinite; }
+    .thread-status-dot.needs-you { background: #e8a020; animation: pulse 1s infinite; }
+    .thread-status-dot.error { background: var(--error); }
+    .thread-status-dot.not-loaded { background: transparent; border: 1px solid #a6a6a6; }
 
     .session-date {
       font-size: 10px;
@@ -539,6 +556,19 @@
       opacity: 0.8;
       color: #ffcc00;
       font-weight: 600;
+    }
+    .unknown-retry-btn {
+      display: inline-flex;
+      margin-top: 6px;
+      border: 1px solid rgba(255,255,255,0.65);
+      border-radius: 999px;
+      padding: 4px 9px;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      font-size: 10px;
+      font-weight: 700;
+      cursor: pointer;
     }
 
     /* Tool and Output Cards */
@@ -1078,6 +1108,44 @@
       padding: 4px 0;
     }
     .pending-device-info { flex: 1; color: var(--text-muted); font-weight: 500; }
+
+    #needs-you-panel {
+      background: #fff8e8;
+      border-bottom: 1px solid #f0d49a;
+      padding: 10px 14px;
+    }
+    #needs-you-panel[hidden] { display: none; }
+    .needs-you-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #6e4c00;
+    }
+    .needs-you-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 0;
+      border-top: 1px solid rgba(110, 76, 0, 0.12);
+    }
+    .needs-you-copy { flex: 1; min-width: 0; }
+    .needs-you-summary {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12px;
+      color: var(--text);
+    }
+    .needs-you-thread {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: var(--text-muted);
+    }
     .pending-btns { display: flex; gap: 8px; }
     .approve-btn, .deny-btn {
       border: 1px solid transparent;
@@ -1363,8 +1431,8 @@
       <button id="native-mcp-btn" class="native-control-btn" title="MCP 状态">MCP</button>
       <button id="native-skills-btn" class="native-control-btn" title="Skills 状态">Skills</button>
       <button id="native-import-btn" class="native-control-btn" title="导入 AGENTS/CLAUDE 配置">Import</button>
-      <button id="native-p3-btn" class="native-control-btn" title="P3 实验功能">Labs</button>
-      <button id="native-admin-btn" class="native-control-btn native-danger" title="Admin 管理">Admin</button>
+      <button id="native-p3-btn" class="native-control-btn" title="P3 实验功能" hidden>Labs</button>
+      <button id="native-admin-btn" class="native-control-btn native-danger" title="Admin 管理" hidden>Admin</button>
     </div>
   </div>
   <div id="session-list"></div>
@@ -1417,6 +1485,9 @@
 
 <!-- Pending devices panel -->
 <div id="pending-panel"></div>
+
+<!-- Cross-thread approvals and questions -->
+<div id="needs-you-panel" hidden aria-live="polite"></div>
 
 <!-- ChatGPT device-code login panel -->
 <div id="account-login-panel" hidden></div>
@@ -1693,7 +1764,21 @@
 <input type="file" id="file-input" multiple hidden>
 
 <script src="/socket.io/socket.io.js"></script>
-<script>
+<script type="module">
+import { bindThreadFromEvent, eventMatchesTarget, withTarget } from '/js/view-routing.js';
+import { clearCurrentThread, getCurrentThread, setCurrentThread } from '/js/thread-preferences.js';
+import { bufferRecoveryEvent, completeRecovery, createRecoveryState } from '/js/recovery-state.js';
+import { createMessageRequest, messageWirePayload } from '/js/message-request.js';
+import { createMessageOutbox } from '/js/message-outbox.js';
+import { createIndexedDbMessageStore } from '/js/indexeddb-outbox.js';
+import { isDefinitelyUnattempted, isProvisionalInstanceOrphan } from '/js/outbox-recovery.js';
+import { emitWithAck } from '/js/socket-ack.js';
+import {
+  applyThreadStatus,
+  mergeThreadList,
+  threadStatusPresentation,
+} from '/js/thread-status.js';
+
 (function() {
   const $ = id => document.getElementById(id);
   const messagesEl = $('messages');
@@ -1713,6 +1798,7 @@
   const drawer = $('drawer');
   const sessionListEl = $('session-list');
   const pendingPanel = $('pending-panel');
+  const needsYouPanel = $('needs-you-panel');
   const accountLoginBtn = $('account-login-btn');
   const accountLoginPanel = $('account-login-panel');
   const nativePanel = $('native-panel');
@@ -1726,16 +1812,26 @@
   // Device token
   let deviceToken = localStorage.getItem('codex_device_token');
   if (!deviceToken) {
-    deviceToken = 'dev_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    deviceToken = createDeviceToken();
     localStorage.setItem('codex_device_token', deviceToken);
   }
   deviceIdDisplay.textContent = deviceToken;
 
+  function createDeviceToken() {
+    if (!globalThis.crypto?.getRandomValues) throw new Error('Web Crypto is required for device credentials');
+    if (typeof crypto.randomUUID === 'function') return `dev_${crypto.randomUUID()}`;
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    return `dev_${[...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('')}`;
+  }
+
   const searchParams = new URLSearchParams(location.search);
   const urlToken = searchParams.get('token') || '';
-  let authToken = urlToken || localStorage.getItem('codex_auth_token') || '';
+  let pendingNeedsYouDeepLink = searchParams.get('thread') && searchParams.get('need')
+    ? { threadId: searchParams.get('thread'), needId: searchParams.get('need') }
+    : null;
+  let authToken = urlToken;
   if (urlToken) {
-    localStorage.setItem('codex_auth_token', urlToken);
     searchParams.delete('token');
     const nextSearch = searchParams.toString();
     history.replaceState(null, '', `${location.pathname}${nextSearch ? '?' + nextSearch : ''}${location.hash}`);
@@ -1746,17 +1842,19 @@
   let streamingEl = null;
   let streamText = '';
   let currentSessionId = null;
-  let sessions = [];
-  let codexSessions = []; // Codex 原生会话（来自 ~/.codex/sessions/）
   let appThreads = [];
   let showArchivedThreads = false;
+  let features = { admin: false, labs: false };
   let adminUnlocked = false;
   let pendingToolCards = {}; // toolUseId -> element
   let pendingApprovalCards = {}; // approvalId -> element
+  let needsYouRevision = 0;
+  let needsYou = new Map();
   let queuedUserBubbles = [];
   let seenEvents = new Set();
   let sessionStatus = null;
   let serverCwd = '';
+  let gatewayEpoch = null;
   let workDirs = [];
   let versions = {};
   let deviceApproved = false;
@@ -1764,14 +1862,316 @@
   let lastFailedText = '';
   let latestOutputText = '';
   let currentAttachments = []; // [{name, mimeType, data: base64}]
+  let currentInputParts = []; // server-validated mention / skill / imageUrl descriptors
   let instanceList = [];
+  let instanceSnapshotReceived = false;
   let currentViewingId = null;
-  let offlineQueue = []; // [{text, attachments}]
   let offlineUserBubbles = []; // [{text, el}]
+  let renderedOutboxIds = new Set();
   let activeAccountLoginId = null;
+  let restoringThreadId = null;
+  let activeRecovery = null;
+  let targetSetupPromise = null;
+  let outboxSyncPromise = null;
+  let outboxSyncRequested = false;
+  let threadListGeneration = 0;
+  let threadRefreshTimer = null;
+
+  function viewTarget() {
+    return { instanceId: currentViewingId, threadId: currentSessionId };
+  }
+
+  function rememberCurrentThread(threadId) {
+    currentSessionId = typeof threadId === 'string' && threadId ? threadId : null;
+    if (currentSessionId) setCurrentThread(localStorage, serverCwd, currentSessionId);
+    else clearCurrentThread(localStorage, serverCwd);
+  }
+
+  function applyTargetAck(ack) {
+    if (!ack?.ok) return false;
+    restoringThreadId = null;
+    activeRecovery = null;
+    if (ack.cwd) serverCwd = ack.cwd;
+    if (Object.prototype.hasOwnProperty.call(ack, 'instanceId')) currentViewingId = ack.instanceId || null;
+    if (Object.prototype.hasOwnProperty.call(ack, 'threadId')) rememberCurrentThread(ack.threadId);
+    renderInstanceTabs();
+    renderSessionMeta();
+    return true;
+  }
+
+  function ensureViewTarget() {
+    if (currentViewingId) return Promise.resolve(viewTarget());
+    if (targetSetupPromise) return targetSetupPromise;
+    const event = currentSessionId ? 'thread:select' : 'session:new';
+    const payload = currentSessionId
+      ? { threadId: currentSessionId, cwd: serverCwd, title: currentSessionId.slice(0, 8) }
+      : { cwd: serverCwd };
+    targetSetupPromise = new Promise((resolve, reject) => {
+      socket.emit(event, payload, ack => {
+        if (!applyTargetAck(ack)) return reject(new Error(ack?.error || '无法建立会话目标'));
+        resolve(viewTarget());
+      });
+    }).finally(() => {
+      targetSetupPromise = null;
+    });
+    return targetSetupPromise;
+  }
+
+  function restoreProvisionalOutboxTarget(instanceId) {
+    return new Promise((resolve, reject) => {
+      socket.emit('session:switch', { instanceId }, ack => {
+        if (!applyTargetAck(ack)) return reject(new Error(ack?.error || '无法恢复消息会话目标'));
+        resolve(viewTarget());
+      });
+    });
+  }
+
+  function restoreCurrentThreadFromPreference() {
+    if (!socket.connected || currentViewingId || restoringThreadId) return false;
+    const threadId = getCurrentThread(localStorage, serverCwd);
+    if (!threadId) return false;
+    const restoreCwd = serverCwd;
+    restoringThreadId = threadId;
+    socket.emit('thread:history', { threadId, cwd: restoreCwd }, history => {
+      if (restoringThreadId !== threadId || serverCwd !== restoreCwd) return;
+      if (!history?.ok || history.thread?.id !== threadId) {
+        clearCurrentThread(localStorage, restoreCwd, threadId);
+        currentSessionId = null;
+        restoringThreadId = null;
+        renderSessionMeta();
+        syncOutboxView();
+        return;
+      }
+      socket.emit('thread:select', {
+        threadId,
+        cwd: restoreCwd,
+        title: history.thread?.name || history.thread?.preview || threadId.slice(0, 8),
+      }, ack => {
+        if (restoringThreadId !== threadId || serverCwd !== restoreCwd) return;
+        restoringThreadId = null;
+        if (!applyTargetAck(ack)) {
+          clearCurrentThread(localStorage, restoreCwd, threadId);
+          currentSessionId = null;
+          appendSystem(ack?.error || 'Thread restore failed', true);
+          syncOutboxView();
+          return;
+        }
+        clearMessages();
+        renderHistoryMessages(
+          history.messages || [],
+          history.thread?.name || history.thread?.preview || 'Native thread',
+        );
+        requestCatchUp();
+        syncOutboxView();
+      });
+    });
+    return true;
+  }
+
+  function requestCatchUp() {
+    const target = viewTarget();
+    if (!socket.connected || !target.instanceId || !target.threadId) return;
+    const lastSeq = Number(localStorage.getItem(`codex_last_seq:${target.threadId}`) || 0);
+    const lastEpoch = localStorage.getItem(`codex_last_epoch:${target.threadId}`) || '';
+    if (lastSeq <= 0 && !lastEpoch) return;
+
+    const state = createRecoveryState(target);
+    activeRecovery = state;
+    socket.emit('catch-up', {
+      instanceId: target.instanceId,
+      sessionId: target.threadId,
+      lastSeq,
+      lastEpoch,
+    }, ack => {
+      if (activeRecovery !== state) return;
+      activeRecovery = null;
+      const recovery = completeRecovery(state, ack);
+      if (!recovery.accepted) return;
+      if (recovery.gap && !recovery.rebuilt) {
+        appendSystem(`重连恢复失败：${ack?.recoveryError || 'thread/read unavailable'}`, true);
+      }
+      if (recovery.rebuilt) {
+        clearMessages();
+        renderHistoryMessages(recovery.snapshot.messages || [], recovery.snapshot.title || 'Recovered thread');
+        if (recovery.snapshot.threadStatus) {
+          handleThreadStatus({ threadId: target.threadId, status: recovery.snapshot.threadStatus });
+        }
+        localStorage.setItem(`codex_last_seq:${target.threadId}`, String(recovery.throughSeq));
+      }
+      if (recovery.epoch) {
+        localStorage.setItem(`codex_last_epoch:${target.threadId}`, recovery.epoch);
+      }
+      for (const event of recovery.events) processAgentEvent(event);
+    });
+  }
 
   // Socket
-  const socket = io({ autoConnect: false, auth: { token: authToken, deviceToken } });
+  const socket = io({ autoConnect: false, auth: { deviceToken } });
+  const isTransportConnected = () => socket.connected && navigator.onLine !== false;
+  const outboxStore = createIndexedDbMessageStore();
+  const messageOutbox = createMessageOutbox({
+    store: outboxStore,
+    isConnected: isTransportConnected,
+    getGatewayEpoch: () => gatewayEpoch,
+    transport: async payload => {
+      const ack = await emitWithAck(socket, 'user:message', payload, { timeoutMs: 10000 });
+      const target = viewTarget();
+      const payloadThreadId = payload?.threadId || null;
+      const payloadInstanceId = payload?.instanceId || null;
+      const isCurrentTarget = (
+        (!target.threadId && !target.instanceId && !payloadThreadId && !payloadInstanceId)
+        || (target.threadId && (payloadThreadId === target.threadId || ack?.threadId === target.threadId))
+        || (!target.threadId && target.instanceId
+          && (payloadInstanceId === target.instanceId || ack?.instanceId === target.instanceId))
+      );
+      if (ack?.ok && isCurrentTarget) applyTargetAck(ack);
+      return ack;
+    },
+    reconcileTransport: async payload => emitWithAck(socket, 'message:reconcile', {
+      ...payload,
+      cwd: serverCwd,
+    }, { timeoutMs: 10000 }),
+  });
+  const outboxReady = outboxStore.recoverInterrupted().then(() => true).catch(error => {
+    appendSystem(`消息存储不可用：${error.message}`, true);
+    return false;
+  });
+
+  async function drainMessageOutbox(options = {}) {
+    if (!await outboxReady) return;
+    try {
+      await messageOutbox.drain(options);
+    } catch (error) {
+      appendSystem(`消息队列处理失败：${error.message}`, true);
+    }
+  }
+
+  function outboxRequestMatchesView(request) {
+    const payload = request?.payload || {};
+    if (payload.threadId) return payload.threadId === currentSessionId;
+    if (payload.instanceId) return payload.instanceId === currentViewingId;
+    return !currentSessionId && !currentViewingId;
+  }
+
+  function outboxRequestIsOrphaned(request) {
+    return isProvisionalInstanceOrphan(request, {
+      currentInstanceId: currentViewingId,
+      instanceSnapshotReceived,
+      activeInstanceIds: instanceList.map(instance => instance.instanceId),
+    });
+  }
+
+  async function syncOutboxView() {
+    outboxSyncRequested = true;
+    if (outboxSyncPromise) return outboxSyncPromise;
+    outboxSyncPromise = (async () => {
+      while (outboxSyncRequested) {
+        outboxSyncRequested = false;
+        await syncOutboxViewOnce();
+      }
+    })().finally(() => {
+      outboxSyncPromise = null;
+    });
+    return outboxSyncPromise;
+  }
+
+  async function syncOutboxViewOnce() {
+    if (!await outboxReady) return;
+    try {
+      let requests = await outboxStore.list();
+      let visibleRequests = requests.filter(outboxRequestMatchesView);
+      let orphanedRequests = requests.filter(outboxRequestIsOrphaned);
+      const visibleRequestIds = new Set(visibleRequests.map(request => request.clientRequestId));
+      const orphanedAttemptIds = new Set(orphanedRequests
+        .filter(request => !isDefinitelyUnattempted(request))
+        .map(request => request.clientRequestId));
+      if (isTransportConnected()) {
+        await messageOutbox.reconcile({
+          shouldReconcile: request => visibleRequestIds.has(request.clientRequestId)
+            || orphanedAttemptIds.has(request.clientRequestId),
+        });
+        requests = await outboxStore.list();
+        const remainingIds = new Set(requests.map(request => request.clientRequestId));
+        for (const clientRequestId of [...visibleRequestIds, ...orphanedAttemptIds]) {
+          if (!remainingIds.has(clientRequestId)) {
+            if (!promoteOfflineBubble(clientRequestId)) promoteQueuedBubble(clientRequestId, '');
+          }
+        }
+
+        if (!currentViewingId && !currentSessionId && !restoringThreadId) {
+          const activeInstanceIds = new Set(instanceList.map(instance => instance.instanceId));
+          const restorable = requests.find(request => (
+            isDefinitelyUnattempted(request)
+            && request.payload?.instanceId
+            && !request.payload?.threadId
+            && activeInstanceIds.has(request.payload.instanceId)
+          ));
+          if (restorable) {
+            await restoreProvisionalOutboxTarget(restorable.payload.instanceId);
+            requests = await outboxStore.list();
+          }
+        }
+
+        orphanedRequests = requests.filter(outboxRequestIsOrphaned);
+        const unattemptedOrphans = orphanedRequests.filter(isDefinitelyUnattempted);
+        if (unattemptedOrphans.length) {
+          try {
+            const target = await ensureViewTarget();
+            for (const request of unattemptedOrphans) {
+              await messageOutbox.rebindUnattempted(request.clientRequestId, target);
+            }
+            requests = await outboxStore.list();
+          } catch (error) {
+            appendSystem(`消息目标恢复失败：${error.message}`, true);
+          }
+        }
+      }
+
+      visibleRequests = requests.filter(outboxRequestMatchesView);
+      orphanedRequests = requests.filter(outboxRequestIsOrphaned);
+      const untargetedRequests = visibleRequests.filter(request => (
+        isDefinitelyUnattempted(request)
+        && !request.payload?.threadId
+        && !request.payload?.instanceId
+      ));
+      if (isTransportConnected() && untargetedRequests.length && !currentSessionId && !currentViewingId) {
+        try {
+          const target = await ensureViewTarget();
+          for (const request of untargetedRequests) {
+            await messageOutbox.rebindUnattempted(request.clientRequestId, target);
+          }
+          requests = await outboxStore.list();
+          visibleRequests = requests.filter(outboxRequestMatchesView);
+          orphanedRequests = requests.filter(outboxRequestIsOrphaned);
+        } catch (error) {
+          appendSystem(`消息目标恢复失败：${error.message}`, true);
+        }
+      }
+      const orphanedRequestIds = new Set(orphanedRequests.map(request => request.clientRequestId));
+      const displayRequests = requests.filter(request => (
+        outboxRequestMatchesView(request) || orphanedRequestIds.has(request.clientRequestId)
+      ));
+      for (const request of displayRequests) {
+        if (renderedOutboxIds.has(request.clientRequestId)) continue;
+        const payload = messageWirePayload(request);
+        const unboundRecovery = orphanedRequestIds.has(request.clientRequestId);
+        if (request.state === 'queued' && !unboundRecovery) {
+          appendQueuedBubble({ ...payload, ...(request.receipt || {}) });
+        } else {
+          appendOfflineBubble(payload, {
+            needsReconcile: request.state === 'needs_reconcile',
+            unboundRecovery,
+          });
+        }
+      }
+
+      await drainMessageOutbox({
+        shouldSend: outboxRequestMatchesView,
+      });
+    } catch (error) {
+      appendSystem(`消息队列恢复失败：${error.message}`, true);
+    }
+  }
 
   syncVisualViewport();
   window.addEventListener('resize', syncVisualViewport);
@@ -1780,17 +2180,11 @@
 
   socket.on('connect', () => {
     renderConnectionState();
-    const savedSessionId = currentSessionId || localStorage.getItem('codex_current_session_id');
-    const savedSeq = Number(localStorage.getItem(`codex_last_seq:${savedSessionId}`) || 0);
-    if (savedSessionId && savedSeq > 0) {
-      socket.emit('catch-up', { sessionId: savedSessionId, lastSeq: savedSeq }, ack => {
-        if (ack && ack.gap) appendSystem('重连成功，但服务端滚动缓冲已截断；请用 /status 或 /resume 核对会话状态。', true);
-      });
-    }
-    drainOfflineQueue();
+    requestCatchUp();
   });
 
   socket.on('disconnect', () => {
+    adminUnlocked = false;
     renderConnectionState();
     appendSystem('已断开连接，尝试重连中...', false);
   });
@@ -1799,26 +2193,36 @@
     renderConnectionState();
     if (err?.message === 'unauthorized') {
       socket.disconnect();
-      localStorage.removeItem('codex_auth_token');
       authToken = '';
-      showAuthPrompt('访问口令不正确，请重新输入。');
+      showAuthPrompt('会话已失效，请重新输入访问口令。');
       return;
     }
     appendSystem(`连接失败：${err?.message || 'unknown'}`, true);
   });
 
+  window.addEventListener('offline', renderConnectionState);
+  window.addEventListener('online', () => {
+    renderConnectionState();
+    if (socket.connected) syncOutboxView();
+  });
+
   socket.on('agent:event', processAgentEvent);
 
-  authForm.addEventListener('submit', e => {
+  authForm.addEventListener('submit', async e => {
     e.preventDefault();
     const nextToken = authTokenInput.value.trim();
     if (!nextToken) {
       showAuthPrompt('请输入访问口令。');
       return;
     }
-    authToken = nextToken;
-    localStorage.setItem('codex_auth_token', authToken);
-    connectSocket();
+    try {
+      await establishAuthSession(nextToken);
+      authToken = '';
+      authTokenInput.value = '';
+      connectSocket({ allowEmpty: true });
+    } catch (error) {
+      showAuthPrompt(error.message || '访问口令不正确，请重试。');
+    }
   });
 
   bootstrapAuth();
@@ -2091,15 +2495,21 @@
 
   function processAgentEvent(ev) {
     if (!ev || typeof ev.type !== 'string') return;
+    if (activeRecovery && bufferRecoveryEvent(activeRecovery, ev)) return;
+    if (!eventMatchesTarget(ev, viewTarget())) return;
+    const boundTarget = bindThreadFromEvent(viewTarget(), ev);
+    if (boundTarget.threadId !== currentSessionId) {
+      rememberCurrentThread(boundTarget.threadId);
+    }
     if (ev.seq > 0 && ev.epoch && ev.epoch !== 'server') {
-      const key = `${ev.epoch}:${ev.seq}`;
+      const key = `${ev.instanceId || 'global'}:${ev.epoch}:${ev.seq}`;
       if (seenEvents.has(key)) return;
       seenEvents.add(key);
       if (seenEvents.size > 1200) seenEvents = new Set([...seenEvents].slice(-600));
       if (ev.sessionId) {
-        currentSessionId = ev.sessionId;
-        localStorage.setItem('codex_current_session_id', ev.sessionId);
+        rememberCurrentThread(ev.sessionId);
         localStorage.setItem(`codex_last_seq:${ev.sessionId}`, String(ev.seq));
+        localStorage.setItem(`codex_last_epoch:${ev.sessionId}`, ev.epoch);
       }
     }
 
@@ -2111,7 +2521,7 @@
         handleDeviceStatus(ev.payload);
         break;
       case 'init':
-        handleInit(ev.payload);
+        handleInit(ev.payload, ev);
         break;
       case 'status':
         handleStatus(ev.payload);
@@ -2122,21 +2532,26 @@
       case 'instances':
         handleInstances(ev.payload);
         break;
-      case 'session_list':
-        handleSessionList(ev.payload);
-        break;
       case 'thread_event':
         handleThreadEvent(ev.payload);
         break;
+      case 'thread_status':
+        handleThreadStatus(ev.payload);
+        break;
       case 'user_message':
         finalizeStream();
-        appendUserBubble(ev.payload.text, ev.payload.attachments);
+        appendUserBubble(ev.payload.text, ev.payload.attachments, ev.payload.parts, ev.payload.clientRequestId);
+        break;
+      case 'message_receipt':
+        messageOutbox.acceptReceipt(ev.payload).catch(error => {
+          appendSystem(`消息确认保存失败：${error.message}`, true);
+        });
         break;
       case 'queued_message':
         appendQueuedBubble(ev.payload);
         break;
       case 'dequeued_message':
-        markQueuedBubble(ev.payload.text, '发送中');
+        markQueuedBubble(ev.payload.clientRequestId, ev.payload.text, '发送中');
         break;
       case 'queue_cleared':
         handleQueueCleared(ev.payload);
@@ -2160,13 +2575,16 @@
         handleToolResult(ev.payload);
         break;
       case 'approval_request':
-        handleApprovalRequest(ev.payload);
+        handleApprovalRequest(ev.payload, ev);
         break;
       case 'user_input_request':
-        handleUserInputRequest(ev.payload);
+        handleUserInputRequest(ev.payload, ev);
         break;
       case 'approval_revoked':
         handleApprovalRevoked(ev.payload);
+        break;
+      case 'needs_you_changed':
+        handleNeedsYouChanged(ev.payload);
         break;
       case 'file_change':
         handleFileChange(ev.payload);
@@ -2248,12 +2666,19 @@
 
   async function bootstrapAuth() {
     if (authToken) {
-      connectSocket();
+      try {
+        await establishAuthSession(authToken);
+        authToken = '';
+        connectSocket({ allowEmpty: true });
+      } catch (error) {
+        authToken = '';
+        showAuthPrompt(error.message || '访问口令不正确，请重新输入。');
+      }
       return;
     }
     sessionMetaEl.textContent = 'checking auth...';
     try {
-      const response = await fetch('/health', { cache: 'no-store' });
+      const response = await fetch('/health', { cache: 'no-store', credentials: 'same-origin' });
       if (response.ok) {
         connectSocket({ allowEmpty: true });
         return;
@@ -2266,6 +2691,19 @@
     } catch {
       showAuthPrompt('无法确认认证状态，请输入访问口令。');
     }
+  }
+
+  async function establishAuthSession(token) {
+    const response = await fetch('/auth/session', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'x-auth-token': token,
+        'x-device-token': deviceToken,
+      },
+    });
+    if (!response.ok) throw new Error('访问口令不正确，请重试。');
+    return response.json();
   }
 
   function showAuthPrompt(message = '') {
@@ -2282,11 +2720,8 @@
   }
 
   function connectSocket({ allowEmpty = false } = {}) {
-    if (!authToken && !allowEmpty) {
-      showAuthPrompt('请输入访问口令。');
-      return;
-    }
-    socket.auth = { token: authToken, deviceToken };
+    void allowEmpty;
+    socket.auth = { deviceToken };
     hideAuthPrompt();
     sessionMetaEl.textContent = 'connecting...';
     renderConnectionState();
@@ -2378,11 +2813,22 @@
     }
   }
 
-  function handleInit(payload) {
-    currentSessionId = payload.sessionId;
+  function handleInit(payload, event) {
+    applyFeatureManifest(payload.features);
+    gatewayEpoch = payload.gatewayEpoch || gatewayEpoch;
     serverCwd = payload.cwd || serverCwd;
+    const incomingInstanceId = event?.instanceId || payload.instanceId || null;
+    const savedThreadId = getCurrentThread(localStorage, serverCwd);
+    const acceptsIncomingTarget = Boolean(incomingInstanceId)
+      && (incomingInstanceId === currentViewingId || (savedThreadId && savedThreadId === payload.sessionId));
+    if (acceptsIncomingTarget) {
+      currentViewingId = incomingInstanceId;
+      rememberCurrentThread(payload.sessionId);
+    } else if (!currentViewingId) {
+      currentViewingId = null;
+      currentSessionId = savedThreadId;
+    }
     versions = payload.versions || versions || {};
-    if (currentSessionId) localStorage.setItem('codex_current_session_id', currentSessionId);
     if (payload.workDirs?.length) {
       workDirs = payload.workDirs;
       renderWorkdirSelect();
@@ -2406,8 +2852,125 @@
     renderSessionMeta();
     renderInstanceTabs();
     updateFloatingBadges();
-    if (currentSessionId && socket.connected) refreshNativeThreads();
+    if (socket.connected) refreshNativeThreads();
+    if (!restoreCurrentThreadFromPreference()) syncOutboxView();
+    requestNeedsYouSnapshot();
     checkEmptyState();
+  }
+
+  function requestNeedsYouSnapshot() {
+    if (!socket.connected) return;
+    socket.emit('needs-you:snapshot', {}, ack => {
+      if (!ack?.ok || !Number.isFinite(ack.revision) || ack.revision < needsYouRevision) return;
+      needsYouRevision = ack.revision;
+      needsYou = new Map((ack.needs || []).map(need => [need.needId, need]));
+      renderNeedsYouPanel();
+      openPendingNeedsYouDeepLink();
+    });
+  }
+
+  function handleNeedsYouChanged(payload) {
+    const need = payload?.need;
+    if (!need?.needId || !Number.isFinite(payload?.revision) || payload.revision < needsYouRevision) return;
+    needsYouRevision = payload.revision;
+    if (need.state === 'pending' || need.state === 'unknown') needsYou.set(need.needId, need);
+    else needsYou.delete(need.needId);
+    if (need.state === 'unknown') {
+      markNeedCardUnknown(need.needId);
+    } else if (need.state !== 'pending') {
+      const card = pendingApprovalCards[need.needId];
+      if (card) {
+        delete pendingApprovalCards[need.needId];
+        const actions = card.querySelector('.approval-btns:last-child');
+        if (actions) actions.innerHTML = '<span class="tool-output tool-ok" style="background:transparent;padding:0;">已在其他设备处理</span>';
+      }
+    }
+    renderNeedsYouPanel();
+    openPendingNeedsYouDeepLink();
+  }
+
+  function openPendingNeedsYouDeepLink() {
+    if (!pendingNeedsYouDeepLink) return;
+    const need = needsYou.get(pendingNeedsYouDeepLink.needId);
+    if (!need || need.state !== 'pending' || need.target?.threadId !== pendingNeedsYouDeepLink.threadId) return;
+    pendingNeedsYouDeepLink = null;
+    searchParams.delete('thread');
+    searchParams.delete('need');
+    const nextSearch = searchParams.toString();
+    history.replaceState(null, '', `${location.pathname}${nextSearch ? '?' + nextSearch : ''}${location.hash}`);
+    openNeed(need);
+  }
+
+  function renderNeedsYouPanel() {
+    if (!needsYouPanel) return;
+    const active = [...needsYou.values()].filter(need => need.state === 'pending' || need.state === 'unknown');
+    if (!active.length) {
+      needsYouPanel.hidden = true;
+      needsYouPanel.innerHTML = '';
+      return;
+    }
+    needsYouPanel.hidden = false;
+    needsYouPanel.innerHTML = `<div class="needs-you-heading"><span>需要你</span><span>${active.length}</span></div>`
+      + active.map(need => {
+        const summary = need.kind === 'question'
+          ? (need.payload?.questions?.[0]?.question || 'Codex 有问题等待回答')
+          : (Array.isArray(need.payload?.command) ? need.payload.command.join(' ') : (need.payload?.command || need.payload?.reason || '有操作等待审批'));
+        const action = need.state === 'unknown'
+          ? '<span class="tool-output tool-err" style="background:transparent;padding:0;">结果未知，等待上游终态</span>'
+          : '<button class="native-mini-btn" type="button" data-need-action="open">处理</button>';
+        return `<div class="needs-you-row" data-need-id="${escHtml(need.needId)}">
+          <div class="needs-you-copy">
+            <div class="needs-you-summary">${escHtml(summary)}</div>
+            <div class="needs-you-thread">${escHtml(need.target?.threadId || '')}</div>
+          </div>
+          ${action}
+        </div>`;
+      }).join('');
+    needsYouPanel.querySelectorAll('[data-need-action="open"]').forEach(button => {
+      button.onclick = () => openNeed(needsYou.get(button.closest('[data-need-id]')?.dataset.needId));
+    });
+  }
+
+  function openNeed(need) {
+    if (!need?.target?.threadId || need.state !== 'pending') return;
+    const thread = appThreads.find(item => item.id === need.target.threadId);
+    socket.emit('thread:select', {
+      threadId: need.target.threadId,
+      cwd: thread?.cwd || serverCwd,
+      title: thread?.title || need.target.threadId.slice(0, 8),
+    }, ack => {
+      if (!applyTargetAck(ack)) {
+        appendSystem(ack?.error || '需要你目标已失效', true);
+        return;
+      }
+      clearMessages();
+      const payload = { ...need.payload, needId: need.needId };
+      const event = { instanceId: need.target.instanceId, sessionId: need.target.threadId };
+      if (need.kind === 'question') handleUserInputRequest(payload, event);
+      else handleApprovalRequest(payload, event);
+    });
+  }
+
+  function markNeedCardUnknown(needId) {
+    const card = pendingApprovalCards[needId];
+    if (!card) return;
+    delete pendingApprovalCards[needId];
+    const actions = card.querySelector('.approval-btns:last-child');
+    if (actions) {
+      actions.innerHTML = '<span class="tool-output tool-err" style="background:transparent;padding:0;">结果未知，等待上游终态</span>';
+    }
+  }
+
+  function applyFeatureManifest(manifest) {
+    features = {
+      admin: manifest?.admin === true,
+      labs: manifest?.labs === true,
+    };
+    if (!features.admin) adminUnlocked = false;
+    const adminButton = $('native-admin-btn');
+    const labsButton = $('native-p3-btn');
+    if (adminButton) adminButton.hidden = !features.admin;
+    if (labsButton) labsButton.hidden = !features.labs;
   }
 
   function renderWorkdirSelect() {
@@ -2424,15 +2987,20 @@
 
   function handleWorkdirChange(cwd) {
     serverCwd = cwd;
+    restoringThreadId = null;
+    activeRecovery = null;
+    currentViewingId = null;
+    currentSessionId = getCurrentThread(localStorage, serverCwd);
+    sessionStatus = null;
     document.getElementById('workdir-select').value = cwd;
-    socket.emit('session:list', { cwd });
+    clearMessages();
+    refreshNativeThreads();
   }
 
   function handleStatus(payload) {
     sessionStatus = payload || null;
     if (payload?.sessionId) {
-      currentSessionId = payload.sessionId;
-      localStorage.setItem('codex_current_session_id', currentSessionId);
+      rememberCurrentThread(payload.sessionId);
     }
     setBusy(Boolean(payload?.busy));
     renderSessionMeta();
@@ -2447,8 +3015,10 @@
 
   function handleInstances(payload) {
     instanceList = payload.instances || [];
+    instanceSnapshotReceived = true;
     currentViewingId = payload.viewingInstanceId || null;
     renderInstanceTabs();
+    syncOutboxView();
   }
 
   function renderInstanceTabs() {
@@ -2468,13 +3038,23 @@
 
     for (const btn of tabs.querySelectorAll('.instance-tab')) {
       btn.onclick = () => {
-        socket.emit('session:switch', { instanceId: btn.dataset.iid });
+        socket.emit('session:switch', { instanceId: btn.dataset.iid }, ack => {
+          if (!applyTargetAck(ack)) appendSystem(ack?.error || '实例切换失败', true);
+        });
       };
     }
     document.getElementById('fork-instance-btn').onclick = forkCurrentSession;
-    document.getElementById('new-instance-btn').onclick = () => {
-      socket.emit('session:new', {});
-    };
+    document.getElementById('new-instance-btn').onclick = createNewSession;
+  }
+
+  function createNewSession() {
+    socket.emit('session:new', { cwd: serverCwd }, ack => {
+      if (!applyTargetAck(ack)) {
+        appendSystem(ack?.error || '新建会话失败', true);
+        return;
+      }
+      clearMessages();
+    });
   }
 
   function forkCurrentSession() {
@@ -2483,9 +3063,10 @@
         appendSystem(ack?.error || '会话分叉失败', true);
         return;
       }
+      applyTargetAck(ack);
       clearMessages();
       appendSystem('已分叉当前会话', false);
-      socket.emit('session:list');
+      refreshNativeThreads();
     });
   }
 
@@ -2519,21 +3100,37 @@
     statusDetail.textContent = parts.join(' · ');
   }
 
-  function handleSessionList(payload) {
-    sessions = payload.sessions || [];
-    codexSessions = payload.codexSessions || [];
-    currentSessionId = payload.currentSessionId || currentSessionId;
-    if (currentSessionId) localStorage.setItem('codex_current_session_id', currentSessionId);
-    renderSessionMeta();
-    renderSessionList();
-    checkEmptyState();
-  }
-
   function handleThreadEvent(payload) {
     if (!payload?.event) return;
     const labels = { archived: '已归档', unarchived: '已取消归档', deleted: '已删除', name_updated: '已重命名' };
     appendSystem(`Thread ${labels[payload.event] || payload.event}: ${(payload.threadId || '').slice(0, 8)}`, false);
     refreshNativeThreads();
+  }
+
+  function handleThreadStatus(payload) {
+    if (!payload?.threadId || !payload.status) return;
+    const presentation = threadStatusPresentation(payload.status);
+    const incomingRevision = Number.isInteger(payload.revision) ? payload.revision : 0;
+    const currentRevision = appThreads.find(thread => thread.id === payload.threadId)?.statusRevision || 0;
+    const stale = incomingRevision > 0 && currentRevision > incomingRevision;
+    appThreads = applyThreadStatus(appThreads, payload);
+    instanceList = instanceList.map(instance => instance.sessionId === payload.threadId
+      ? { ...instance, busy: presentation.active, state: presentation.kind }
+      : instance);
+    if (currentSessionId === payload.threadId && !stale) {
+      sessionStatus = {
+        ...(sessionStatus || {}),
+        threadStatus: payload.status,
+        threadStatusRevision: incomingRevision || sessionStatus?.threadStatusRevision || 0,
+        busy: presentation.active,
+        state: presentation.kind,
+      };
+      setBusy(presentation.active);
+      renderSessionMeta();
+    }
+    renderInstanceTabs();
+    renderSessionList();
+    if (payload.scope === 'host') scheduleThreadListRefresh();
   }
 
   function handleCompact(payload) {
@@ -2601,23 +3198,7 @@
 
   function renderSessionList() {
     sessionListEl.innerHTML = '';
-    const allItems = [];
-    const seen = new Set();
-    for (const s of appThreads) {
-      if (!s.id || seen.has(s.id)) continue;
-      seen.add(s.id);
-      allItems.push({ ...s, source: 'app-server' });
-    }
-    for (const s of sessions) {
-      if (seen.has(s.id)) continue;
-      seen.add(s.id);
-      allItems.push({ ...s, source: 'server' });
-    }
-    for (const s of codexSessions) {
-      if (seen.has(s.id)) continue;
-      seen.add(s.id);
-      allItems.push({ ...s, source: 'codex' });
-    }
+    const allItems = appThreads.filter(s => s.id);
 
     if (allItems.length === 0) {
       sessionListEl.innerHTML = '<div style="padding:16px;color:var(--text-muted);font-size:13px;font-weight:500;text-align:center;">暂无会话</div>';
@@ -2628,31 +3209,24 @@
       el.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
       const date = new Date(s.lastUsedAt || s.createdAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
       const tag = s.model ? ` · ${escHtml(s.model)}` : '';
-      const srcTag = s.source === 'app-server' ? ' · native' : (s.source === 'codex' ? ' · 📁' : '');
-      const actions = s.source === 'app-server'
-        ? `<div class="native-row-actions">
-            <button class="native-mini-btn" data-action="rename">Rename</button>
-            <button class="native-mini-btn" data-action="${s.archived ? 'unarchive' : 'archive'}">${s.archived ? 'Unarchive' : 'Archive'}</button>
-            <button class="native-mini-btn native-danger" data-action="delete">Delete</button>
-          </div>`
-        : '';
-      el.innerHTML = `<div class="session-title">${escHtml(s.title || '未命名')}</div><div class="session-date">${date}${tag}${srcTag}</div>${actions}`;
+      const srcTag = ' · native';
+      const status = threadStatusPresentation(s.status);
+      const actions = `<div class="native-row-actions">
+          <button class="native-mini-btn" data-action="rename">Rename</button>
+          <button class="native-mini-btn" data-action="${s.archived ? 'unarchive' : 'archive'}">${s.archived ? 'Unarchive' : 'Archive'}</button>
+          <button class="native-mini-btn native-danger" data-action="delete">Delete</button>
+        </div>`;
+      el.innerHTML = `<div class="session-title"><span class="thread-status-dot ${status.kind}" title="${escHtml(status.label)}"></span><span class="session-title-copy">${escHtml(s.title || '未命名')}</span></div><div class="session-date">${date}${tag}${srcTag} · ${escHtml(status.label)}</div>${actions}`;
       el.onclick = () => {
-        if (s.source === 'codex' && s.filePath) {
-          loadHistory(s);
-        } else if (s.source === 'app-server') {
-          socket.emit('thread:select', { threadId: s.id, cwd: s.cwd, title: s.title }, ack => {
-            if (!ack?.ok) {
-              appendSystem(ack?.error || 'Thread select failed', true);
-              return;
-            }
-            clearMessages();
-            loadNativeThreadHistory(s);
-          });
-        } else {
-          socket.emit('session:select', { sessionId: s.id });
+        socket.emit('thread:select', { threadId: s.id, cwd: s.cwd, title: s.title }, ack => {
+          if (!ack?.ok) {
+            appendSystem(ack?.error || 'Thread select failed', true);
+            return;
+          }
+          applyTargetAck(ack);
           clearMessages();
-        }
+          loadNativeThreadHistory(s);
+        });
         closeDrawer();
       };
       for (const btn of el.querySelectorAll('[data-action]')) {
@@ -2686,6 +3260,12 @@
     if (action === 'delete') {
       socket.emit('thread:delete', { threadId: thread.id, cwd: thread.cwd }, ack => {
         if (!ack?.ok) return appendSystem(ack?.error || 'Delete failed', true);
+        clearCurrentThread(localStorage, thread.cwd || serverCwd, thread.id);
+        if (currentSessionId === thread.id) {
+          currentSessionId = null;
+          currentViewingId = null;
+          clearMessages();
+        }
         refreshNativeThreads();
       });
       return;
@@ -2703,14 +3283,26 @@
     if (close) close.onclick = () => { nativePanel.hidden = true; };
   }
 
-  function refreshNativeThreads() {
-    socket.emit('thread:list', { cwd: serverCwd, archived: showArchivedThreads }, ack => {
+  function scheduleThreadListRefresh() {
+    if (threadRefreshTimer) clearTimeout(threadRefreshTimer);
+    const requestedCwd = serverCwd;
+    threadRefreshTimer = setTimeout(() => {
+      threadRefreshTimer = null;
+      if (socket.connected && requestedCwd === serverCwd) refreshNativeThreads();
+    }, 250);
+  }
+
+  function refreshNativeThreads(showPanel = false) {
+    const requestedCwd = serverCwd;
+    const requestGeneration = ++threadListGeneration;
+    socket.emit('thread:list', { cwd: requestedCwd, archived: showArchivedThreads }, ack => {
+      if (requestGeneration !== threadListGeneration || requestedCwd !== serverCwd) return;
       if (!ack?.ok) {
         appendSystem(ack?.error || 'Thread list failed', true);
         return;
       }
-      appThreads = ack.threads || [];
-      renderNativeThreadList();
+      appThreads = mergeThreadList(appThreads, ack.threads || []);
+      if (showPanel) renderNativeThreadList();
       renderSessionList();
     });
   }
@@ -2811,8 +3403,7 @@
     socket.emit('fs:readFile', { path, cwd: serverCwd }, ack => {
       if (!ack?.ok) return appendSystem(ack?.error || 'Read file failed', true);
       const text = decodeBase64Text(ack.dataBase64 || '');
-      const mention = `@${path}`;
-      inputEl.value = inputEl.value ? `${inputEl.value} ${mention}` : mention;
+      addInputPart({ kind: 'mention', name: path.split('/').pop() || path, path });
       inputEl.focus();
       renderNativePanel('File Preview', `<div class="native-list-row"><div class="native-row-title">${escHtml(path)}</div><pre class="tool-output" style="max-height:180px;">${escHtml(text.slice(0, 2000))}</pre></div>`);
     });
@@ -2839,11 +3430,24 @@
   function loadSkillsPanel() {
     socket.emit('skills:read', { cwd: serverCwd }, ack => {
       if (!ack?.ok) return appendSystem(ack?.error || 'Skills read failed', true);
-      const rows = (ack.entries || []).map(entry => `<div class="native-list-row">
-        <div class="native-row-title">${escHtml(entry.cwd)}</div>
-        <div class="native-row-meta">skills:${(entry.skills || []).length} · errors:${(entry.errors || []).length}</div>
-      </div>`).join('') || '<div class="native-list-row">No skills</div>';
+      const skills = (ack.entries || []).flatMap(entry => (entry.skills || []).map(skill => ({
+        ...skill,
+        cwd: entry.cwd,
+      }))).filter(skill => skill.enabled === true);
+      const rows = skills.map((skill, index) => `<div class="native-list-row">
+        <div class="native-row-title">${escHtml(skill.name)}</div>
+        <div class="native-row-meta">${escHtml(skill.description || skill.path || skill.cwd || '')}</div>
+        <div class="native-row-actions"><button class="native-mini-btn" data-skill-index="${index}">Use</button></div>
+      </div>`).join('') || '<div class="native-list-row">No enabled skills</div>';
       renderNativePanel('Skills', rows);
+      nativePanel.querySelectorAll('[data-skill-index]').forEach(btn => {
+        btn.onclick = () => {
+          const skill = skills[Number(btn.dataset.skillIndex)];
+          if (!skill) return;
+          addInputPart({ kind: 'skill', name: skill.name, path: skill.path });
+          inputEl.focus();
+        };
+      });
     });
   }
 
@@ -2871,6 +3475,7 @@
   }
 
   function openP3Panel() {
+    if (!features.labs) return;
     renderNativePanel('Labs', `
       <div class="native-list-row">
         <div class="native-row-title">Capabilities</div>
@@ -2998,10 +3603,14 @@
   }
 
   function openAdminPanel() {
+    if (!features.admin) return;
     renderNativePanel('Admin', `
       <div class="native-list-row">
         <div class="native-row-title">${adminUnlocked ? 'Unlocked' : 'Locked'}</div>
-        <div class="native-row-actions"><button id="admin-unlock-btn" class="native-mini-btn" type="button">Unlock</button></div>
+        <div class="native-row-actions">
+          <button id="admin-unlock-btn" class="native-mini-btn" type="button"${adminUnlocked ? ' hidden' : ''}>Unlock</button>
+          <button id="admin-lock-btn" class="native-mini-btn" type="button"${adminUnlocked ? '' : ' hidden'}>Lock</button>
+        </div>
       </div>
       <div class="native-list-row">
         <div class="native-row-title">Config</div>
@@ -3037,6 +3646,7 @@
       </div>
     `);
     $('admin-unlock-btn').onclick = unlockAdminMode;
+    $('admin-lock-btn').onclick = lockAdminMode;
     $('admin-config-write-btn').onclick = adminConfigWrite;
     $('admin-config-batch-btn').onclick = adminConfigBatchWrite;
     $('admin-plugin-install-btn').onclick = adminPluginInstall;
@@ -3065,6 +3675,15 @@
       if (!ack?.ok) return appendSystem(ack?.error || 'Admin unlock failed', true);
       adminUnlocked = true;
       appendSystem('Admin mode enabled', false);
+      openAdminPanel();
+    });
+  }
+
+  function lockAdminMode() {
+    socket.emit('admin:lock', {}, ack => {
+      if (!ack?.ok) return appendSystem(ack?.error || 'Admin lock failed', true);
+      adminUnlocked = false;
+      appendSystem('Admin mode locked', false);
       openAdminPanel();
     });
   }
@@ -3208,12 +3827,6 @@
     }
   }
 
-  function loadHistory(s) {
-    socket.emit('session:history', { sessionId: s.id }, data => {
-      renderHistoryMessages(data?.messages || [], data?.title || s.title || '历史会话');
-    });
-  }
-
   function loadNativeThreadHistory(s) {
     socket.emit('thread:history', { threadId: s.id, cwd: s.cwd }, data => {
       if (!data?.ok) {
@@ -3253,26 +3866,48 @@
 
   function appendQueuedBubble(payload) {
     const text = payload.text || '';
+    const clientRequestId = payload.clientRequestId || '';
+    const offlineIndex = clientRequestId
+      ? offlineUserBubbles.findIndex(item => item.clientRequestId === clientRequestId)
+      : -1;
+    if (offlineIndex >= 0) {
+      const [{ el }] = offlineUserBubbles.splice(offlineIndex, 1);
+      el.classList.remove('offline');
+      el.classList.add('queued');
+      const labelEl = el.querySelector('.offline-label');
+      if (labelEl) {
+        labelEl.className = 'queued-label';
+        labelEl.textContent = `Queued #${payload.position || payload.queueLength || 1}`;
+      }
+      queuedUserBubbles.push({ clientRequestId, text, el });
+      return;
+    }
     const el = document.createElement('div');
     el.className = 'msg user queued';
     el.dataset.text = text;
+    if (clientRequestId) el.dataset.clientRequestId = clientRequestId;
     el.innerHTML = `<div class="bubble">${escHtml(text)}<span class="queued-label">Queued #${payload.position || payload.queueLength || 1}</span></div>`;
     messagesEl.appendChild(el);
-    queuedUserBubbles.push({ text, el });
+    if (clientRequestId) renderedOutboxIds.add(clientRequestId);
+    queuedUserBubbles.push({ clientRequestId, text, el });
     scrollBottom();
     checkEmptyState();
   }
 
-  function markQueuedBubble(text, label) {
-    const item = queuedUserBubbles.find(q => q.text === text);
+  function markQueuedBubble(clientRequestId, text, label) {
+    const item = clientRequestId
+      ? queuedUserBubbles.find(q => q.clientRequestId === clientRequestId)
+      : queuedUserBubbles.find(q => q.text === text);
     if (!item) return false;
     const labelEl = item.el.querySelector('.queued-label');
     if (labelEl) labelEl.textContent = label;
     return true;
   }
 
-  function promoteQueuedBubble(text) {
-    const idx = queuedUserBubbles.findIndex(q => q.text === text);
+  function promoteQueuedBubble(clientRequestId, text) {
+    const idx = clientRequestId
+      ? queuedUserBubbles.findIndex(q => q.clientRequestId === clientRequestId)
+      : queuedUserBubbles.findIndex(q => q.text === text);
     if (idx === -1) return false;
     const [{ el }] = queuedUserBubbles.splice(idx, 1);
     el.classList.remove('queued');
@@ -3288,44 +3923,75 @@
     checkEmptyState();
   }
 
-  function appendOfflineBubble(payload) {
+  function appendOfflineBubble(payload, { needsReconcile = false, unboundRecovery = false } = {}) {
     const text = payload.text || '';
+    const clientRequestId = payload.clientRequestId || '';
+    if (clientRequestId && renderedOutboxIds.has(clientRequestId)) return;
     const el = document.createElement('div');
     el.className = 'msg user offline';
     el.dataset.text = text;
+    if (clientRequestId) el.dataset.clientRequestId = clientRequestId;
     let html = `<div class="bubble">`;
     if (payload.attachments?.length) {
       html += `<div style="font-size:11px;opacity:.8;margin-bottom:4px;">📎 ${payload.attachments.map(a => escHtml(a.name)).join(', ')}</div>`;
     }
-    html += `${escHtml(text || '(附件)')}<span class="offline-label">⏳ 弱网等待同步 (Offline Queue)</span></div>`;
+    if (payload.parts?.length) {
+      html += `<div style="font-size:11px;opacity:.8;margin-bottom:4px;">📌 ${payload.parts.map(partDisplayName).map(escHtml).join(', ')}</div>`;
+    }
+    const deliveryLabel = unboundRecovery
+      ? (needsReconcile
+        ? '⚠️ 原会话目标已失效，正在按请求 ID 核对；不会自动重发'
+        : '⏳ 原会话目标已失效，连接后将恢复到当前会话')
+      : (needsReconcile
+        ? '⚠️ 结果未知，正在核对；不会自动重发'
+        : '⏳ 弱网等待同步 (Offline Queue)');
+    html += `${escHtml(text || (payload.parts?.length ? '(结构化引用)' : '(附件)'))}<span class="offline-label">${deliveryLabel}</span></div>`;
     el.innerHTML = html;
+    if (needsReconcile && clientRequestId) {
+      const retryButton = document.createElement('button');
+      retryButton.className = 'unknown-retry-btn';
+      retryButton.type = 'button';
+      retryButton.textContent = '确认后重试';
+      retryButton.onclick = async () => {
+        if (!confirm('无法确认上一请求是否已执行；再次发送可能重复执行工具或修改。确定重试吗？')) return;
+        try {
+          const target = await ensureViewTarget();
+          const replacement = await messageOutbox.retryAfterConfirmation(clientRequestId, { target });
+          if (!replacement) return;
+          const bubbleIndex = offlineUserBubbles.findIndex(item => item.clientRequestId === clientRequestId);
+          if (bubbleIndex >= 0) offlineUserBubbles.splice(bubbleIndex, 1);
+          renderedOutboxIds.delete(clientRequestId);
+          el.dataset.clientRequestId = replacement.clientRequestId;
+          renderedOutboxIds.add(replacement.clientRequestId);
+          offlineUserBubbles.push({ clientRequestId: replacement.clientRequestId, text, el });
+          const label = el.querySelector('.offline-label');
+          if (label) label.textContent = '⏳ 已确认重试，等待发送';
+          retryButton.remove();
+          await drainMessageOutbox({
+            shouldSend: outboxRequestMatchesView,
+          });
+        } catch (error) {
+          appendSystem(`消息重试失败：${error.message}`, true);
+        }
+      };
+      el.querySelector('.bubble')?.appendChild(retryButton);
+    }
     messagesEl.appendChild(el);
-    offlineUserBubbles.push({ text, el });
+    if (clientRequestId) renderedOutboxIds.add(clientRequestId);
+    offlineUserBubbles.push({ clientRequestId, text, el });
     scrollBottom();
     checkEmptyState();
   }
 
-  function promoteOfflineBubble(text) {
-    const idx = offlineUserBubbles.findIndex(q => q.text === text);
+  function promoteOfflineBubble(clientRequestId) {
+    if (!clientRequestId) return false;
+    const idx = offlineUserBubbles.findIndex(q => q.clientRequestId === clientRequestId);
     if (idx === -1) return false;
     const [{ el }] = offlineUserBubbles.splice(idx, 1);
     el.classList.remove('offline');
     const labelEl = el.querySelector('.offline-label');
     if (labelEl) labelEl.remove();
     return true;
-  }
-
-  function drainOfflineQueue() {
-    if (!socket.connected || offlineQueue.length === 0) return;
-    const toDrain = [...offlineQueue];
-    offlineQueue = [];
-    for (const item of toDrain) {
-      if (socket.connected) {
-        socket.emit('user:message', item);
-      } else {
-        offlineQueue.push(item);
-      }
-    }
   }
 
   function handleToolUse(payload) {
@@ -3390,12 +4056,16 @@
     setBusy(false);
     if (payload && payload.ok === false && activeTurnText) rememberFailure(activeTurnText);
     if (payload && payload.ok !== false) activeTurnText = '';
-    socket.emit('session:list');
+    refreshNativeThreads();
     checkEmptyState();
   }
 
-  function handleApprovalRequest(payload) {
+  function handleApprovalRequest(payload, event) {
     finalizeStream();
+    const requestTarget = {
+      instanceId: event?.instanceId || null,
+      threadId: event?.sessionId || payload.threadId || null,
+    };
     const decisions = payload.availableDecisions || [];
     const deny = decisions.includes('decline') ? 'decline' : (decisions.includes('cancel') ? 'cancel' : 'decline');
     const sessionDecision = decisions.includes('acceptForSession') ? `<button class="approve-btn" data-d="acceptForSession">本会话批准</button>` : '';
@@ -3409,13 +4079,34 @@
       + sessionDecision
       + `<button class="deny-btn" data-d="${deny}">拒绝</button></div>`;
     appendRaw(card, 'codex');
-    pendingApprovalCards[String(payload.approvalId)] = card;
+    const cardKey = payload.needId || String(payload.approvalId);
+    pendingApprovalCards[cardKey] = card;
     const btns = card.querySelector('.approval-btns');
     btns.querySelectorAll('button').forEach(b => {
       b.onclick = () => {
-        socket.emit('user:approval', { approvalId: payload.approvalId, decision: b.dataset.d });
-        delete pendingApprovalCards[String(payload.approvalId)];
-        btns.innerHTML = `<span class="tool-output tool-ok" style="background:transparent;padding:0;">已${b.dataset.d === 'accept' ? '批准' : '拒绝'}</span>`;
+        btns.querySelectorAll('button').forEach(button => { button.disabled = true; });
+        socket.emit('user:approval', withTarget({
+          needId: payload.needId,
+          approvalId: payload.approvalId,
+          decision: b.dataset.d,
+          turnId: payload.turnId,
+          itemId: payload.itemId,
+        }, requestTarget), ack => {
+          if (!ack?.ok) {
+            if (ack?.resultUnknown) {
+              markNeedCardUnknown(cardKey);
+              appendSystem('审批结果未知，等待上游终态；不会自动重试', true);
+              return;
+            }
+            btns.querySelectorAll('button').forEach(button => { button.disabled = false; });
+            appendSystem(ack?.error || '审批失败，请刷新后重试', true);
+            return;
+          }
+          delete pendingApprovalCards[cardKey];
+          needsYou.delete(payload.needId);
+          renderNeedsYouPanel();
+          btns.innerHTML = `<span class="tool-output tool-ok" style="background:transparent;padding:0;">已${b.dataset.d === 'accept' ? '批准' : '拒绝'}</span>`;
+        });
       };
     });
     scrollBottom();
@@ -3449,8 +4140,12 @@
     return ({ add: '新增', modify: '修改', update: '修改', delete: '删除', rename: '重命名' }[k] || k || 'modify');
   }
 
-  function handleUserInputRequest(payload) {
+  function handleUserInputRequest(payload, event) {
     finalizeStream();
+    const requestTarget = {
+      instanceId: event?.instanceId || null,
+      threadId: event?.sessionId || payload.threadId || null,
+    };
     const questions = payload.questions || [];
     const card = document.createElement('div');
     card.className = 'tool-card';
@@ -3459,19 +4154,42 @@
       + (payload.autoResolutionMs ? `<div class="tool-output" style="opacity:.7;background:transparent;color:var(--text-muted);">autoResolutionMs: ${escHtml(String(payload.autoResolutionMs))}</div>` : '')
       + `<div class="approval-btns"><button class="approve-btn answer-submit" type="button">提交</button><button class="deny-btn answer-cancel" type="button">跳过</button></div>`;
     appendRaw(card, 'codex');
-    pendingApprovalCards[String(payload.approvalId)] = card;
+    const cardKey = payload.needId || String(payload.approvalId);
+    pendingApprovalCards[cardKey] = card;
 
     card.querySelectorAll('.answer-option').forEach(btn => {
       btn.onclick = () => btn.classList.toggle('selected');
     });
+    const submitAnswers = (answers, successLabel) => {
+      const actionButtons = card.querySelectorAll('.approval-btns:last-child button');
+      actionButtons.forEach(button => { button.disabled = true; });
+      socket.emit('user:approval', withTarget({
+        needId: payload.needId,
+        approvalId: payload.approvalId,
+        answers,
+        turnId: payload.turnId,
+        itemId: payload.itemId,
+      }, requestTarget), ack => {
+        if (!ack?.ok) {
+          if (ack?.resultUnknown) {
+            markNeedCardUnknown(cardKey);
+            appendSystem('回答结果未知，等待上游终态；不会自动重试', true);
+            return;
+          }
+          actionButtons.forEach(button => { button.disabled = false; });
+          appendSystem(ack?.error || '回答提交失败，请刷新后重试', true);
+          return;
+        }
+        needsYou.delete(payload.needId);
+        renderNeedsYouPanel();
+        markInputCardDone(card, cardKey, successLabel);
+      });
+    };
     card.querySelector('.answer-submit').onclick = () => {
-      const answers = collectAnswers(card, questions);
-      socket.emit('user:approval', { approvalId: payload.approvalId, answers });
-      markInputCardDone(card, payload.approvalId, '已提交');
+      submitAnswers(collectAnswers(card, questions), '已提交');
     };
     card.querySelector('.answer-cancel').onclick = () => {
-      socket.emit('user:approval', { approvalId: payload.approvalId, answers: {} });
-      markInputCardDone(card, payload.approvalId, '已跳过');
+      submitAnswers({}, '已跳过');
     };
     scrollBottom();
   }
@@ -3503,8 +4221,8 @@
     return value.replace(/"/g, '\\"');
   }
 
-  function markInputCardDone(card, approvalId, label) {
-    delete pendingApprovalCards[String(approvalId)];
+  function markInputCardDone(card, cardKey, label) {
+    delete pendingApprovalCards[cardKey];
     const btns = card.querySelector('.approval-btns:last-child');
     if (btns) btns.innerHTML = `<span class="tool-output tool-ok" style="background:transparent;padding:0;">${escHtml(label)}</span>`;
   }
@@ -3684,16 +4402,22 @@
     appendReasoning.sections = null;
   }
 
-  function appendUserBubble(text, attachments) {
+  function partDisplayName(part) {
+    if (part?.kind === 'skill') return `$${part.name || 'skill'}`;
+    if (part?.kind === 'mention') return `@${part.name || 'file'}`;
+    return '[Image]';
+  }
+
+  function appendUserBubble(text, attachments, parts, clientRequestId) {
     activeTurnText = text;
     latestOutputText = '';
-    if (promoteOfflineBubble(text)) {
+    if (promoteOfflineBubble(clientRequestId)) {
       scrollBottom();
       setBusy(true);
       showTyping();
       return;
     }
-    if (promoteQueuedBubble(text)) {
+    if (promoteQueuedBubble(clientRequestId, text)) {
       scrollBottom();
       setBusy(true);
       showTyping();
@@ -3705,7 +4429,10 @@
     if (attachments?.length) {
       html += `<div style="font-size:11px;opacity:.8;margin-bottom:4px;">📎 ${attachments.map(a => escHtml(a.name)).join(', ')}</div>`;
     }
-    html += `${escHtml(text || '(附件)')}</div>`;
+    if (parts?.length) {
+      html += `<div style="font-size:11px;opacity:.8;margin-bottom:4px;">📌 ${parts.map(partDisplayName).map(escHtml).join(', ')}</div>`;
+    }
+    html += `${escHtml(text || (parts?.length ? '(结构化引用)' : '(附件)'))}</div>`;
     el.innerHTML = html;
     messagesEl.appendChild(el);
     scrollBottom();
@@ -3776,6 +4503,8 @@
     pendingToolCards = {};
     pendingApprovalCards = {};
     queuedUserBubbles = [];
+    offlineUserBubbles = [];
+    renderedOutboxIds = new Set();
     latestOutputText = '';
     setBusy(false);
     checkEmptyState();
@@ -3794,8 +4523,9 @@
   function renderConnectionState() {
     const state = sessionStatus?.state || (busy ? 'running' : 'idle');
     const dotState = state === 'awaiting_approval' ? 'awaiting' : (state === 'running' ? 'busy' : state);
-    statusDot.className = socket.connected ? `connected ${dotState}` : '';
-    if (stateLabel) stateLabel.textContent = socket.connected ? state.replace('_', ' ') : 'offline';
+    const connected = isTransportConnected();
+    statusDot.className = connected ? `connected ${dotState}` : '';
+    if (stateLabel) stateLabel.textContent = connected ? state.replace('_', ' ') : 'offline';
   }
 
   function scrollBottom() {
@@ -3842,7 +4572,7 @@
   // Send
   sendBtn.onclick = sendMessage;
   if (accountLoginBtn) accountLoginBtn.onclick = startChatgptDeviceLogin;
-  $('native-thread-refresh').onclick = refreshNativeThreads;
+  $('native-thread-refresh').onclick = () => refreshNativeThreads(true);
   $('native-compact-btn').onclick = startCompact;
   $('native-rollback-btn').onclick = rollbackThread;
   $('native-models-btn').onclick = loadNativeModels;
@@ -3876,28 +4606,49 @@
     inputEl.style.height = Math.min(inputEl.scrollHeight, 140) + 'px';
   });
 
-  function sendMessage() {
+  async function sendMessage() {
     const text = inputEl.value.trim();
     const hasAttachments = currentAttachments.length > 0;
-    if (!text && !hasAttachments) return;
+    const hasParts = currentInputParts.length > 0;
+    if (!text && !hasAttachments && !hasParts) return;
+
+    let target = viewTarget();
+    if (isTransportConnected()) {
+      try {
+        target = await ensureViewTarget();
+      } catch (error) {
+        appendSystem(error.message || '无法建立会话目标', true);
+        return;
+      }
+    }
+
+    const attachments = hasAttachments
+      ? currentAttachments.map(attachment => ({ ...attachment }))
+      : undefined;
+    const parts = hasParts
+      ? currentInputParts.map(part => ({ ...part }))
+      : undefined;
+    const request = createMessageRequest({ text, attachments, parts, target });
+    try {
+      if (!await outboxReady) throw new Error('IndexedDB outbox unavailable');
+      await messageOutbox.enqueue(request);
+    } catch (error) {
+      appendSystem(`消息未保存，未发送：${error.message}`, true);
+      return;
+    }
 
     inputEl.value = '';
     inputEl.style.height = 'auto';
     hideSlashPopup();
-
-    const payload = { text };
     if (hasAttachments) {
-      payload.attachments = currentAttachments;
       currentAttachments = [];
-      renderAttachTray();
     }
-
-    if (!socket.connected) {
-      appendOfflineBubble(payload);
-      offlineQueue.push(payload);
-    } else {
-      socket.emit('user:message', payload);
-    }
+    if (hasParts) currentInputParts = [];
+    renderAttachTray();
+    appendOfflineBubble(messageWirePayload(request));
+    drainMessageOutbox({
+      shouldSend: outboxRequestMatchesView,
+    });
   }
 
   async function copyLatestOutput() {
@@ -3959,7 +4710,11 @@
   }
 
   interruptBtn.onclick = () => {
-    socket.emit('user:interrupt');
+    socket.emit('user:interrupt', withTarget({
+      turnId: sessionStatus?.turnId || undefined,
+    }, viewTarget()), ack => {
+      if (!ack?.ok) appendSystem(ack?.error || '中断失败', true);
+    });
   };
 
   // ---- Web Push ----
@@ -3983,11 +4738,20 @@
           userVisibleOnly: true,
           applicationServerKey: urlBase64ToUint8Array(key)
         });
-        await fetch('/push/subscribe', {
+        const subscribeResponse = await fetch('/push/subscribe', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-device-token': deviceToken,
+          },
           body: JSON.stringify(sub)
         });
+        if (!subscribeResponse.ok) {
+          await sub.unsubscribe().catch(() => {});
+          const failure = await subscribeResponse.json().catch(() => ({}));
+          throw new Error(failure.error || `Push subscription failed (${subscribeResponse.status})`);
+        }
         pushBtn.textContent = '🔕';
         pushBtn.title = '已订阅推送';
         pushBtn.onclick = null;
@@ -4027,8 +4791,17 @@
     return (bytes / 1048576).toFixed(1) + 'MB';
   }
 
+  function addInputPart(part) {
+    const key = `${part?.kind || ''}:${part?.path || part?.url || ''}`;
+    const exists = currentInputParts.some(candidate => (
+      `${candidate?.kind || ''}:${candidate?.path || candidate?.url || ''}` === key
+    ));
+    if (!exists) currentInputParts.push({ ...part });
+    renderAttachTray();
+  }
+
   function renderAttachTray() {
-    if (currentAttachments.length === 0) {
+    if (currentAttachments.length === 0 && currentInputParts.length === 0) {
       attachTray.hidden = true;
       return;
     }
@@ -4048,13 +4821,23 @@
       };
       attachTray.appendChild(chip);
     }
+    for (let i = 0; i < currentInputParts.length; i++) {
+      const part = currentInputParts[i];
+      const chip = document.createElement('span');
+      chip.className = 'attach-chip';
+      const prefix = part.kind === 'skill' ? '$' : (part.kind === 'imageUrl' ? '🖼 ' : '@');
+      chip.innerHTML = `<span class="attach-chip-name">${prefix}${escHtml(part.name || part.url || part.path || '')}</span>`
+        + `<button class="attach-chip-remove" data-part-idx="${i}">✕</button>`;
+      chip.querySelector('.attach-chip-remove').onclick = () => {
+        currentInputParts.splice(i, 1);
+        renderAttachTray();
+      };
+      attachTray.appendChild(chip);
+    }
   }
 
   // Session drawer
   $('menu-btn').onclick = () => {
-    socket.emit('session:list', {}, data => {
-      if (data) handleSessionList(data);
-    });
     refreshNativeThreads();
     drawer.classList.add('open');
     drawerOverlay.classList.add('open');
@@ -4072,15 +4855,13 @@
   };
 
   $('new-session-btn').onclick = () => {
-    socket.emit('session:new');
-    clearMessages();
+    createNewSession();
     closeDrawer();
   };
 
   // Drawer FAB
   $('drawer-fab-new').onclick = () => {
-    socket.emit('session:new');
-    clearMessages();
+    createNewSession();
     closeDrawer();
   };
 

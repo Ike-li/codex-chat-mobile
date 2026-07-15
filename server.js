@@ -7,18 +7,25 @@ import { statSync, existsSync, mkdirSync, realpathSync, readFileSync } from 'nod
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { isIP } from 'node:net';
 import { watch } from 'node:fs';
 import express from 'express';
 import compression from 'compression';
 import { Server } from 'socket.io';
-import { CodexAppServerSession } from './agent-appserver.js';
-import * as sessions from './sessions.js';
-import { maskToken, sanitizePath } from './sanitizer.js';
+import { ThreadRuntime } from './thread-runtime.js';
+import { ThreadRegistry } from './thread-registry.js';
+import { AppServerHost } from './app-server-host.js';
+import { MessageReceiptLedger } from './message-receipt-ledger.js';
+import { NeedsYouRegistry } from './needs-you-registry.js';
+import { resolveInputParts } from './input-parts.js';
+import { maskToken, sanitize, sanitizePath } from './sanitizer.js';
 import { writeOwnerOnlyFile } from './file-security.js';
+import { appendJsonlAuditRecord } from './audit-log.js';
+import { createPushSender } from './push-sender.js';
+import { isPublicEndpointHostname, isPublicIpAddress } from './network-address.js';
 import { validateAttachments, saveAttachments, pruneExpiredUploads } from './uploads.js';
 import { buildStatusLine } from './statusline.js';
-import { listSessions as listCodexSessions, getSessionHistory } from './history.js';
 import webpush from 'web-push';
 import {
   isDeviceTrusted,
@@ -26,14 +33,16 @@ import {
   getLatestPendingDevice,
   approveDevice,
   denyDevice,
-  getPendingDevices
+  getPendingDevices,
+  getTrustedDeviceTokens,
 } from './devices.js';
 import {
   isLocalAccess,
-  isLoopbackAddress,
-  isLoopbackHostHeader,
   normalizeAddress,
-  resolveListenHost
+  resolveListenHost,
+  parseGatewaySecurityPolicy,
+  evaluateTransportSecurity,
+  evaluateSocketHandshakeSecurity,
 } from './server-security.js';
 
 dotenv.config();
@@ -59,11 +68,57 @@ try {
   process.exit(1);
 }
 const idleTimeoutMs = Number(IDLE_TIMEOUT_MS) > 0 ? Number(IDLE_TIMEOUT_MS) : 600000;
+const GATEWAY_EPOCH = randomBytes(16).toString('hex');
+const gatewaySecurityPolicy = parseGatewaySecurityPolicy(process.env);
 const HERE = import.meta.dirname;
 const DATA_DIR = process.env.CODEX_DATA_DIR || join(HERE, 'data');
 const ADMIN_UNLOCK_PHRASE = 'ENABLE ADMIN';
 const ADMIN_AUDIT_FILE = join(DATA_DIR, 'admin-audit.jsonl');
+const SECURITY_AUDIT_FILE = join(DATA_DIR, 'security-audit.jsonl');
+const ADMIN_ENABLED = process.env.CODEX_ADMIN_ENABLED === '1';
+const rawAdminUnlockTtlMs = Number(process.env.CODEX_ADMIN_UNLOCK_TTL_MS);
+const ADMIN_UNLOCK_TTL_MS = Number.isInteger(rawAdminUnlockTtlMs) && rawAdminUnlockTtlMs > 0
+  ? rawAdminUnlockTtlMs
+  : 5 * 60 * 1000;
+const rawAdminUnlockMaxFailures = Number(process.env.CODEX_ADMIN_UNLOCK_MAX_FAILURES);
+const ADMIN_UNLOCK_MAX_FAILURES = Number.isInteger(rawAdminUnlockMaxFailures) && rawAdminUnlockMaxFailures > 0
+  ? rawAdminUnlockMaxFailures
+  : 5;
+const rawAdminUnlockWindowMs = Number(process.env.CODEX_ADMIN_UNLOCK_WINDOW_MS);
+const ADMIN_UNLOCK_WINDOW_MS = Number.isInteger(rawAdminUnlockWindowMs) && rawAdminUnlockWindowMs > 0
+  ? rawAdminUnlockWindowMs
+  : 60_000;
 const P3_EXPERIMENTAL_ENABLED = process.env.CODEX_P3_EXPERIMENTAL === '1';
+const REMOTE_IMAGE_INPUTS_ENABLED = process.env.CODEX_ALLOW_REMOTE_IMAGES === '1';
+const rawPushMaxSubscriptions = Number(process.env.CODEX_PUSH_MAX_SUBSCRIPTIONS);
+const PUSH_MAX_SUBSCRIPTIONS = Number.isInteger(rawPushMaxSubscriptions) && rawPushMaxSubscriptions > 0
+  ? rawPushMaxSubscriptions
+  : 64;
+const rawAuthMaxFailures = Number(process.env.CODEX_AUTH_MAX_FAILURES);
+const AUTH_MAX_FAILURES = Number.isInteger(rawAuthMaxFailures) && rawAuthMaxFailures > 0
+  ? rawAuthMaxFailures
+  : 5;
+const rawAuthWindowMs = Number(process.env.CODEX_AUTH_WINDOW_MS);
+const AUTH_WINDOW_MS = Number.isInteger(rawAuthWindowMs) && rawAuthWindowMs > 0
+  ? rawAuthWindowMs
+  : 60_000;
+const rawSecurityAuditMaxBytes = Number(process.env.CODEX_SECURITY_AUDIT_MAX_BYTES);
+const SECURITY_AUDIT_MAX_BYTES = Number.isInteger(rawSecurityAuditMaxBytes) && rawSecurityAuditMaxBytes > 0
+  ? rawSecurityAuditMaxBytes
+  : 1024 * 1024;
+const rawPendingDeviceLimit = Number(process.env.CODEX_PENDING_DEVICE_LIMIT);
+const PENDING_DEVICE_LIMIT = Number.isInteger(rawPendingDeviceLimit) && rawPendingDeviceLimit > 0
+  ? rawPendingDeviceLimit
+  : 32;
+const CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+const DEVICE_TOKEN_PATTERN = /^[A-Za-z0-9._:-]{16,128}$/;
+const SOCKET_MAX_HTTP_BUFFER_SIZE = 32 * 1024 * 1024;
+const AUTH_SESSION_COOKIE = 'codex_session';
+const rawAuthSessionTtlMs = Number(process.env.CODEX_SESSION_TTL_MS);
+const AUTH_SESSION_TTL_MS = Number.isInteger(rawAuthSessionTtlMs) && rawAuthSessionTtlMs > 0
+  ? rawAuthSessionTtlMs
+  : 7 * 24 * 60 * 60 * 1000;
+const authSessions = new Map();
 
 // ---- Web Push ----
 const VAPID_PUBLIC_KEY  = process.env.VAPID_PUBLIC_KEY  || '';
@@ -71,46 +126,74 @@ const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
 const VAPID_SUBJECT     = process.env.VAPID_SUBJECT     || '';
 const pushEnabled = !!(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY && VAPID_SUBJECT);
 if (pushEnabled) webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+const sendPushNotification = createPushSender({
+  generateRequestDetails: webpush.generateRequestDetails,
+});
 
 const PUSH_SUB_FILE = join(DATA_DIR, 'push-subscriptions.json');
 let pushSubscriptions = [];
 try {
   const raw = JSON.parse(readFileSync(PUSH_SUB_FILE, 'utf8'));
-  pushSubscriptions = Array.isArray(raw) ? raw.filter(s => s?.endpoint) : (raw?.endpoint ? [raw] : []);
+  const records = Array.isArray(raw) ? raw : (raw?.endpoint ? [raw] : []);
+  pushSubscriptions = records.map(normalizeStoredPushSubscription).filter(Boolean);
 } catch {}
 
-function persistPushSubs() {
-  try { writeOwnerOnlyFile(PUSH_SUB_FILE, JSON.stringify(pushSubscriptions)); } catch {}
+function persistPushSubs(subscriptions = pushSubscriptions) {
+  try {
+    writeOwnerOnlyFile(PUSH_SUB_FILE, JSON.stringify(subscriptions));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-async function pushNotify(title, body) {
+function removePushSubscriptionsForDevice(deviceToken) {
+  const remaining = pushSubscriptions.filter(subscription => subscription.deviceToken !== deviceToken);
+  if (remaining.length === pushSubscriptions.length) return false;
+  pushSubscriptions = remaining;
+  if (!persistPushSubs()) console.error('[push] 无法持久化已撤销设备的订阅移除');
+  return true;
+}
+
+async function pushNotify(notification) {
   if (!pushEnabled || pushSubscriptions.length === 0) return;
-  const payload = JSON.stringify({ title, body });
+  const eligible = pushSubscriptions.filter(subscription => (
+    isDeviceTrusted(subscription.deviceToken)
+    || getSocketsByDeviceToken(subscription.deviceToken).some(socket => socket.deviceApproved === true)
+  ));
+  if (eligible.length !== pushSubscriptions.length) {
+    const removed = pushSubscriptions.length - eligible.length;
+    pushSubscriptions = eligible;
+    const persisted = persistPushSubs();
+    appendSecurityAudit({
+      event: 'push_subscription',
+      action: 'prune',
+      outcome: persisted ? 'success' : 'error',
+      reasonCode: 'device_untrusted',
+      removed,
+    });
+  }
+  if (eligible.length === 0) return;
+  const payload = JSON.stringify(notification);
   const expired = [];
-  await Promise.all(pushSubscriptions.map(sub =>
-    webpush.sendNotification(sub, payload).catch(e => {
+  await Promise.all(eligible.map(sub =>
+    sendPushNotification(sub, payload).catch(e => {
       if (e.statusCode === 410 || e.statusCode === 404) expired.push(sub.endpoint);
     })
   ));
   if (expired.length) {
     pushSubscriptions = pushSubscriptions.filter(s => !expired.includes(s.endpoint));
-    persistPushSubs();
+    if (!persistPushSubs()) console.error('[push] 无法持久化过期订阅清理');
   }
 }
 
 export function pushDecision(envelope) {
   if (!envelope || typeof envelope.type !== 'string') return null;
   if (envelope.type === 'approval_request') {
-    return {
-      title: 'Codex 待审批',
-      body: pushText(envelope.payload?.command || envelope.payload?.reason || envelope.payload?.kind || '有操作等待审批'),
-    };
+    return needsYouPush(envelope, 'Codex 待审批', '有操作等待审批');
   }
   if (envelope.type === 'user_input_request') {
-    return {
-      title: 'Codex 需要人到场',
-      body: pushText(envelope.payload?.questions?.[0]?.question || '有问题等待回答'),
-    };
+    return needsYouPush(envelope, 'Codex 需要人到场', '有问题等待回答');
   }
   if (envelope.type === 'approval_revoked') return null;
   if (envelope.type === 'result' || envelope.type === 'error') {
@@ -123,15 +206,70 @@ export function pushDecision(envelope) {
   return null;
 }
 
+function needsYouPush(envelope, title, body) {
+  const needId = typeof envelope.payload?.needId === 'string' ? envelope.payload.needId : null;
+  const threadId = envelope.sessionId || envelope.payload?.threadId || null;
+  const data = {};
+  if (needId) data.needId = needId;
+  if (threadId) data.threadId = threadId;
+  if (threadId) {
+    const params = new URLSearchParams({ thread: threadId });
+    if (needId) params.set('need', needId);
+    data.url = `/?${params.toString().replace(/\+/g, '%20')}`;
+  }
+  return {
+    title,
+    body,
+    tag: needId ? `need:${needId}` : 'ccm-needs-you',
+    data,
+  };
+}
+
 function pushText(value) {
   const text = typeof value === 'string' ? value : String(value ?? '');
   return text.length > 180 ? `${text.slice(0, 180)} ...` : text;
 }
+
+function canonicalAttachmentFingerprints(attachments) {
+  return (attachments || []).map(attachment => ({
+    name: attachment.name,
+    mimeType: attachment.mimeType,
+    decodedSha256: createHash('sha256')
+      .update(Buffer.from(attachment.data, 'base64'))
+      .digest('hex'),
+  }));
+}
+
+function canonicalInputPartFingerprints(parts) {
+  return (parts || []).map(part => {
+    if (part?.kind === 'mention') return { kind: 'mention', path: part.path };
+    if (part?.kind === 'skill') return { kind: 'skill', name: part.name, path: part.path };
+    if (part?.kind === 'imageUrl') {
+      return { kind: 'imageUrl', url: part.url, detail: part.detail ?? null };
+    }
+    return { kind: part?.kind ?? null };
+  });
+}
 // 仅 app-server 后端（长驻 JSON-RPC，原生流式/审批）
-const SessionClass = CodexAppServerSession;
+const SessionClass = ThreadRuntime;
 
 // ---- 启动预检 ----
 const versions = { codex: 'unknown' };
+
+function buildInitPayload({ sessionId = null, instanceId = null, cwd = WORK_DIR } = {}) {
+  return {
+    sessionId,
+    instanceId,
+    gatewayEpoch: GATEWAY_EPOCH,
+    cwd,
+    workDirs,
+    versions,
+    features: {
+      admin: ADMIN_ENABLED,
+      labs: P3_EXPERIMENTAL_ENABLED,
+    },
+  };
+}
 
 function preflight() {
   const fail = msg => {
@@ -198,6 +336,20 @@ const codexBin = shouldStartServer ? preflight() : (process.env.CODEX_BIN || 'co
 // ---- HTTP ----
 const app = express();
 app.use(compression());
+app.use((req, res, next) => {
+  const decision = evaluateTransportSecurity({
+    remoteAddress: req.socket?.remoteAddress || req.ip,
+    hostHeader: req.headers.host,
+    socketEncrypted: req.socket?.encrypted === true,
+    forwardedProtoHeader: req.headers['x-forwarded-proto'],
+  }, gatewaySecurityPolicy);
+  req.codexGatewaySecurity = decision;
+  if (decision.ok) return next();
+  return res.status(426).json({
+    status: 'secure_transport_required',
+    errorCode: decision.reason,
+  });
+});
 app.use((_req, res, next) => {
   res.setHeader('Content-Security-Policy', [
     "default-src 'self'",
@@ -215,6 +367,68 @@ app.use((_req, res, next) => {
 });
 
 const clientIp = v => normalizeAddress(v);
+const authFailureWindows = new Map();
+const adminUnlockFailureWindows = new Map();
+
+function recordAuthFailure(address, now = Date.now()) {
+  const key = clientIp(address) || 'unknown';
+  let window = authFailureWindows.get(key);
+  if (!window || window.resetAt <= now) {
+    window = { count: 0, resetAt: now + AUTH_WINDOW_MS };
+  }
+  window.count += 1;
+  authFailureWindows.set(key, window);
+  if (authFailureWindows.size > 10_000) {
+    for (const [candidate, value] of authFailureWindows) {
+      if (value.resetAt <= now) authFailureWindows.delete(candidate);
+    }
+  }
+  const rateLimited = window.count > AUTH_MAX_FAILURES;
+  return {
+    rateLimited,
+    shouldAudit: !rateLimited || window.count === AUTH_MAX_FAILURES + 1,
+    count: window.count,
+    resetAt: window.resetAt,
+  };
+}
+
+function adminUnlockFailureKey(socket) {
+  const deviceToken = socket.handshake.auth?.deviceToken;
+  if (typeof deviceToken === 'string' && deviceToken) return `device:${securityRef(deviceToken)}`;
+  return `ip:${clientIp(socket.handshake.address) || 'unknown'}`;
+}
+
+function readAdminUnlockFailureWindow(socket, now = Date.now()) {
+  const key = adminUnlockFailureKey(socket);
+  let window = adminUnlockFailureWindows.get(key);
+  if (!window || window.resetAt <= now) {
+    window = { count: 0, resetAt: now + ADMIN_UNLOCK_WINDOW_MS };
+    adminUnlockFailureWindows.set(key, window);
+  }
+  return { key, window };
+}
+
+function recordAdminUnlockFailure(socket, now = Date.now()) {
+  const state = readAdminUnlockFailureWindow(socket, now);
+  state.window.count += 1;
+  return state;
+}
+
+function adminUnlockRateLimit(socket, now = Date.now()) {
+  const state = readAdminUnlockFailureWindow(socket, now);
+  if (state.window.count < ADMIN_UNLOCK_MAX_FAILURES) return null;
+  return { retryAfterMs: Math.max(1, state.window.resetAt - now) };
+}
+
+function appendSecurityAudit(entry) {
+  try {
+    appendJsonlAuditRecord(SECURITY_AUDIT_FILE, entry, {
+      maxBytes: SECURITY_AUDIT_MAX_BYTES,
+    });
+  } catch {
+    // Security logging must not expose secrets or crash the authentication path.
+  }
+}
 
 function tokenMatches(got) {
   if (!AUTH_TOKEN || typeof got !== 'string') return false;
@@ -222,8 +436,80 @@ function tokenMatches(got) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+function authSessionKey(token) {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+function securityRef(value) {
+  if (typeof value !== 'string' || !value) return null;
+  return createHash('sha256').update(value).digest('hex').slice(0, 16);
+}
+
+function cookieValue(cookieHeader, name) {
+  if (typeof cookieHeader !== 'string') return '';
+  for (const part of cookieHeader.split(';')) {
+    const [rawName, ...rawValue] = part.trim().split('=');
+    if (rawName !== name) continue;
+    try {
+      return decodeURIComponent(rawValue.join('='));
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
+function readAuthSession(cookieHeader, now = Date.now()) {
+  const token = cookieValue(cookieHeader, AUTH_SESSION_COOKIE);
+  if (!token) return null;
+  const key = authSessionKey(token);
+  const session = authSessions.get(key);
+  if (!session) return null;
+  if (session.expiresAt <= now) {
+    authSessions.delete(key);
+    return null;
+  }
+  return { ...session, key };
+}
+
+function issueAuthSession(deviceToken, now = Date.now()) {
+  const token = randomBytes(32).toString('base64url');
+  const key = authSessionKey(token);
+  const session = {
+    deviceToken,
+    createdAt: now,
+    expiresAt: now + AUTH_SESSION_TTL_MS,
+  };
+  authSessions.set(key, session);
+  return { token, key, ...session };
+}
+
+function revokeAuthSessionsForDevice(deviceToken) {
+  let revoked = 0;
+  for (const [key, session] of authSessions) {
+    if (session.deviceToken !== deviceToken) continue;
+    authSessions.delete(key);
+    revoked += 1;
+  }
+  return revoked;
+}
+
+function sessionCookie(token, request, { clear = false } = {}) {
+  const attributes = [
+    `${AUTH_SESSION_COOKIE}=${clear ? '' : encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Strict',
+    clear ? 'Max-Age=0' : `Max-Age=${Math.floor(AUTH_SESSION_TTL_MS / 1000)}`,
+  ];
+  if (request.codexGatewaySecurity?.secure) attributes.push('Secure');
+  return attributes.join('; ');
+}
+
 async function httpAuth(req, res, next) {
-  if (!AUTH_TOKEN || tokenMatches(req.query.token) || tokenMatches(req.headers['x-auth-token'])) return next();
+  const session = readAuthSession(req.headers.cookie);
+  if (session) req.authSession = session;
+  if (!AUTH_TOKEN || session || tokenMatches(req.headers['x-auth-token'])) return next();
   return res.status(401).json({ status: 'unauthorized' });
 }
 
@@ -231,6 +517,60 @@ function noTokenLocalOnly(req, res, next) {
   if (AUTH_TOKEN) return next();
   if (isLocalAccess({ remoteAddress: req.socket?.remoteAddress || req.ip, hostHeader: req.headers.host })) return next();
   return res.status(403).json({ status: 'local_access_only' });
+}
+
+function approvedPushDevice(req, res, next) {
+  if (!pushEnabled) return next();
+  const deviceToken = req.headers['x-device-token'];
+  const approved = typeof deviceToken === 'string'
+    && DEVICE_TOKEN_PATTERN.test(deviceToken)
+    && (
+      isDeviceTrusted(deviceToken)
+      || getSocketsByDeviceToken(deviceToken).some(socket => socket.deviceApproved === true)
+    );
+  if (!approved) return res.status(403).json({ error: 'device_not_approved' });
+  req.deviceToken = deviceToken;
+  return next();
+}
+
+function normalizePushSubscription(body) {
+  if (typeof body?.endpoint !== 'string' || body.endpoint.length > 2048) return null;
+  let endpoint;
+  try {
+    endpoint = new URL(body.endpoint);
+  } catch {
+    return null;
+  }
+  if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password) return null;
+  if (!isPublicEndpointHostname(endpoint.hostname)) return null;
+  if (isIP(endpoint.hostname) && !isPublicIpAddress(endpoint.hostname)) return null;
+  const p256dh = body.keys?.p256dh;
+  const auth = body.keys?.auth;
+  if (
+    typeof p256dh !== 'string'
+    || p256dh.length < 1
+    || p256dh.length > 256
+    || typeof auth !== 'string'
+    || auth.length < 1
+    || auth.length > 128
+  ) return null;
+  return {
+    endpoint: endpoint.href,
+    keys: { p256dh, auth },
+  };
+}
+
+function normalizeStoredPushSubscription(value) {
+  if (typeof value?.deviceToken !== 'string' || !DEVICE_TOKEN_PATTERN.test(value.deviceToken)) return null;
+  const subscription = normalizePushSubscription(value);
+  if (!subscription) return null;
+  const now = Date.now();
+  return {
+    deviceToken: value.deviceToken,
+    ...subscription,
+    createdAt: Number.isFinite(value.createdAt) ? value.createdAt : now,
+    updatedAt: Number.isFinite(value.updatedAt) ? value.updatedAt : now,
+  };
 }
 
 app.use(noTokenLocalOnly);
@@ -244,12 +584,60 @@ app.use(express.static(join(HERE, 'public'), {
 app.get('/health', httpAuth, (_req, res) => {
   res.json({
     status: 'ok',
-    sessionId: routeInstance(viewingInstanceId)?.sessionId ?? null,
+    sessionId: null,
     busy: [...agents.values()].some(a => a.busy),
-    sessionState: routeInstance(viewingInstanceId)?.statusPayload?.('health') ?? null,
+    sessionState: null,
     versions,
     timestamp: Date.now()
   });
+});
+
+app.post('/auth/session', (req, res) => {
+  const deviceToken = req.headers['x-device-token'];
+  if (!AUTH_TOKEN || !tokenMatches(req.headers['x-auth-token'])) {
+    const failure = recordAuthFailure(req.socket?.remoteAddress || req.ip);
+    if (failure.shouldAudit) {
+      appendSecurityAudit({
+        event: 'session_issue',
+        outcome: failure.rateLimited ? 'rate_limited' : 'denied',
+        ip: clientIp(req.socket?.remoteAddress || req.ip),
+        ...(failure.rateLimited ? { attempts: failure.count, resetAt: failure.resetAt } : {}),
+      });
+    }
+    return res.status(failure.rateLimited ? 429 : 401).json({
+      status: failure.rateLimited ? 'rate_limited' : 'unauthorized',
+    });
+  }
+  if (typeof deviceToken !== 'string' || !DEVICE_TOKEN_PATTERN.test(deviceToken)) {
+    return res.status(400).json({ error: 'invalid_device_token' });
+  }
+  const session = issueAuthSession(deviceToken);
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Set-Cookie', sessionCookie(session.token, req));
+  appendSecurityAudit({
+    event: 'session_issue',
+    outcome: 'success',
+    deviceRef: session.key.slice(0, 16),
+    ip: clientIp(req.socket?.remoteAddress || req.ip),
+  });
+  return res.status(201).json({ ok: true, expiresAt: session.expiresAt });
+});
+
+app.delete('/auth/session', httpAuth, (req, res) => {
+  const session = req.authSession;
+  if (!session) return res.status(400).json({ error: 'session_cookie_required' });
+  authSessions.delete(session.key);
+  res.setHeader('Set-Cookie', sessionCookie('', req, { clear: true }));
+  appendSecurityAudit({
+    event: 'session_revoke',
+    outcome: 'success',
+    deviceRef: session.key.slice(0, 16),
+    ip: clientIp(req.socket?.remoteAddress || req.ip),
+  });
+  for (const socket of io.sockets.sockets.values()) {
+    if (socket.data.authSessionKey === session.key) socket.disconnect(true);
+  }
+  return res.status(204).end();
 });
 
 // Push endpoints
@@ -257,18 +645,64 @@ app.get('/push/vapid-public-key', (_req, res) => {
   if (!pushEnabled) return res.status(503).json({ error: 'push not configured' });
   res.json({ key: VAPID_PUBLIC_KEY });
 });
-app.post('/push/subscribe', express.json({ limit: '4kb' }), (req, res) => {
+app.post('/push/subscribe', httpAuth, approvedPushDevice, express.json({ limit: '4kb' }), (req, res) => {
   if (!pushEnabled) return res.status(503).json({ error: 'push not configured' });
-  if (!req.body?.endpoint) return res.status(400).json({ error: 'invalid subscription' });
-  pushSubscriptions = pushSubscriptions.filter(s => s.endpoint !== req.body.endpoint);
-  pushSubscriptions.push(req.body);
-  persistPushSubs();
+  const normalized = normalizePushSubscription(req.body);
+  if (!normalized) return res.status(400).json({ error: 'invalid_subscription' });
+  const existingForDevice = pushSubscriptions.find(s => s.deviceToken === req.deviceToken);
+  if (!existingForDevice && pushSubscriptions.length >= PUSH_MAX_SUBSCRIPTIONS) {
+    return res.status(429).json({ error: 'subscription_limit' });
+  }
+  const previous = pushSubscriptions.find(s => (
+    s.endpoint === normalized.endpoint || s.deviceToken === req.deviceToken
+  ));
+  const now = Date.now();
+  const subscription = {
+    deviceToken: req.deviceToken,
+    endpoint: normalized.endpoint,
+    keys: normalized.keys,
+    createdAt: Number.isFinite(previous?.createdAt) ? previous.createdAt : now,
+    updatedAt: now,
+  };
+  const nextSubscriptions = pushSubscriptions.filter(s => (
+    s.endpoint !== normalized.endpoint && s.deviceToken !== req.deviceToken
+  ));
+  nextSubscriptions.push(subscription);
+  if (!persistPushSubs(nextSubscriptions)) {
+    appendSecurityAudit({
+      event: 'push_subscription',
+      action: 'subscribe',
+      outcome: 'error',
+      reasonCode: 'persist_failed',
+      deviceRef: securityRef(req.deviceToken),
+    });
+    return res.status(500).json({ error: 'subscription_persist_failed' });
+  }
+  pushSubscriptions = nextSubscriptions;
+  appendSecurityAudit({
+    event: 'push_subscription',
+    action: 'subscribe',
+    outcome: 'success',
+    deviceRef: securityRef(req.deviceToken),
+  });
   res.json({ ok: true });
 });
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
-  perMessageDeflate: { threshold: 1024 }
+  maxHttpBufferSize: SOCKET_MAX_HTTP_BUFFER_SIZE,
+  perMessageDeflate: { threshold: 1024 },
+  allowRequest: (request, callback) => {
+    const decision = evaluateSocketHandshakeSecurity({
+      remoteAddress: request.socket?.remoteAddress,
+      hostHeader: request.headers.host,
+      socketEncrypted: request.socket?.encrypted === true,
+      forwardedProtoHeader: request.headers['x-forwarded-proto'],
+      originHeader: request.headers.origin,
+    }, gatewaySecurityPolicy);
+    request.codexGatewaySecurity = decision;
+    callback(decision.ok ? null : decision.reason, decision.ok);
+  },
 });
 
 // ---- 设备审批辅助函数 ----
@@ -289,15 +723,19 @@ function unlockSocket(socket) {
     seq: 0, epoch: 'server', sessionId: null, ts: Date.now(),
     type: 'device_status', payload: { status: 'approved', deviceId: deviceToken }
   });
-  const va = routeInstance(viewingInstanceId);
-  if (va) {
-    socket.emit('agent:event', {
-      seq: 0, epoch: 'server', sessionId: null, ts: Date.now(),
-      type: 'init', payload: { sessionId: va.sessionId, cwd: va.cwd, workDirs, versions }
-    });
-    sendActiveStatus(socket, 'device_unlocked');
-  }
-  sendSessionList(socket);
+  const va = routeInstance(socket.data.viewingInstanceId);
+  socket.emit('agent:event', {
+    seq: 0,
+    epoch: 'server',
+    sessionId: va?.sessionId ?? null,
+    instanceId: va?.instanceId ?? null,
+    ts: Date.now(),
+    type: 'init',
+    payload: buildInitPayload(va
+      ? { sessionId: va.sessionId, instanceId: va.instanceId, cwd: va.cwd }
+      : {}),
+  });
+  if (va) sendActiveStatus(socket, 'device_unlocked');
   broadcastPendingDevices();
   scheduleStatusRefresh();
 }
@@ -306,14 +744,76 @@ function unlockDeviceSockets(deviceToken) {
   for (const socket of getSocketsByDeviceToken(deviceToken)) unlockSocket(socket);
 }
 
-function disconnectDeviceSockets(deviceToken) {
+function approveDeviceAccess(deviceToken, {
+  persistTrust = false,
+  source = 'unknown',
+  actorToken = null,
+} = {}) {
+  if (typeof deviceToken !== 'string' || !deviceToken) return false;
+  if (persistTrust && !approveDevice(deviceToken)) {
+    appendSecurityAudit({
+      event: 'device_access',
+      action: 'approve',
+      outcome: 'failure',
+      reason: 'persist_failed',
+      source,
+      subjectRef: securityRef(deviceToken),
+      actorRef: securityRef(actorToken),
+    });
+    return false;
+  }
+  if (persistTrust) trustedDeviceSnapshot.add(deviceToken);
+  unlockDeviceSockets(deviceToken);
+  appendSecurityAudit({
+    event: 'device_access',
+    action: 'approve',
+    outcome: 'success',
+    source,
+    subjectRef: securityRef(deviceToken),
+    actorRef: securityRef(actorToken),
+  });
+  return true;
+}
+
+function disconnectDeviceSockets(deviceToken, { preserveLocalSockets = false } = {}) {
   for (const socket of getSocketsByDeviceToken(deviceToken)) {
+    if (preserveLocalSockets && socket.request?.codexGatewaySecurity?.local === true) continue;
     socket.emit('agent:event', {
       seq: 0, epoch: 'server', sessionId: null, ts: Date.now(),
       type: 'device_status', payload: { status: 'denied', deviceId: deviceToken }
     });
     socket.disconnect(true);
   }
+}
+
+function revokeDeviceAccess(deviceToken, {
+  removeTrust = false,
+  preserveLocalSockets = false,
+  source = 'unknown',
+  actorToken = null,
+} = {}) {
+  if (typeof deviceToken !== 'string' || !deviceToken) return false;
+  const trustPersisted = !removeTrust || denyDevice(deviceToken);
+  if (removeTrust && trustPersisted) trustedDeviceSnapshot.delete(deviceToken);
+  for (const socket of getSocketsByDeviceToken(deviceToken)) {
+    if (preserveLocalSockets && socket.request?.codexGatewaySecurity?.local === true) continue;
+    socket.deviceApproved = false;
+  }
+  const revokedSessions = revokeAuthSessionsForDevice(deviceToken);
+  const pushRemoved = removePushSubscriptionsForDevice(deviceToken);
+  disconnectDeviceSockets(deviceToken, { preserveLocalSockets });
+  appendSecurityAudit({
+    event: 'device_access',
+    action: 'deny',
+    outcome: trustPersisted ? 'success' : 'partial',
+    ...(trustPersisted ? {} : { reason: 'persist_failed' }),
+    source,
+    subjectRef: securityRef(deviceToken),
+    actorRef: securityRef(actorToken),
+    revokedSessions,
+    pushRemoved,
+  });
+  return trustPersisted;
 }
 
 function pendingDevicesPayload() {
@@ -332,41 +832,89 @@ function broadcastPendingDevices() {
   }
 }
 
-// 初始化设备文件
 const TRUSTED_DEVICES_FILE = join(DATA_DIR, 'trusted-devices.json');
 const PENDING_DEVICES_FILE = join(DATA_DIR, 'pending-devices.json');
-try {
-  if (shouldStartServer) {
+let trustedDevicesWatcher = null;
+let trustedDevicesReconcileTimer = null;
+let trustedDeviceSnapshot = new Set();
+
+function ensureDeviceFiles() {
+  try {
     mkdirSync(DATA_DIR, { recursive: true });
     if (!existsSync(TRUSTED_DEVICES_FILE)) writeOwnerOnlyFile(TRUSTED_DEVICES_FILE, JSON.stringify([], null, 2));
     if (!existsSync(PENDING_DEVICES_FILE)) writeOwnerOnlyFile(PENDING_DEVICES_FILE, JSON.stringify([], null, 2));
+  } catch (err) {
+    console.error('[devices] 初始化设备认证文件失败:', err.message);
   }
-} catch (err) {
-  console.error('[devices] 初始化设备认证文件失败:', err.message);
 }
 
-// 监听 trusted-devices.json 变化（CLI 审批后自动解锁）
-if (shouldStartServer && existsSync(TRUSTED_DEVICES_FILE)) {
+function reconcileTrustedDeviceSockets() {
+  const latestTrustedDevices = getTrustedDeviceTokens();
+  const approvedDeviceTokens = new Set();
+  const revokedDeviceTokens = new Set();
+  for (const deviceToken of trustedDeviceSnapshot) {
+    if (!latestTrustedDevices.has(deviceToken)) revokedDeviceTokens.add(deviceToken);
+  }
+  trustedDeviceSnapshot = latestTrustedDevices;
+  for (const socket of io.sockets.sockets.values()) {
+    const deviceToken = socket.handshake.auth?.deviceToken;
+    if (typeof deviceToken !== 'string' || !DEVICE_TOKEN_PATTERN.test(deviceToken)) continue;
+    const trusted = latestTrustedDevices.has(deviceToken);
+    if (socket.deviceApproved === false && trusted) {
+      approvedDeviceTokens.add(deviceToken);
+      continue;
+    }
+    const local = socket.request?.codexGatewaySecurity?.local === true;
+    if (socket.deviceApproved === true && !local && !trusted) {
+      revokedDeviceTokens.add(deviceToken);
+    }
+  }
+
+  for (const deviceToken of approvedDeviceTokens) {
+    console.log(`[devices] 检测到变更，自动解锁设备 ${deviceToken}`);
+    approveDeviceAccess(deviceToken, { source: 'trusted_file' });
+  }
+  for (const deviceToken of revokedDeviceTokens) {
+    console.warn(`[devices] 检测到外部撤销，断开设备 ${deviceToken}`);
+    revokeDeviceAccess(deviceToken, { source: 'trusted_file', preserveLocalSockets: true });
+  }
+  broadcastPendingDevices();
+}
+
+function scheduleTrustedDeviceReconcile() {
+  clearTimeout(trustedDevicesReconcileTimer);
+  trustedDevicesReconcileTimer = setTimeout(() => {
+    trustedDevicesReconcileTimer = null;
+    reconcileTrustedDeviceSockets();
+  }, 100);
+  trustedDevicesReconcileTimer.unref?.();
+}
+
+// 监听状态目录而不是文件 inode，兼容 owner-only 原子 rename 写入。
+function startTrustedDevicesWatcher() {
+  if (trustedDevicesWatcher) return;
+  ensureDeviceFiles();
+  trustedDeviceSnapshot = getTrustedDeviceTokens();
   try {
-    watch(TRUSTED_DEVICES_FILE, eventType => {
-      if (eventType === 'change') {
-        setTimeout(() => {
-          for (const socket of io.sockets.sockets.values()) {
-            if (socket.deviceApproved === false) {
-              const token = socket.handshake.auth?.deviceToken;
-              if (isDeviceTrusted(token)) {
-                console.log(`[devices] 检测到变更，自动解锁设备 ${token}`);
-                unlockSocket(socket);
-              }
-            }
-          }
-          broadcastPendingDevices();
-        }, 100);
-      }
+    trustedDevicesWatcher = watch(DATA_DIR, (_eventType, filename) => {
+      if (filename && String(filename) !== 'trusted-devices.json') return;
+      scheduleTrustedDeviceReconcile();
     });
+    trustedDevicesWatcher.on('error', err => {
+      console.error('[devices] 监视 trusted-devices.json 失败:', err.message);
+    });
+    trustedDevicesWatcher.unref?.();
   } catch (err) {
     console.error('[devices] 无法监视 trusted-devices.json:', err.message);
   }
+}
+
+function stopTrustedDevicesWatcher() {
+  clearTimeout(trustedDevicesReconcileTimer);
+  trustedDevicesReconcileTimer = null;
+  trustedDevicesWatcher?.close();
+  trustedDevicesWatcher = null;
+  trustedDeviceSnapshot = new Set();
 }
 
 // TTY 回车一键审批
@@ -378,15 +926,13 @@ if (shouldStartServer && process.stdin.isTTY) {
     if (text === '') {
       if (latest) {
         console.log(`\n[TTY] 一键批准最新设备: ${latest}`);
-        approveDevice(latest);
-        unlockDeviceSockets(latest);
+        approveDeviceAccess(latest, { persistTrust: true, source: 'tty' });
         broadcastPendingDevices();
       }
     } else if (text === 'deny') {
       if (latest) {
         console.log(`\n[TTY] 拒绝最新设备: ${latest}`);
-        denyDevice(latest);
-        disconnectDeviceSockets(latest);
+        revokeDeviceAccess(latest, { removeTrust: true, source: 'tty' });
         broadcastPendingDevices();
       }
     }
@@ -396,29 +942,63 @@ if (shouldStartServer && process.stdin.isTTY) {
 // ---- Socket.IO 鉴权 ----
 io.use(async (socket, next) => {
   try {
+    const suppliedDeviceToken = socket.handshake.auth?.deviceToken;
+    const isLocal = socket.request?.codexGatewaySecurity?.local === true;
     let authPassed = false;
+    let authSession = null;
     if (!AUTH_TOKEN) {
       authPassed = isLocalAccess({
         remoteAddress: socket.handshake.address,
         hostHeader: socket.handshake.headers.host
       });
-    } else if (tokenMatches(socket.handshake.auth?.token)) {
+    } else if (isLocal && tokenMatches(socket.handshake.auth?.token)) {
       authPassed = true;
+    } else {
+      authSession = readAuthSession(socket.handshake.headers.cookie);
+      if (authSession && authSession.deviceToken === suppliedDeviceToken) authPassed = true;
     }
 
     if (!authPassed) {
       console.warn(`[conn] ${clientIp(socket.handshake.address)} 握手鉴权失败`);
-      return next(new Error('unauthorized'));
+      const failure = recordAuthFailure(socket.handshake.address);
+      if (failure.shouldAudit) {
+        appendSecurityAudit({
+          event: 'auth_failure',
+          outcome: failure.rateLimited ? 'rate_limited' : 'denied',
+          ip: clientIp(socket.handshake.address),
+          ...(failure.rateLimited ? { attempts: failure.count, resetAt: failure.resetAt } : {}),
+        });
+      }
+      return next(new Error(failure.rateLimited ? 'rate_limited' : 'unauthorized'));
+    }
+    socket.data.authSessionKey = authSession?.key ?? null;
+    if (
+      (!isLocal && suppliedDeviceToken === undefined)
+      || (
+        suppliedDeviceToken !== undefined
+        && (
+        typeof suppliedDeviceToken !== 'string'
+        || !DEVICE_TOKEN_PATTERN.test(suppliedDeviceToken)
+        )
+      )
+    ) {
+      return next(new Error('invalid_device_token'));
     }
 
-    const isLocal = isLoopbackAddress(socket.handshake.address) && isLoopbackHostHeader(socket.handshake.headers.host);
     if (isLocal) {
       socket.deviceApproved = true;
     } else {
-      const deviceToken = socket.handshake.auth?.deviceToken;
+      const deviceToken = suppliedDeviceToken;
       if (isDeviceTrusted(deviceToken)) {
         socket.deviceApproved = true;
       } else {
+        const pendingDevices = getPendingDevices();
+        if (
+          !pendingDevices.some(device => device.deviceToken === deviceToken)
+          && pendingDevices.length >= PENDING_DEVICE_LIMIT
+        ) {
+          return next(new Error('pairing_capacity'));
+        }
         socket.deviceApproved = false;
         const ip = clientIp(socket.handshake.address);
         const ua = socket.handshake.headers['user-agent'] || 'Unknown';
@@ -447,63 +1027,226 @@ io.use(async (socket, next) => {
 });
 
 // ---- 会话管理 ----
-// 多实例并行：instanceId → CodexAppServerSession
+// 多实例并行：instanceId → ThreadRuntime；所有 runtime 共享一个 AppServerHost。
 const agents = new Map();
-let viewingInstanceId = null;
+const threadRegistry = new ThreadRegistry();
+const messageReceiptLedger = new MessageReceiptLedger();
+const needsYouRegistry = new NeedsYouRegistry();
+let appServerHost = null;
 let instanceCounter = 0;
 const newInstanceId = () => `inst_${++instanceCounter}`;
+const instanceRoom = instanceId => `instance:${instanceId}`;
+
+function getAppServerHost() {
+  if (!appServerHost) {
+    appServerHost = new AppServerHost({
+      codexBin,
+      cwd: WORK_DIR,
+      registry: threadRegistry,
+      experimentalApi: P3_EXPERIMENTAL_ENABLED,
+      onThreadStatus: change => broadcastHostThreadStatus(change),
+      onUnrouted: frame => {
+        if (process.env.LOG_STDERR) console.error('[appserver:unrouted]', frame);
+      },
+    });
+  }
+  return appServerHost;
+}
+
+function setSocketViewingInstance(socket, instanceId) {
+  const previous = socket.data.viewingInstanceId;
+  if (previous && previous !== instanceId) socket.leave(instanceRoom(previous));
+  socket.data.viewingInstanceId = instanceId || null;
+  if (instanceId) socket.join(instanceRoom(instanceId));
+}
+
+function clearSocketInstanceReferences(instanceId) {
+  for (const socket of io.sockets.sockets.values()) {
+    if (socket.data.viewingInstanceId === instanceId) setSocketViewingInstance(socket, null);
+    if (socket.data.controlInstanceId === instanceId) socket.data.controlInstanceId = null;
+  }
+}
 
 // 多工作目录路由
 const routeCwd = cwd => (typeof cwd === 'string' && workDirs.includes(cwd)) ? cwd : WORK_DIR;
 
 // 实例路由
-const resolveInstanceId = id => agents.has(id) ? id : viewingInstanceId;
+const resolveInstanceId = id => agents.has(id) ? id : null;
 const routeInstance = id => agents.get(resolveInstanceId(id)) ?? null;
 
-function sendSessionList(socket, cwd) {
-  const targetCwd = cwd || WORK_DIR;
-  const allSessions = sessions.getState().sessions.filter(s => s.cwd === targetCwd);
-  const currentId = sessions.getCurrent(targetCwd);
-  socket.emit('agent:event', {
-    seq: 0, epoch: 'server', sessionId: null, ts: Date.now(),
-    type: 'session_list',
-    payload: { sessions: allSessions, currentSessionId: currentId, cwd: targetCwd }
-  });
+function resolveRuntimeTarget({ instanceId, threadId, turnId, requestId } = {}) {
+  const target = {};
+  if (typeof instanceId === 'string' && instanceId) target.instanceId = instanceId;
+  if (typeof threadId === 'string' && threadId) target.threadId = threadId;
+  if (typeof turnId === 'string' && turnId) target.turnId = turnId;
+  if (requestId !== undefined && requestId !== null) target.requestId = requestId;
+  return threadRegistry.resolve(target);
 }
 
 function sendActiveStatus(socket, reason = 'connect') {
-  const agent = routeInstance(viewingInstanceId);
+  const agent = agents.get(socket.data.viewingInstanceId) ?? null;
   if (typeof agent?.statusPayload !== 'function') return;
   socket.emit('agent:event', {
     seq: 0,
     epoch: 'server',
     sessionId: agent.sessionId ?? null,
+    instanceId: agent.instanceId,
     ts: Date.now(),
     type: 'status',
     payload: agent.statusPayload(reason)
   });
 }
 
+function syncRuntimeIdentity(runtime, envelope) {
+  const turnId = envelope?.payload?.turnId;
+  if (typeof turnId === 'string' && turnId) {
+    threadRegistry.bind(runtime, { turnId });
+  }
+  if (envelope?.type === 'approval_request' || envelope?.type === 'user_input_request') {
+    const requestId = envelope.payload?.approvalId;
+    if (requestId !== undefined && requestId !== null) {
+      threadRegistry.bind(runtime, { requestId });
+    }
+  }
+  if (envelope?.type === 'approval_revoked') {
+    threadRegistry.releaseRequest(runtime, envelope.payload?.approvalId);
+  }
+  if (envelope?.type === 'result' || (
+    envelope?.type === 'status'
+    && ['turn_failed', 'turn_interrupted', 'interrupt', 'interrupt_cleared_queue', 'process_exit', 'process_error']
+      .includes(envelope.payload?.reason)
+  )) {
+    threadRegistry.clearTurn(runtime);
+  }
+}
+
+function broadcastNeedsYouChange(change) {
+  if (!change?.need) return;
+  for (const socket of io.sockets.sockets.values()) {
+    if (socket.deviceApproved !== true) continue;
+    socket.emit('agent:event', {
+      seq: 0,
+      epoch: 'server',
+      sessionId: null,
+      instanceId: null,
+      ts: Date.now(),
+      type: 'needs_you_changed',
+      payload: { revision: change.revision, need: change.need },
+    });
+  }
+}
+
+function broadcastHostThreadStatus(change) {
+  if (!change?.threadId || !change?.status) return;
+  for (const socket of io.sockets.sockets.values()) {
+    if (socket.deviceApproved !== true) continue;
+    socket.emit('agent:event', {
+      seq: 0,
+      epoch: 'server',
+      sessionId: null,
+      instanceId: null,
+      ts: Date.now(),
+      type: 'thread_status',
+      payload: { scope: 'host', ...change },
+    });
+  }
+}
+
+function trackNeedsYou(agent, envelope) {
+  if (envelope?.type === 'approval_revoked') {
+    const closed = needsYouRegistry.close({
+      instanceId: agent.instanceId,
+      requestId: envelope.payload?.approvalId ?? envelope.payload?.requestId,
+    }, { state: 'revoked', reason: 'upstream_resolved' });
+    const need = closed.needs[0] || null;
+    if (need) envelope.payload = { ...(envelope.payload || {}), needId: need.needId };
+    return need ? [{ changed: closed.changed, revision: closed.revision, need }] : [];
+  }
+  const terminalStatusReason = envelope?.type === 'status'
+    && ['turn_failed', 'turn_interrupted', 'interrupt', 'interrupt_cleared_queue', 'process_exit', 'process_error']
+      .includes(envelope.payload?.reason)
+    ? envelope.payload.reason
+    : null;
+  if (envelope?.type === 'result' || envelope?.type === 'error' || terminalStatusReason) {
+    const closed = needsYouRegistry.close(
+      { instanceId: agent.instanceId },
+      { state: 'expired', reason: terminalStatusReason || envelope.type },
+    );
+    return closed.needs.map(need => ({ changed: true, revision: need.revision, need }));
+  }
+  if (envelope?.type !== 'approval_request' && envelope?.type !== 'user_input_request') return [];
+  const payload = envelope.payload || {};
+  try {
+    const change = needsYouRegistry.open({
+      kind: envelope.type === 'user_input_request' ? 'question' : 'approval',
+      target: {
+        instanceId: agent.instanceId,
+        threadId: envelope.sessionId || agent.sessionId || payload.threadId,
+        turnId: payload.turnId,
+        itemId: payload.itemId,
+        requestId: payload.approvalId,
+      },
+      payload,
+      createdAt: envelope.ts || Date.now(),
+    });
+    if (change.need) envelope.payload = { ...payload, needId: change.need.needId };
+    return [change];
+  } catch (error) {
+    if (process.env.LOG_STDERR) console.error('[needs-you:open]', error);
+    return [];
+  }
+}
+
 function createAgent(resumeId = null, cwd = WORK_DIR) {
+  if (resumeId) {
+    try {
+      return threadRegistry.resolve({ threadId: resumeId });
+    } catch (error) {
+      if (error?.code !== 'stale_target') throw error;
+    }
+  }
   const instanceId = newInstanceId();
-  const agent = new SessionClass({
+  let agent;
+  agent = new SessionClass({
     instanceId,
     resumeId,
     cwd,
     codexBin,
+    host: getAppServerHost(),
     idleTimeoutMs,
     onEvent: envelope => {
-      io.emit('agent:event', envelope);
+      syncRuntimeIdentity(agent, envelope);
+      for (const needsYouChange of trackNeedsYou(agent, envelope)) {
+        if (needsYouChange.changed) broadcastNeedsYouChange(needsYouChange);
+      }
+      if (envelope.type === 'message_receipt') {
+        messageReceiptLedger.advanceRuntime({
+          instanceId: agent.instanceId,
+          clientRequestId: envelope.payload?.clientRequestId,
+          receipt: {
+            ...(envelope.payload || {}),
+            instanceId: agent.instanceId,
+          },
+        });
+      }
+      if (envelope.type === 'thread_status') broadcastInstances();
+      if (envelope.instanceId) {
+        io.to(instanceRoom(envelope.instanceId)).emit('agent:event', envelope);
+      }
       const push = pushDecision(envelope);
-      if (push) pushNotify(push.title, push.body).catch(() => {});
+      if (push) pushNotify(push).catch(() => {});
     },
-    onSessionId: (sid, firstMessage) => {
-      sessions.upsertSession({ id: sid, title: firstMessage, cwd });
+    onSessionId: sid => {
+      threadRegistry.bind(agent, { threadId: sid });
     },
     onExit: () => {
       // Session process ended naturally; keep agent in map for reconnect
     },
     experimentalApi: P3_EXPERIMENTAL_ENABLED,
+  });
+  threadRegistry.register(agent, {
+    instanceId,
+    threadId: resumeId || undefined,
   });
   agents.set(instanceId, agent);
   broadcastInstances();
@@ -520,15 +1263,13 @@ function broadcastInstances() {
     const sp = typeof a.statusPayload === 'function' ? a.statusPayload('instances') : {};
     list.push({ instanceId: id, sessionId: a.sessionId, cwd: a.cwd, state: sp.state || 'idle', busy: a.busy, queueLength: (a.inputQueue || []).length });
   }
-  io.emit('agent:event', {
-    seq: 0, epoch: 'server', sessionId: null, ts: Date.now(),
-    type: 'instances', payload: { instances: list, viewingInstanceId }
-  });
-}
-
-function broadcastSessionList(cwd) {
   for (const socket of io.sockets.sockets.values()) {
-    if (socket.deviceApproved === true) sendSessionList(socket, cwd);
+    if (socket.deviceApproved !== true) continue;
+    socket.emit('agent:event', {
+      seq: 0, epoch: 'server', sessionId: null, ts: Date.now(),
+      type: 'instances',
+      payload: { instances: list, viewingInstanceId: socket.data.viewingInstanceId ?? null }
+    });
   }
 }
 
@@ -566,20 +1307,33 @@ function ackError(ack, error) {
   if (typeof ack === 'function') ack({ ok: false, error: error?.message || String(error || 'unknown error') });
 }
 
+function ackFeatureDisabled(ack, feature) {
+  if (typeof ack === 'function') {
+    ack({
+      ok: false,
+      errorCode: 'feature_disabled',
+      error: `${feature} controls are disabled`,
+      retryable: false,
+    });
+  }
+}
+
 function requireP3Experimental(ack) {
   if (P3_EXPERIMENTAL_ENABLED) return true;
-  ackError(ack, new Error('P3 experimental controls are disabled'));
+  ackFeatureDisabled(ack, 'P3 experimental');
   return false;
 }
 
-function ensureControlAgent(cwd = WORK_DIR) {
+function ensureControlAgent(cwd = WORK_DIR, socket = null) {
+  if (!socket) throw new Error('Socket context is required for control routing');
   const routedCwd = routeCwd(cwd);
-  let ai = routeInstance(viewingInstanceId);
+  let ai = routeInstance(socket.data.viewingInstanceId) ?? routeInstance(socket.data.controlInstanceId);
   if (!ai || ai.cwd !== routedCwd) {
     ai = createAgent(null, routedCwd);
-    viewingInstanceId = ai.instanceId;
     broadcastInstances();
   }
+  socket.data.controlInstanceId = ai.instanceId;
+  socket.join(instanceRoom(ai.instanceId));
   return ai;
 }
 
@@ -610,8 +1364,13 @@ function normalizeThreadHistoryMessages(thread) {
     for (const item of items) {
       if (item?.type === 'userMessage') {
         const content = (Array.isArray(item.content) ? item.content : [])
-          .filter(part => part?.type === 'text' && typeof part.text === 'string')
-          .map(part => part.text.trim())
+          .map(part => {
+            if (part?.type === 'text' && typeof part.text === 'string') return part.text.trim();
+            if (part?.type === 'mention') return `@${part.name || 'file'}`;
+            if (part?.type === 'skill') return `$${part.name || 'skill'}`;
+            if (part?.type === 'localImage' || part?.type === 'image') return '[Image]';
+            return '';
+          })
           .filter(Boolean)
           .join('\n');
         if (content) messages.push({ role: 'user', content });
@@ -624,11 +1383,31 @@ function normalizeThreadHistoryMessages(thread) {
   return messages;
 }
 
+function findClientRequestInThread(thread, clientRequestId) {
+  const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+  for (const turn of turns) {
+    const items = Array.isArray(turn?.items) ? turn.items : [];
+    const item = items.find(candidate => (
+      candidate?.type === 'userMessage'
+      && candidate.clientId === clientRequestId
+    ));
+    if (item) {
+      return {
+        turnId: typeof turn?.id === 'string' ? turn.id : null,
+        itemId: typeof item?.id === 'string' ? item.id : null,
+      };
+    }
+  }
+  return null;
+}
+
 function emitServerEnvelope(socket, type, payload) {
+  const agent = routeInstance(socket.data.viewingInstanceId);
   socket.emit('agent:event', {
     seq: 0,
     epoch: 'server',
-    sessionId: routeInstance(viewingInstanceId)?.sessionId ?? null,
+    sessionId: agent?.sessionId ?? null,
+    instanceId: agent?.instanceId ?? null,
     ts: Date.now(),
     type,
     payload,
@@ -639,10 +1418,24 @@ function appendAdminAudit(entry) {
   try {
     mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
     const previous = existsSync(ADMIN_AUDIT_FILE) ? readFileSync(ADMIN_AUDIT_FILE, 'utf8') : '';
-    writeOwnerOnlyFile(ADMIN_AUDIT_FILE, previous + JSON.stringify({ ts: Date.now(), ...entry }) + '\n');
+    writeOwnerOnlyFile(
+      ADMIN_AUDIT_FILE,
+      previous + JSON.stringify({ ts: Date.now(), ...sanitizeAdminAuditValue(entry) }) + '\n',
+    );
   } catch {
     // Admin audit failures should not leak details or crash the socket handler.
   }
+}
+
+function sanitizeAdminAuditValue(value) {
+  if (typeof value === 'string') return sanitize(value);
+  if (Array.isArray(value)) return value.map(sanitizeAdminAuditValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, nested]) => (
+      [key, sanitizeAdminAuditValue(nested)]
+    )));
+  }
+  return value;
 }
 
 function adminSummary(action, payload = {}) {
@@ -708,6 +1501,39 @@ function denyAdmin(socket, ack, action, payload, error) {
 }
 
 function requireAdmin(socket, ack, action, payload = {}) {
+  if (!ADMIN_ENABLED) {
+    appendAdminAudit({
+      event: 'denied',
+      action,
+      socketId: socket.id,
+      error: 'Admin controls are disabled',
+      summary: adminSummary(action, payload),
+    });
+    ackFeatureDisabled(ack, 'Admin');
+    return false;
+  }
+  if (
+    socket.adminMode === true
+    && (!Number.isFinite(socket.data.adminExpiresAt) || socket.data.adminExpiresAt <= Date.now())
+  ) {
+    socket.adminMode = false;
+    socket.data.adminExpiresAt = null;
+    appendAdminAudit({
+      event: 'expired',
+      action,
+      socketId: socket.id,
+      summary: adminSummary(action, payload),
+    });
+    if (typeof ack === 'function') {
+      ack({
+        ok: false,
+        errorCode: 'admin_locked',
+        error: 'Admin mode expired',
+        retryable: false,
+      });
+    }
+    return false;
+  }
   if (socket.adminMode !== true) {
     denyAdmin(socket, ack, action, payload, 'Admin mode is locked');
     return false;
@@ -753,75 +1579,484 @@ io.on('connection', socket => {
     });
   } else {
     // 已授权：发送初始状态
-    const va = routeInstance(viewingInstanceId);
     socket.emit('agent:event', {
-      seq: 0, epoch: 'server', sessionId: null, ts: Date.now(),
-      type: 'init', payload: {
-        sessionId: va?.sessionId ?? null,
-        cwd: va?.cwd || WORK_DIR, workDirs, versions
-      }
+      seq: 0, epoch: 'server', sessionId: null, instanceId: null, ts: Date.now(),
+      type: 'init', payload: buildInitPayload()
     });
-    sendActiveStatus(socket, 'connect');
-    sendSessionList(socket);
     socket.emit('agent:event', {
       seq: 0, epoch: 'server', sessionId: null, ts: Date.now(),
       type: 'pending_devices', payload: pendingDevicesPayload()
     });
-    // 回放活跃会话缓冲
-    if (va) {
-      const { events } = va.eventsSince(0);
-      for (const envelope of events) socket.emit('agent:event', envelope);
-    }
   }
 
-  on(socket, 'user:message', async payload => {
-    const text = typeof payload === 'string' ? payload : payload?.text;
-    const attachments = payload?.attachments;
+  on(socket, 'needs-you:snapshot', (_payload = {}, ack) => {
+    ackOk(ack, needsYouRegistry.snapshot());
+  });
 
-    if ((!text || !text.trim()) && (!attachments || attachments.length === 0)) {
-      return sysTo(socket, '消息为空或格式无效', true);
+  on(socket, 'message:reconcile', async (payload = {}, ack) => {
+    const clientRequestId = typeof payload?.clientRequestId === 'string'
+      ? payload.clientRequestId
+      : '';
+    const threadId = typeof payload?.threadId === 'string' ? payload.threadId : '';
+    const deviceToken = typeof socket.handshake.auth?.deviceToken === 'string'
+      ? socket.handshake.auth.deviceToken.trim()
+      : '';
+    if (!CLIENT_REQUEST_ID_PATTERN.test(clientRequestId)) {
+      if (typeof ack === 'function') {
+        ack({
+          ok: false,
+          errorCode: 'invalid_client_request_id',
+          error: 'clientRequestId 格式无效',
+          retryable: false,
+        });
+      }
+      return;
+    }
+    if (!deviceToken) {
+      if (typeof ack === 'function') {
+        ack({
+          ok: false,
+          errorCode: 'client_identity_required',
+          error: '消息核对需要稳定的 deviceToken',
+          retryable: false,
+        });
+      }
+      return;
+    }
+    const replayed = await messageReceiptLedger.replayByRequest({
+      identity: `device:${deviceToken}`,
+      requestId: clientRequestId,
+    });
+    if (replayed) {
+      ackOk(ack, {
+        resolved: true,
+        source: 'receipt_ledger',
+        gatewayEpoch: GATEWAY_EPOCH,
+        ...(replayed.receipt ? { receipt: replayed.receipt } : { outcome: replayed }),
+      });
+      return;
+    }
+    if (!threadId) {
+      ackOk(ack, {
+        resolved: false,
+        source: 'thread/read',
+        gatewayEpoch: GATEWAY_EPOCH,
+        resultUnknown: true,
+        errorCode: 'thread_required',
+      });
+      return;
+    }
+    try {
+      const thread = await ensureControlAgent(payload?.cwd, socket).readThread({
+        threadId,
+        includeTurns: true,
+      });
+      const match = findClientRequestInThread(thread, clientRequestId);
+      if (!match) {
+        ackOk(ack, {
+          resolved: false,
+          source: 'thread/read',
+          gatewayEpoch: GATEWAY_EPOCH,
+          resultUnknown: true,
+          errorCode: 'client_request_not_found',
+        });
+        return;
+      }
+      const receipt = {
+        clientRequestId,
+        threadId,
+        ...(match.turnId ? { turnId: match.turnId } : {}),
+        ...(match.itemId ? { itemId: match.itemId } : {}),
+        state: 'submitted',
+      };
+      ackOk(ack, {
+        resolved: true,
+        source: 'thread/read',
+        gatewayEpoch: GATEWAY_EPOCH,
+        receipt,
+      });
+    } catch (error) {
+      if (typeof ack === 'function') {
+        ack({
+          ok: false,
+          errorCode: 'reconcile_failed',
+          error: error?.message || '消息核对失败',
+          retryable: true,
+          resultUnknown: true,
+          gatewayEpoch: GATEWAY_EPOCH,
+        });
+      }
+    }
+  });
+
+  on(socket, 'user:message', async (payload, ack) => {
+    const text = typeof payload === 'string'
+      ? payload
+      : (typeof payload?.text === 'string' ? payload.text : '');
+    const attachments = payload?.attachments;
+    const requestedParts = payload?.parts;
+    const suppliedClientRequestId = payload?.clientRequestId;
+    const clientRequestId = typeof suppliedClientRequestId === 'string'
+      ? suppliedClientRequestId
+      : '';
+
+    if (
+      (!text || !text.trim())
+      && (!attachments || attachments.length === 0)
+      && (!requestedParts || requestedParts.length === 0)
+    ) {
+      sysTo(socket, '消息为空或格式无效', true);
+      if (typeof ack === 'function') {
+        ack({
+          ok: false,
+          errorCode: 'invalid_message',
+          error: '消息为空或格式无效',
+          retryable: false,
+        });
+      }
+      return;
     }
 
     // 校验附件
     const attachErr = validateAttachments(attachments);
     if (attachErr) {
-      return sysTo(socket, attachErr, true);
-    }
-
-    // 落盘附件
-    let savedAttachments;
-    if (attachments?.length) {
-      try {
-        savedAttachments = await saveAttachments(WORK_DIR, attachments);
-      } catch (err) {
-        return sysTo(socket, `附件保存失败：${err.message}`, true);
+      sysTo(socket, attachErr, true);
+      if (typeof ack === 'function') {
+        ack({
+          ok: false,
+          errorCode: 'invalid_attachments',
+          error: attachErr,
+          retryable: false,
+        });
       }
+      return;
     }
 
     if (text && text.length > 50000) {
-      return sysTo(socket, `消息过长（${text.length} 字符，上限 50000），未发送`, true);
+      const error = `消息过长（${text.length} 字符，上限 50000），未发送`;
+      sysTo(socket, error, true);
+      if (typeof ack === 'function') {
+        ack({
+          ok: false,
+          errorCode: 'message_too_long',
+          error,
+          retryable: false,
+        });
+      }
+      return;
     }
-    if (!routeInstance(viewingInstanceId)) {
-      // 懒开：resume 当前 cwd 的最近会话，或新建
-      const currentId = sessions.getCurrent(WORK_DIR);
-      const agent = createAgent(currentId || null, WORK_DIR);
-      viewingInstanceId = agent.instanceId;
+    if (
+      requestedParts !== undefined
+      && (!Array.isArray(requestedParts) || requestedParts.length === 0 || requestedParts.length > 20)
+    ) {
+      if (typeof ack === 'function') {
+        ack({
+          ok: false,
+          errorCode: 'invalid_input_parts',
+          error: '结构化输入格式无效',
+          retryable: false,
+        });
+      }
+      return;
     }
-    const ai = routeInstance(viewingInstanceId);
-    if (ai) await ai.send(text.trim(), savedAttachments);
+    if (
+      suppliedClientRequestId !== undefined
+      && !CLIENT_REQUEST_ID_PATTERN.test(clientRequestId)
+    ) {
+      if (typeof ack === 'function') {
+        ack({
+          ok: false,
+          errorCode: 'invalid_client_request_id',
+          error: 'clientRequestId 格式无效',
+          retryable: false,
+        });
+      }
+      return;
+    }
+    const explicitInstanceId = typeof payload?.instanceId === 'string' ? payload.instanceId : null;
+    const requestedThreadId = typeof payload?.threadId === 'string' ? payload.threadId : null;
+    const deviceToken = typeof socket.handshake.auth?.deviceToken === 'string'
+      ? socket.handshake.auth.deviceToken.trim()
+      : '';
+    if (clientRequestId && !deviceToken) {
+      if (typeof ack === 'function') {
+        ack({
+          ok: false,
+          errorCode: 'client_identity_required',
+          error: 'clientRequestId 需要稳定的 deviceToken',
+          retryable: false,
+        });
+      }
+      return;
+    }
+    const clientIdentity = deviceToken ? `device:${deviceToken}` : `socket:${socket.id}`;
+    const requestFingerprint = clientRequestId
+      ? createHash('sha256').update(JSON.stringify({
+        text: text.trim(),
+        attachments: canonicalAttachmentFingerprints(attachments),
+        parts: canonicalInputPartFingerprints(requestedParts),
+        target: requestedThreadId
+          ? { threadId: requestedThreadId }
+          : { instanceId: explicitInstanceId, newThread: !explicitInstanceId },
+      })).digest('hex')
+      : null;
+    const receiptClaim = clientRequestId
+      ? messageReceiptLedger.claim({
+        identity: clientIdentity,
+        requestId: clientRequestId,
+        fingerprint: requestFingerprint,
+      })
+      : null;
+    if (receiptClaim?.kind === 'conflict') {
+      if (typeof ack === 'function') {
+        ack({
+          ok: false,
+          errorCode: 'request_id_conflict',
+          error: 'clientRequestId 已用于不同的消息或目标',
+        });
+      }
+      return;
+    }
+    if (receiptClaim?.kind === 'full') {
+      if (typeof ack === 'function') {
+        ack({
+          ok: false,
+          errorCode: 'receipt_ledger_full',
+          error: '消息回执账本已满，请稍后重试',
+          retryable: true,
+        });
+      }
+      return;
+    }
+    if (receiptClaim?.kind === 'duplicate') {
+      const previousResult = await messageReceiptLedger.replay(receiptClaim.handle);
+      if (typeof ack === 'function') ack({ ...previousResult, duplicate: true });
+      return;
+    }
+
+    const dispatch = (async () => {
+      const targetInstanceId = explicitInstanceId || socket.data.viewingInstanceId;
+      let ai = null;
+      if (targetInstanceId || requestedThreadId) {
+        try {
+          ai = resolveRuntimeTarget({
+            instanceId: targetInstanceId,
+            threadId: requestedThreadId,
+          });
+        } catch {
+          return {
+            ok: false,
+            errorCode: 'stale_target',
+            error: '消息目标已失效，请重新选择会话',
+          };
+        }
+      }
+      if (explicitInstanceId && !ai) {
+        return {
+          ok: false,
+          errorCode: 'stale_target',
+          error: '消息目标已失效，请重新选择会话',
+        };
+      }
+      if (!ai) {
+        // 无显式目标时只新建临时实例；浏览器负责恢复自己的按 cwd thread 指针。
+        ai = createAgent(null, WORK_DIR);
+        setSocketViewingInstance(socket, ai.instanceId);
+      }
+      if (
+        receiptClaim?.kind === 'owner'
+        && !messageReceiptLedger.bindRuntime(receiptClaim.handle, {
+          instanceId: ai.instanceId,
+          clientRequestId,
+        })
+      ) {
+        return {
+          ok: false,
+          errorCode: 'request_id_conflict',
+          error: 'clientRequestId 已绑定到不同的运行实例',
+        };
+      }
+      // 先解析目标 Runtime，再在它的 cwd 内落盘；ledger 已占位可避免并发重试重复写文件。
+      let savedAttachments;
+      if (attachments?.length) {
+        try {
+          savedAttachments = await saveAttachments(ai.cwd || WORK_DIR, attachments);
+        } catch (err) {
+          const error = `附件保存失败：${err.message}`;
+          sysTo(socket, error, true);
+          return { ok: false, errorCode: 'attachment_save_failed', error };
+        }
+      }
+      let resolvedParts;
+      if (requestedParts?.length) {
+        try {
+          let skillEntries = [];
+          if (requestedParts.some(part => part?.kind === 'skill')) {
+            const response = await ai.listSkills({ forceReload: false });
+            skillEntries = response?.data || [];
+          }
+          resolvedParts = await resolveInputParts(requestedParts, {
+            cwd: ai.cwd || WORK_DIR,
+            skillEntries,
+            allowRemoteImages: REMOTE_IMAGE_INPUTS_ENABLED,
+          });
+        } catch (err) {
+          return {
+            ok: false,
+            errorCode: 'invalid_input_parts',
+            error: err?.message || '结构化输入格式无效',
+            retryable: false,
+          };
+        }
+      }
+      const fallbackReceiptState = ai.busy
+        ? (ai.currentTurnId ? 'steered' : 'queued')
+        : 'submitted';
+      const outcome = clientRequestId && typeof ai.dispatchUserMessage === 'function'
+        ? await ai.dispatchUserMessage({
+          text: text.trim(),
+          savedAttachments,
+          parts: resolvedParts,
+          clientRequestId,
+        })
+        : {
+          accepted: await ai.send(text.trim(), savedAttachments, resolvedParts),
+          state: fallbackReceiptState,
+          threadId: ai.sessionId ?? requestedThreadId,
+        };
+      const result = {
+        ok: outcome.accepted !== false,
+        instanceId: ai.instanceId,
+        threadId: outcome.threadId ?? ai.sessionId ?? requestedThreadId,
+      };
+      if (!result.ok) {
+        result.errorCode = outcome.reason || 'dispatch_rejected';
+        result.error = '消息未被 Codex runtime 接受';
+        result.retryable = outcome.reason === 'queue_full';
+      }
+      if (clientRequestId && result.ok) {
+        result.receipt = {
+          clientRequestId,
+          instanceId: ai.instanceId,
+          threadId: result.threadId,
+          state: outcome.state,
+        };
+        if (outcome.turnId) result.receipt.turnId = outcome.turnId;
+        if (outcome.position) result.receipt.position = outcome.position;
+        if (outcome.queuedAt) result.receipt.queuedAt = outcome.queuedAt;
+      }
+      return result;
+    })();
+    let result;
+    try {
+      result = await dispatch;
+    } catch (error) {
+      result = {
+        ok: false,
+        errorCode: 'dispatch_failed',
+        error: error?.message || '消息派发失败',
+        retryable: true,
+        resultUnknown: true,
+      };
+    }
+    if (receiptClaim?.kind === 'owner') {
+      messageReceiptLedger.settle(receiptClaim.handle, result);
+    }
+    if (typeof ack === 'function') {
+      ack({ ...result, duplicate: false });
+    }
   });
 
-  on(socket, 'user:interrupt', () => {
-    const ai = routeInstance(viewingInstanceId);
-    if (ai?.busy) ai.abort();
+  on(socket, 'user:interrupt', async (payload = {}, ack) => {
+    const instanceId = typeof payload?.instanceId === 'string'
+      ? payload.instanceId
+      : socket.data.viewingInstanceId;
+    const threadId = typeof payload?.threadId === 'string' ? payload.threadId : null;
+    const turnId = typeof payload?.turnId === 'string' ? payload.turnId : null;
+    let ai = null;
+    try {
+      if (instanceId || threadId || turnId) {
+        ai = resolveRuntimeTarget({ instanceId, threadId, turnId });
+      }
+    } catch {
+      if (typeof ack === 'function') {
+        ack({ ok: false, errorCode: 'stale_target', error: '中断目标已失效' });
+      }
+      return;
+    }
+    if (ai?.busy) await ai.abort();
+    if (typeof ack === 'function') {
+      ack({ ok: true, instanceId: ai?.instanceId ?? null, threadId: ai?.sessionId ?? threadId });
+    }
   });
 
   // 手机端审批回传（仅 app-server 后端有 respondApproval）。
-  on(socket, 'user:approval', payload => {
+  on(socket, 'user:approval', async (payload = {}, ack) => {
     const { approvalId, decision } = payload || {};
-    const ai = routeInstance(viewingInstanceId);
-    if (typeof ai?.respondApproval === 'function') {
-      ai.respondApproval(approvalId, decision, payload);
+    const instanceId = typeof payload?.instanceId === 'string'
+      ? payload.instanceId
+      : socket.data.viewingInstanceId;
+    const threadId = typeof payload?.threadId === 'string' ? payload.threadId : null;
+    const turnId = typeof payload?.turnId === 'string' ? payload.turnId : null;
+    const query = {
+      needId: payload?.needId,
+      instanceId,
+      threadId,
+      turnId,
+      itemId: typeof payload?.itemId === 'string' ? payload.itemId : null,
+      requestId: approvalId,
+    };
+    const outcome = await needsYouRegistry.resolve(
+      query,
+      { decision, answers: payload?.answers || null },
+      need => {
+        let ai;
+        try {
+          ai = resolveRuntimeTarget(need.target);
+        } catch {
+          return false;
+        }
+        const accepted = typeof ai?.respondApproval === 'function'
+          ? ai.respondApproval(need.target.requestId, decision, payload)
+          : false;
+        if (accepted) threadRegistry.releaseRequest(ai, need.target.requestId);
+        return accepted;
+      },
+    );
+    if (outcome.changed && outcome.need) broadcastNeedsYouChange(outcome);
+    const target = outcome.need?.target || query;
+    const ok = outcome.kind === 'resolved' || outcome.kind === 'duplicate';
+    const errorCode = outcome.kind === 'conflict'
+      ? 'already_resolved'
+      : outcome.kind === 'in_progress'
+        ? 'resolution_in_progress'
+        : outcome.kind === 'unknown'
+          ? 'result_unknown'
+          : ok
+            ? undefined
+            : 'stale_target';
+    appendSecurityAudit({
+      event: 'need_resolution',
+      outcome: outcome.kind,
+      source: 'socket',
+      needKind: outcome.need?.kind ?? null,
+      needRef: securityRef(outcome.need?.needId ?? payload?.needId),
+      actorRef: securityRef(socket.handshake.auth?.deviceToken),
+      reasonCode: errorCode ?? null,
+    });
+    if (typeof ack === 'function') {
+      ack({
+        ok,
+        duplicate: outcome.kind === 'duplicate',
+        errorCode,
+        error: ok ? undefined : (errorCode === 'already_resolved' ? '审批已用其他结果决议' : '审批目标已失效'),
+        resultUnknown: outcome.kind === 'unknown' || outcome.kind === 'in_progress',
+        needId: outcome.need?.needId ?? payload?.needId ?? null,
+        state: outcome.need?.state ?? null,
+        revision: outcome.revision,
+        instanceId: target.instanceId ?? null,
+        threadId: target.threadId ?? threadId,
+      });
     }
   });
 
@@ -830,12 +2065,7 @@ io.on('connection', socket => {
       if (typeof ack === 'function') ack({ ok: false, error: '仅支持 chatgptDeviceCode 登录' });
       return;
     }
-    let ai = routeInstance(viewingInstanceId);
-    if (!ai) {
-      ai = createAgent(null, WORK_DIR);
-      viewingInstanceId = ai.instanceId;
-      broadcastInstances();
-    }
+    const ai = ensureControlAgent(payload?.cwd, socket);
     if (typeof ai.startChatgptDeviceLogin !== 'function') {
       if (typeof ack === 'function') ack({ ok: false, error: '当前后端不支持 ChatGPT device code 登录' });
       return;
@@ -863,7 +2093,8 @@ io.on('connection', socket => {
 
   on(socket, 'account:loginCancel', async (payload, ack) => {
     const loginId = payload?.loginId;
-    const ai = routeInstance(viewingInstanceId);
+    const ai = routeInstance(socket.data.controlInstanceId)
+      ?? routeInstance(socket.data.viewingInstanceId);
     if (!ai || typeof ai.cancelLogin !== 'function' || typeof loginId !== 'string' || !loginId) {
       if (typeof ack === 'function') ack({ ok: false, error: '无效登录任务' });
       return;
@@ -884,7 +2115,7 @@ io.on('connection', socket => {
   on(socket, 'thread:list', async (payload = {}, ack) => {
     try {
       const cwd = routeCwd(payload?.cwd);
-      const ai = ensureControlAgent(cwd);
+      const ai = ensureControlAgent(cwd, socket);
       const response = await ai.listThreads({
         cwd,
         archived: payload?.archived === true,
@@ -893,7 +2124,13 @@ io.on('connection', socket => {
         searchTerm: typeof payload?.searchTerm === 'string' ? payload.searchTerm : undefined,
       });
       ackOk(ack, {
-        threads: (response?.data || []).map(thread => normalizeThread(thread, { archived: payload?.archived === true })),
+        threads: (response?.data || []).map(thread => {
+          const normalized = normalizeThread(thread, { archived: payload?.archived === true });
+          const latestStatus = appServerHost?.latestThreadStatus(normalized.id);
+          return latestStatus
+            ? { ...normalized, status: latestStatus.status, statusRevision: latestStatus.revision }
+            : normalized;
+        }),
         nextCursor: response?.nextCursor ?? null,
         backwardsCursor: response?.backwardsCursor ?? null,
         archived: payload?.archived === true,
@@ -908,16 +2145,15 @@ io.on('connection', socket => {
       const threadId = payload?.threadId || payload?.sessionId;
       if (typeof threadId !== 'string' || !threadId) throw new Error('无效 threadId');
       const cwd = routeCwd(payload?.cwd);
-      sessions.upsertSession({ id: threadId, title: payload?.title || threadId.slice(0, 8), cwd });
       const agent = createAgent(threadId, cwd);
-      viewingInstanceId = agent.instanceId;
+      setSocketViewingInstance(socket, agent.instanceId);
       broadcastInstances();
-      io.emit('agent:event', {
-        seq: 0, epoch: 'server', sessionId: threadId, ts: Date.now(),
-        type: 'init', payload: { sessionId: threadId, cwd, workDirs, versions }
+      ackOk(ack, { sessionId: threadId, threadId, instanceId: agent.instanceId, cwd });
+      socket.emit('agent:event', {
+        seq: 0, epoch: 'server', sessionId: threadId, instanceId: agent.instanceId, ts: Date.now(),
+        type: 'init', payload: buildInitPayload({ sessionId: threadId, instanceId: agent.instanceId, cwd })
       });
       sendActiveStatus(socket, 'thread_select');
-      ackOk(ack, { sessionId: threadId, instanceId: agent.instanceId });
     } catch (err) {
       ackError(ack, err);
     }
@@ -927,7 +2163,7 @@ io.on('connection', socket => {
     try {
       const threadId = payload?.threadId || payload?.sessionId;
       if (typeof threadId !== 'string' || !threadId) throw new Error('无效 threadId');
-      const thread = await ensureControlAgent(payload?.cwd).readThread({
+      const thread = await ensureControlAgent(payload?.cwd, socket).readThread({
         threadId,
         includeTurns: true,
       });
@@ -943,7 +2179,7 @@ io.on('connection', socket => {
 
   on(socket, 'thread:archive', async (payload = {}, ack) => {
     try {
-      await ensureControlAgent(payload?.cwd).archiveThread(payload?.threadId);
+      await ensureControlAgent(payload?.cwd, socket).archiveThread(payload?.threadId);
       ackOk(ack, { threadId: payload?.threadId });
     } catch (err) {
       ackError(ack, err);
@@ -952,7 +2188,7 @@ io.on('connection', socket => {
 
   on(socket, 'thread:unarchive', async (payload = {}, ack) => {
     try {
-      await ensureControlAgent(payload?.cwd).unarchiveThread(payload?.threadId);
+      await ensureControlAgent(payload?.cwd, socket).unarchiveThread(payload?.threadId);
       ackOk(ack, { threadId: payload?.threadId });
     } catch (err) {
       ackError(ack, err);
@@ -962,12 +2198,13 @@ io.on('connection', socket => {
   on(socket, 'thread:delete', async (payload = {}, ack) => {
     try {
       const threadId = payload?.threadId;
-      await ensureControlAgent(payload?.cwd).deleteThread(threadId);
+      await ensureControlAgent(payload?.cwd, socket).deleteThread(threadId);
       for (const [instanceId, agent] of agents) {
         if (agent.sessionId === threadId) {
           agent.dispose();
+          threadRegistry.release(agent);
           agents.delete(instanceId);
-          if (viewingInstanceId === instanceId) viewingInstanceId = null;
+          clearSocketInstanceReferences(instanceId);
         }
       }
       broadcastInstances();
@@ -979,7 +2216,7 @@ io.on('connection', socket => {
 
   on(socket, 'thread:rename', async (payload = {}, ack) => {
     try {
-      await ensureControlAgent(payload?.cwd).renameThread(payload?.threadId, payload?.name);
+      await ensureControlAgent(payload?.cwd, socket).renameThread(payload?.threadId, payload?.name);
       ackOk(ack, { threadId: payload?.threadId, name: String(payload?.name || '').trim() });
     } catch (err) {
       ackError(ack, err);
@@ -988,7 +2225,7 @@ io.on('connection', socket => {
 
   on(socket, 'thread:compact', async (payload = {}, ack) => {
     try {
-      await ensureControlAgent(payload?.cwd).compactThread(payload?.threadId);
+      await ensureControlAgent(payload?.cwd, socket).compactThread(payload?.threadId);
       ackOk(ack, { threadId: payload?.threadId });
     } catch (err) {
       ackError(ack, err);
@@ -997,7 +2234,7 @@ io.on('connection', socket => {
 
   on(socket, 'thread:rollback', async (payload = {}, ack) => {
     try {
-      const response = await ensureControlAgent(payload?.cwd).rollbackThread({
+      const response = await ensureControlAgent(payload?.cwd, socket).rollbackThread({
         threadId: payload?.threadId,
         numTurns: payload?.numTurns,
       });
@@ -1010,7 +2247,7 @@ io.on('connection', socket => {
 
   on(socket, 'models:read', async (payload = {}, ack) => {
     try {
-      const ai = ensureControlAgent(payload?.cwd);
+      const ai = ensureControlAgent(payload?.cwd, socket);
       const [models, capabilities] = await Promise.all([
         ai.listModels({ includeHidden: payload?.includeHidden === true }),
         ai.readModelProviderCapabilities(),
@@ -1023,7 +2260,7 @@ io.on('connection', socket => {
 
   on(socket, 'fs:readDirectory', async (payload = {}, ack) => {
     try {
-      const response = await ensureControlAgent(payload?.cwd).readDirectory(payload?.path || WORK_DIR);
+      const response = await ensureControlAgent(payload?.cwd, socket).readDirectory(payload?.path || WORK_DIR);
       ackOk(ack, { entries: response?.entries || [], path: payload?.path || WORK_DIR });
     } catch (err) {
       ackError(ack, err);
@@ -1032,7 +2269,7 @@ io.on('connection', socket => {
 
   on(socket, 'fs:readFile', async (payload = {}, ack) => {
     try {
-      const response = await ensureControlAgent(payload?.cwd).readFile(payload?.path);
+      const response = await ensureControlAgent(payload?.cwd, socket).readFile(payload?.path);
       ackOk(ack, { dataBase64: response?.dataBase64 || '', path: payload?.path });
     } catch (err) {
       ackError(ack, err);
@@ -1041,7 +2278,7 @@ io.on('connection', socket => {
 
   on(socket, 'account:read', async (payload = {}, ack) => {
     try {
-      const ai = ensureControlAgent(payload?.cwd);
+      const ai = ensureControlAgent(payload?.cwd, socket);
       const [account, usage, rateLimits] = await Promise.all([
         ai.readAccount(),
         ai.readUsage(),
@@ -1055,7 +2292,7 @@ io.on('connection', socket => {
 
   on(socket, 'mcp:read', async (payload = {}, ack) => {
     try {
-      const response = await ensureControlAgent(payload?.cwd).listMcpServerStatus({ limit: payload?.limit || 50 });
+      const response = await ensureControlAgent(payload?.cwd, socket).listMcpServerStatus({ limit: payload?.limit || 50 });
       ackOk(ack, { servers: response?.data || [], nextCursor: response?.nextCursor ?? null });
     } catch (err) {
       ackError(ack, err);
@@ -1064,7 +2301,7 @@ io.on('connection', socket => {
 
   on(socket, 'skills:read', async (payload = {}, ack) => {
     try {
-      const response = await ensureControlAgent(payload?.cwd).listSkills({ forceReload: payload?.forceReload === true });
+      const response = await ensureControlAgent(payload?.cwd, socket).listSkills({ forceReload: payload?.forceReload === true });
       ackOk(ack, { entries: response?.data || [] });
     } catch (err) {
       ackError(ack, err);
@@ -1073,7 +2310,7 @@ io.on('connection', socket => {
 
   on(socket, 'externalAgentConfig:detect', async (payload = {}, ack) => {
     try {
-      const response = await ensureControlAgent(payload?.cwd).detectExternalAgentConfig({
+      const response = await ensureControlAgent(payload?.cwd, socket).detectExternalAgentConfig({
         includeHome: payload?.includeHome === true,
       });
       ackOk(ack, { items: response?.items || [] });
@@ -1086,7 +2323,7 @@ io.on('connection', socket => {
     try {
       const items = Array.isArray(payload?.migrationItems) ? payload.migrationItems : [];
       if (!items.length) throw new Error('没有可导入的配置项');
-      const response = await ensureControlAgent(payload?.cwd).importExternalAgentConfig(items, { source: 'mobile' });
+      const response = await ensureControlAgent(payload?.cwd, socket).importExternalAgentConfig(items, { source: 'mobile' });
       ackOk(ack, { importId: response?.importId || null });
     } catch (err) {
       ackError(ack, err);
@@ -1096,7 +2333,7 @@ io.on('connection', socket => {
   on(socket, 'p3:capabilities', async (payload = {}, ack) => {
     if (!requireP3Experimental(ack)) return;
     try {
-      const response = await ensureControlAgent(payload?.cwd).listP3Capabilities();
+      const response = await ensureControlAgent(payload?.cwd, socket).listP3Capabilities();
       ackOk(ack, { capabilities: response?.data || response?.features || response || {} });
     } catch (err) {
       ackError(ack, err);
@@ -1109,7 +2346,7 @@ io.on('connection', socket => {
       const processId = typeof payload?.processId === 'string' && payload.processId
         ? payload.processId
         : `term_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const response = await ensureControlAgent(payload?.cwd).spawnTerminal({
+      const response = await ensureControlAgent(payload?.cwd, socket).spawnTerminal({
         processId,
         command: Array.isArray(payload?.command) ? payload.command : [],
         cwd: payload?.cwd ? routeCwd(payload.cwd) : WORK_DIR,
@@ -1127,7 +2364,7 @@ io.on('connection', socket => {
   on(socket, 'p3:terminalWrite', async (payload = {}, ack) => {
     if (!requireP3Experimental(ack)) return;
     try {
-      await ensureControlAgent(payload?.cwd).writeTerminal(payload?.processId, payload?.text ?? '', {
+      await ensureControlAgent(payload?.cwd, socket).writeTerminal(payload?.processId, payload?.text ?? '', {
         closeStdin: payload?.closeStdin === true,
       });
       ackOk(ack, { processId: payload?.processId });
@@ -1139,7 +2376,7 @@ io.on('connection', socket => {
   on(socket, 'p3:terminalResize', async (payload = {}, ack) => {
     if (!requireP3Experimental(ack)) return;
     try {
-      await ensureControlAgent(payload?.cwd).resizeTerminal(payload?.processId, {
+      await ensureControlAgent(payload?.cwd, socket).resizeTerminal(payload?.processId, {
         cols: payload?.cols,
         rows: payload?.rows,
       });
@@ -1152,7 +2389,7 @@ io.on('connection', socket => {
   on(socket, 'p3:terminalTerminate', async (payload = {}, ack) => {
     if (!requireP3Experimental(ack)) return;
     try {
-      await ensureControlAgent(payload?.cwd).terminateTerminal(payload?.processId);
+      await ensureControlAgent(payload?.cwd, socket).terminateTerminal(payload?.processId);
       ackOk(ack, { processId: payload?.processId });
     } catch (err) {
       ackError(ack, err);
@@ -1162,7 +2399,7 @@ io.on('connection', socket => {
   on(socket, 'p3:threadTurns', async (payload = {}, ack) => {
     if (!requireP3Experimental(ack)) return;
     try {
-      const response = await ensureControlAgent(payload?.cwd).listThreadTurns({ threadId: payload?.threadId });
+      const response = await ensureControlAgent(payload?.cwd, socket).listThreadTurns({ threadId: payload?.threadId });
       ackOk(ack, response);
     } catch (err) {
       ackError(ack, err);
@@ -1172,7 +2409,7 @@ io.on('connection', socket => {
   on(socket, 'p3:threadSearch', async (payload = {}, ack) => {
     if (!requireP3Experimental(ack)) return;
     try {
-      const response = await ensureControlAgent(payload?.cwd).searchThreads({
+      const response = await ensureControlAgent(payload?.cwd, socket).searchThreads({
         query: payload?.query,
         limit: Number.isInteger(payload?.limit) ? payload.limit : 20,
         cursor: payload?.cursor,
@@ -1185,69 +2422,101 @@ io.on('connection', socket => {
   });
 
   on(socket, 'admin:unlock', async (payload = {}, ack) => {
+    if (!ADMIN_ENABLED) {
+      requireAdmin(socket, ack, 'admin:unlock', payload);
+      return;
+    }
+    const rateLimit = adminUnlockRateLimit(socket);
+    if (rateLimit) {
+      appendAdminAudit({
+        event: 'denied',
+        action: 'admin:unlock',
+        socketId: socket.id,
+        error: 'Admin unlock rate limited',
+        summary: {},
+      });
+      if (typeof ack === 'function') {
+        ack({
+          ok: false,
+          errorCode: 'rate_limited',
+          error: 'Admin unlock rate limited',
+          retryable: true,
+          retryAfterMs: rateLimit.retryAfterMs,
+        });
+      }
+      return;
+    }
     if (payload?.confirmText !== ADMIN_UNLOCK_PHRASE) {
+      recordAdminUnlockFailure(socket);
       denyAdmin(socket, ack, 'admin:unlock', payload, 'Invalid admin unlock phrase');
       return;
     }
+    adminUnlockFailureWindows.delete(adminUnlockFailureKey(socket));
     socket.adminMode = true;
+    socket.data.adminExpiresAt = Date.now() + ADMIN_UNLOCK_TTL_MS;
     appendAdminAudit({ event: 'unlock', action: 'admin:unlock', socketId: socket.id, summary: {} });
-    ackOk(ack, { adminMode: true });
+    ackOk(ack, { adminMode: true, expiresAt: socket.data.adminExpiresAt });
   });
 
   on(socket, 'admin:lock', async (_payload = {}, ack) => {
+    if (!ADMIN_ENABLED) {
+      requireAdmin(socket, ack, 'admin:lock');
+      return;
+    }
     socket.adminMode = false;
+    socket.data.adminExpiresAt = null;
     appendAdminAudit({ event: 'lock', action: 'admin:lock', socketId: socket.id, summary: {} });
     ackOk(ack, { adminMode: false });
   });
 
   on(socket, 'admin:configWrite', async (payload = {}, ack) => {
     await runAdminAction(socket, ack, 'admin:configWrite', payload, () =>
-      ensureControlAgent(payload?.cwd).writeConfigValue(payload));
+      ensureControlAgent(payload?.cwd, socket).writeConfigValue(payload));
   });
 
   on(socket, 'admin:configBatchWrite', async (payload = {}, ack) => {
     await runAdminAction(socket, ack, 'admin:configBatchWrite', payload, () =>
-      ensureControlAgent(payload?.cwd).writeConfigBatch(payload));
+      ensureControlAgent(payload?.cwd, socket).writeConfigBatch(payload));
   });
 
   on(socket, 'admin:pluginInstall', async (payload = {}, ack) => {
     await runAdminAction(socket, ack, 'admin:pluginInstall', payload, () =>
-      ensureControlAgent(payload?.cwd).installPlugin(payload));
+      ensureControlAgent(payload?.cwd, socket).installPlugin(payload));
   });
 
   on(socket, 'admin:pluginUninstall', async (payload = {}, ack) => {
     await runAdminAction(socket, ack, 'admin:pluginUninstall', payload, () =>
-      ensureControlAgent(payload?.cwd).uninstallPlugin(payload?.pluginId));
+      ensureControlAgent(payload?.cwd, socket).uninstallPlugin(payload?.pluginId));
   });
 
   on(socket, 'admin:marketplaceAdd', async (payload = {}, ack) => {
     await runAdminAction(socket, ack, 'admin:marketplaceAdd', payload, () =>
-      ensureControlAgent(payload?.cwd).marketplaceAdd(payload));
+      ensureControlAgent(payload?.cwd, socket).marketplaceAdd(payload));
   });
 
   on(socket, 'admin:marketplaceRemove', async (payload = {}, ack) => {
     await runAdminAction(socket, ack, 'admin:marketplaceRemove', payload, () =>
-      ensureControlAgent(payload?.cwd).marketplaceRemove(payload?.marketplaceName));
+      ensureControlAgent(payload?.cwd, socket).marketplaceRemove(payload?.marketplaceName));
   });
 
   on(socket, 'admin:marketplaceUpgrade', async (payload = {}, ack) => {
     await runAdminAction(socket, ack, 'admin:marketplaceUpgrade', payload, () =>
-      ensureControlAgent(payload?.cwd).marketplaceUpgrade(payload?.marketplaceName ?? null));
+      ensureControlAgent(payload?.cwd, socket).marketplaceUpgrade(payload?.marketplaceName ?? null));
   });
 
   on(socket, 'admin:fsWriteFile', async (payload = {}, ack) => {
     await runAdminAction(socket, ack, 'admin:fsWriteFile', payload, () =>
-      ensureControlAgent(payload?.cwd).writeFile(payload?.path, payload?.dataBase64));
+      ensureControlAgent(payload?.cwd, socket).writeFile(payload?.path, payload?.dataBase64));
   });
 
   on(socket, 'admin:fsRemove', async (payload = {}, ack) => {
     await runAdminAction(socket, ack, 'admin:fsRemove', payload, () =>
-      ensureControlAgent(payload?.cwd).removePath(payload?.path, { recursive: payload?.recursive, force: payload?.force }));
+      ensureControlAgent(payload?.cwd, socket).removePath(payload?.path, { recursive: payload?.recursive, force: payload?.force }));
   });
 
   on(socket, 'admin:fsCopy', async (payload = {}, ack) => {
     await runAdminAction(socket, ack, 'admin:fsCopy', payload, () =>
-      ensureControlAgent(payload?.cwd).copyPath({
+      ensureControlAgent(payload?.cwd, socket).copyPath({
         sourcePath: payload?.sourcePath,
         destinationPath: payload?.destinationPath,
         recursive: payload?.recursive,
@@ -1256,7 +2525,7 @@ io.on('connection', socket => {
 
   on(socket, 'admin:mcpToolCall', async (payload = {}, ack) => {
     await runAdminAction(socket, ack, 'admin:mcpToolCall', payload, () =>
-      ensureControlAgent(payload?.cwd).callMcpTool({
+      ensureControlAgent(payload?.cwd, socket).callMcpTool({
         threadId: payload?.threadId,
         server: payload?.server,
         tool: payload?.tool,
@@ -1267,84 +2536,39 @@ io.on('connection', socket => {
 
   on(socket, 'admin:accountLogout', async (payload = {}, ack) => {
     await runAdminAction(socket, ack, 'admin:accountLogout', payload, () =>
-      ensureControlAgent(payload?.cwd).logoutAccount());
+      ensureControlAgent(payload?.cwd, socket).logoutAccount());
   });
 
   on(socket, 'session:new', (payload, maybeAck) => {
     const ack = typeof payload === 'function' ? payload : maybeAck;
     const cwd = routeCwd(payload?.cwd);
-    sessions.setCurrent(cwd, null);
     const agent = createAgent(null, cwd);
-    viewingInstanceId = agent.instanceId;
-    io.emit('agent:event', {
-      seq: 0, epoch: 'server', sessionId: null, ts: Date.now(),
-      type: 'init', payload: { sessionId: null, cwd, workDirs, versions }
+    setSocketViewingInstance(socket, agent.instanceId);
+    if (typeof ack === 'function') {
+      ack({ ok: true, instanceId: agent.instanceId, threadId: null, cwd });
+    }
+    socket.emit('agent:event', {
+      seq: 0, epoch: 'server', sessionId: null, instanceId: agent.instanceId, ts: Date.now(),
+      type: 'init', payload: buildInitPayload({ instanceId: agent.instanceId, cwd })
     });
-    sendSessionList(socket);
     broadcastInstances();
-    if (typeof ack === 'function') ack({ ok: true });
-  });
-
-  on(socket, 'session:list', async (payload, maybeAck) => {
-    const ack = typeof payload === 'function' ? payload : maybeAck;
-    if (typeof ack !== 'function') {
-      // 推送到 socket（合并 sessions.json + Codex 原生会话）
-      try {
-        const allSessions = sessions.getState().sessions.filter(s => s.cwd === WORK_DIR);
-        const currentId = sessions.getCurrent(WORK_DIR);
-        const codexSessions = await listCodexSessions(WORK_DIR, { limit: 50 });
-        socket.emit('agent:event', {
-          seq: 0, epoch: 'server', sessionId: null, ts: Date.now(),
-          type: 'session_list',
-          payload: { sessions: allSessions, codexSessions, currentSessionId: currentId }
-        });
-      } catch (err) {
-        sendSessionList(socket);
-      }
-      return;
-    }
-    try {
-      const allSessions = sessions.getState().sessions.filter(s => s.cwd === WORK_DIR);
-      const currentId = sessions.getCurrent(WORK_DIR);
-      const codexSessions = await listCodexSessions(WORK_DIR, { limit: 50 });
-      ack({ sessions: allSessions, codexSessions, currentSessionId: currentId });
-    } catch (err) {
-      const allSessions = sessions.getState().sessions.filter(s => s.cwd === WORK_DIR);
-      const currentId = sessions.getCurrent(WORK_DIR);
-      ack({ sessions: allSessions, currentSessionId: currentId });
-    }
-  });
-
-  on(socket, 'session:select', (payload, ack) => {
-    const sessionId = payload?.sessionId || payload;
-    if (typeof sessionId !== 'string') {
-      if (typeof ack === 'function') ack({ ok: false, error: '无效会话 ID' });
-      return;
-    }
-    const sess = sessions.getSession(sessionId);
-    if (!sess) {
-      if (typeof ack === 'function') ack({ ok: false, error: '会话不存在' });
-      return;
-    }
-    sessions.setCurrent(WORK_DIR, sessionId);
-    const agent = createAgent(sessionId, WORK_DIR);
-    viewingInstanceId = agent.instanceId;
-    broadcastInstances();
-    io.emit('agent:event', {
-      seq: 0, epoch: 'server', sessionId: null, ts: Date.now(),
-      type: 'init', payload: { sessionId, cwd: WORK_DIR, workDirs, versions }
-    });
-    sendActiveStatus(socket, 'session_select');
-    sendSessionList(socket);
-    if (typeof ack === 'function') ack({ ok: true, sessionId });
   });
 
   on(socket, 'session:fork', async (payload, ack) => {
-    const ai = routeInstance(payload?.instanceId || viewingInstanceId);
+    const targetInstanceId = payload?.instanceId || socket.data.viewingInstanceId;
     const threadId = typeof payload?.threadId === 'string' && payload.threadId
       ? payload.threadId
-      : ai?.sessionId;
-    if (!ai || !threadId || typeof ai.forkThread !== 'function') {
+      : null;
+    let ai = null;
+    try {
+      if (targetInstanceId || threadId) {
+        ai = resolveRuntimeTarget({ instanceId: targetInstanceId, threadId });
+      }
+    } catch {
+      ai = null;
+    }
+    const resolvedThreadId = threadId || ai?.sessionId;
+    if (!ai || !resolvedThreadId || typeof ai.forkThread !== 'function') {
       if (typeof ack === 'function') ack({ ok: false, error: '当前没有可分叉的会话' });
       else sysTo(socket, '当前没有可分叉的会话', true);
       return;
@@ -1352,23 +2576,23 @@ io.on('connection', socket => {
 
     try {
       const response = await ai.forkThread({
-        threadId,
+        threadId: resolvedThreadId,
         ephemeral: payload?.ephemeral === true
       });
       const sessionId = forkedSessionId(response);
       if (!sessionId) throw new Error('thread/fork 未返回 thread.id');
       const cwd = ai.cwd || WORK_DIR;
-      sessions.upsertSession({ id: sessionId, title: payload?.title || `Fork ${String(threadId).slice(0, 8)}`, cwd });
       const agent = createAgent(sessionId, cwd);
-      viewingInstanceId = agent.instanceId;
-      io.emit('agent:event', {
-        seq: 0, epoch: 'server', sessionId, ts: Date.now(),
-        type: 'init', payload: { sessionId, cwd, workDirs, versions }
+      setSocketViewingInstance(socket, agent.instanceId);
+      if (typeof ack === 'function') {
+        ack({ ok: true, sessionId, threadId: sessionId, instanceId: agent.instanceId, cwd });
+      }
+      socket.emit('agent:event', {
+        seq: 0, epoch: 'server', sessionId, instanceId: agent.instanceId, ts: Date.now(),
+        type: 'init', payload: buildInitPayload({ sessionId, instanceId: agent.instanceId, cwd })
       });
       broadcastInstances();
-      broadcastSessionList(cwd);
       sendActiveStatus(socket, 'session_fork');
-      if (typeof ack === 'function') ack({ ok: true, sessionId, instanceId: agent.instanceId });
     } catch (err) {
       const message = `会话分叉失败：${err.message}`;
       if (typeof ack === 'function') ack({ ok: false, error: message });
@@ -1379,64 +2603,143 @@ io.on('connection', socket => {
     }
   });
 
-  on(socket, 'session:switch', payload => {
+  on(socket, 'session:switch', (payload = {}, ack) => {
     const iid = payload?.instanceId;
-    if (agents.has(iid)) {
-      viewingInstanceId = iid;
-      broadcastInstances();
+    let ai = null;
+    try {
+      ai = resolveRuntimeTarget({ instanceId: iid });
+    } catch {
+      ai = null;
     }
-  });
-
-  on(socket, 'session:history', async (payload, ack) => {
-    const sessionId = typeof payload === 'string' ? payload : payload?.sessionId;
-    if (!sessionId || typeof sessionId !== 'string') {
-      if (typeof ack === 'function') ack({ messages: [] });
+    if (ai) {
+      setSocketViewingInstance(socket, iid);
+      broadcastInstances();
+      if (typeof ack === 'function') {
+        ack({ ok: true, instanceId: iid, threadId: ai?.sessionId ?? null });
+      }
       return;
     }
-    try {
-      // 从 history.js 查找会话文件路径
-      const sessions = await listCodexSessions(WORK_DIR, { limit: 100 });
-      const found = sessions.find(s => s.id === sessionId);
-      if (!found?.filePath) {
-        if (typeof ack === 'function') ack({ messages: [] });
-        return;
-      }
-      const msgs = await getSessionHistory(found.filePath, 100);
-      if (typeof ack === 'function') ack({ messages: msgs, title: found.title });
-    } catch (err) {
-      console.error('[history] 读取失败:', err.message);
-      if (typeof ack === 'function') ack({ messages: [] });
+    if (typeof ack === 'function') {
+      ack({ ok: false, errorCode: 'stale_target', error: '实例不存在或已结束' });
     }
   });
 
-  on(socket, 'catch-up', (payload, ack) => {
+  on(socket, 'catch-up', async (payload, ack) => {
     const { sessionId, lastSeq } = payload || {};
     if (typeof ack !== 'function') return;
-    const ai = routeInstance(resolveInstanceId(sessionId));
-    if (!ai || ai.sessionId !== sessionId) {
-      return ack({ replayed: 0, gap: false });
+    const instanceId = typeof payload?.instanceId === 'string'
+      ? payload.instanceId
+      : socket.data.viewingInstanceId;
+    let ai = null;
+    try {
+      ai = resolveRuntimeTarget({ instanceId, threadId: sessionId });
+    } catch {
+      ai = null;
     }
-    const { events, gap } = ai.eventsSince(Number(lastSeq) || 0);
-    for (const envelope of events) socket.emit('agent:event', envelope);
-    ack({ replayed: events.length, gap: Boolean(gap) });
+    if (!ai) {
+      return ack({
+        replayed: 0,
+        gap: false,
+        errorCode: 'stale_target',
+        instanceId: instanceId ?? null,
+        threadId: sessionId ?? null,
+      });
+    }
+    setSocketViewingInstance(socket, ai.instanceId);
+    const replay = ai.eventsSince(Number(lastSeq) || 0);
+    const epochMismatch = typeof payload?.lastEpoch === 'string'
+      && payload.lastEpoch.length > 0
+      && payload.lastEpoch !== replay.epoch;
+    if (!replay.gap && !epochMismatch) {
+      for (const envelope of replay.events) socket.emit('agent:event', envelope);
+      return ack({
+        replayed: replay.events.length,
+        gap: false,
+        epoch: replay.epoch,
+        instanceId: ai.instanceId,
+        threadId: ai.sessionId,
+      });
+    }
+
+    // Freeze the snapshot watermark before thread/read. Any runtime event observed
+    // while the snapshot is being read must be replayed after the rebuild, even
+    // if its content raced with the app-server snapshot.
+    const snapshotThroughSeq = ai.seq;
+    const snapshotEpoch = ai.epoch || replay.epoch;
+    try {
+      const thread = await ai.readThread({ threadId: ai.sessionId, includeTurns: true });
+      ack({
+        replayed: 0,
+        gap: true,
+        rebuilt: true,
+        epochMismatch,
+        epoch: snapshotEpoch,
+        throughSeq: snapshotThroughSeq,
+        instanceId: ai.instanceId,
+        threadId: ai.sessionId,
+        snapshot: {
+          source: 'thread/read',
+          title: thread?.name || thread?.preview || ai.sessionId,
+          threadStatus: thread?.status || null,
+          messages: normalizeThreadHistoryMessages(thread),
+        },
+      });
+    } catch (err) {
+      ack({
+        replayed: 0,
+        gap: true,
+        rebuilt: false,
+        epochMismatch,
+        epoch: snapshotEpoch,
+        throughSeq: snapshotThroughSeq,
+        instanceId: ai.instanceId,
+        threadId: ai.sessionId,
+        recoveryError: err?.message || String(err),
+      });
+    }
   });
 
   // 已信任设备远程审批待批设备
-  on(socket, 'user:approveDevice', payload => {
+  on(socket, 'user:approveDevice', (payload, ack) => {
     const deviceId = payload?.deviceId;
-    if (typeof deviceId !== 'string' || !deviceId) return;
-    if (!getPendingDevices().some(d => d.deviceToken === deviceId)) return;
-    approveDevice(deviceId);
-    unlockDeviceSockets(deviceId);
+    if (typeof deviceId !== 'string' || !deviceId) {
+      ackError(ack, new Error('invalid_device_id'));
+      return;
+    }
+    if (!getPendingDevices().some(d => d.deviceToken === deviceId)) {
+      ackError(ack, new Error('device_not_pending'));
+      return;
+    }
+    const approved = approveDeviceAccess(deviceId, {
+      persistTrust: true,
+      source: 'socket',
+      actorToken: socket.handshake.auth?.deviceToken,
+    });
+    if (!approved) {
+      ackError(ack, new Error('device_persist_failed'));
+      return;
+    }
     broadcastPendingDevices();
+    ackOk(ack);
   });
 
-  on(socket, 'user:denyDevice', payload => {
+  on(socket, 'user:denyDevice', (payload, ack) => {
     const deviceId = payload?.deviceId;
-    if (typeof deviceId !== 'string' || !deviceId) return;
-    denyDevice(deviceId);
-    disconnectDeviceSockets(deviceId);
+    if (typeof deviceId !== 'string' || !deviceId) {
+      ackError(ack, new Error('invalid_device_id'));
+      return;
+    }
+    const persisted = revokeDeviceAccess(deviceId, {
+      removeTrust: true,
+      source: 'socket',
+      actorToken: socket.handshake.auth?.deviceToken,
+    });
     broadcastPendingDevices();
+    if (!persisted) {
+      ackError(ack, new Error('device_persist_failed'));
+      return;
+    }
+    ackOk(ack);
   });
 
   socket.on('disconnect', reason => {
@@ -1449,18 +2752,22 @@ let statusRefreshTimer = null;
 let pruneUploadsTimer = null;
 
 async function refreshStatusLine() {
-  try {
-    const payload = await buildStatusLine({
-      agent: routeInstance(viewingInstanceId),
-      cwd: WORK_DIR,
-      versions
-    });
-    io.emit('agent:event', {
-      seq: 0, epoch: 'server', sessionId: routeInstance(viewingInstanceId)?.sessionId ?? null, ts: Date.now(),
-      type: 'status_line', payload
-    });
-  } catch (err) {
-    console.error('[statusline] 刷新失败:', err.message);
+  for (const socket of io.sockets.sockets.values()) {
+    if (socket.deviceApproved !== true) continue;
+    try {
+      const agent = agents.get(socket.data.viewingInstanceId) ?? null;
+      const payload = await buildStatusLine({
+        agent,
+        cwd: agent?.cwd || WORK_DIR,
+        versions
+      });
+      socket.emit('agent:event', {
+        seq: 0, epoch: 'server', sessionId: agent?.sessionId ?? null, ts: Date.now(),
+        type: 'status_line', payload
+      });
+    } catch (err) {
+      console.error('[statusline] 刷新失败:', err.message);
+    }
   }
 }
 
@@ -1473,6 +2780,7 @@ function scheduleStatusRefresh() {
 // ---- 启动 ----
 export function startServer() {
   if (workDirs.length === 0) initializeWorkDirs();
+  startTrustedDevicesWatcher();
   httpServer.listen(PORT, HOST, () => {
     const displayHost = HOST === '0.0.0.0' ? 'localhost' : HOST;
     const address = httpServer.address();
@@ -1497,15 +2805,23 @@ export function startServer() {
 }
 
 export function stopServer(callback) {
+  stopTrustedDevicesWatcher();
   clearInterval(statusRefreshTimer);
   statusRefreshTimer = null;
   clearInterval(pruneUploadsTimer);
   pruneUploadsTimer = null;
   for (const agent of agents.values()) {
     try { agent.dispose?.(); } catch { /* noop */ }
+    threadRegistry.release(agent);
   }
   agents.clear();
-  viewingInstanceId = null;
+  messageReceiptLedger.clear();
+  needsYouRegistry.clear();
+  authFailureWindows.clear();
+  adminUnlockFailureWindows.clear();
+  authSessions.clear();
+  appServerHost?.dispose();
+  appServerHost = null;
   if (!httpServer.listening) {
     callback?.();
     return;
@@ -1518,7 +2834,6 @@ if (shouldStartServer) startServer();
 // 优雅退出
 function shutdown() {
   console.log('\n[server] 正在关闭...');
-  try { sessions.flushSaveSync(); } catch { /* noop */ }
   process.exit(0);
 }
 if (shouldStartServer) {

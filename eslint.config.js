@@ -31,11 +31,21 @@ export default [
   },
   {
     // 浏览器 Service Worker(经典脚本,非 module)。
-    files: ['public/js/**/*.js'],
+    files: ['public/js/sw.js'],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: 'script',
       globals: { ...globals.serviceworker, ...globals.browser },
+    },
+  },
+  {
+    // 浏览器端可复用 ESM；Service Worker 由上一组按经典脚本检查。
+    files: ['public/js/**/*.js'],
+    ignores: ['public/js/sw.js'],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: 'module',
+      globals: { ...globals.browser },
     },
   },
 ];
