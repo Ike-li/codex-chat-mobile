@@ -20,23 +20,25 @@ A mobile control plane for your local [Codex CLI](https://github.com/openai/code
 - Tool and command cards with exit codes, file-change summaries, and a visible raw-envelope fallback for unknown event types
 - Approval cards — approve or deny exec/patch requests from your phone, mirroring Codex CLI approval policies
 - Slash commands with suggestions (`/status`, `/diff`, `/review`, `/permissions`, …)
-- File attachments: validated uploads stored owner-only, injected as safe local paths
-- Session history backed by Codex's native session JSONL
-- Multi-workspace routing (`WORK_DIR` + `WORK_DIRS` allowlist) and multi-instance tabs
-- Web Push notifications (VAPID) and an installable PWA with mobile-safe layouts
+- Structured inputs: validated owner-only uploads become `localImage` or `mention` parts; enabled skills are supported, while guarded HTTPS images require the default-off `CODEX_ALLOW_REMOTE_IMAGES=1`
+- Native app-server threads are the only conversation source of truth (`thread/list`, `thread/read`, `thread/resume`, `thread/status/changed`)
+- Reliable mobile delivery with stable `clientRequestId`: IndexedDB persists the outbox, the in-memory receipt ledger deduplicates within one gateway lifetime, and unknown results are quarantined and reconciled through the ledger or `thread/read`. A vanished provisional instance is restored or safely rebound only for a never-attempted request; unresolved attempted writes require an explicit warning and a fresh-id retry.
+- Multi-workspace routing (`WORK_DIR` + `WORK_DIRS` allowlist), isolated per-device views, and multiple active thread tabs over one shared app-server process
+- Cross-thread “needs you” aggregation, device-bound Web Push for needs-you deep links and result/error notifications, and an installable PWA with mobile-safe layouts
 
 ## How It Works
 
 ```text
 phone browser / PWA
   <-> Socket.IO
-server.js  (Express 5: auth, routing, uploads, push, instance lifecycle)
-  <-> CodexAppServerSession (agent-appserver.js)
+server.js  (Express 5 gateway: auth, ACKs, routing, recovery, push)
+  <-> ThreadRuntime[] + ThreadRegistry
+  <-> one AppServerHost + AppServerTransport
   <-> stdio JSON-RPC 2.0
-codex app-server
+one codex app-server process
 ```
 
-There is no hosted backend. The browser talks to a Node server on your dev machine, which drives a long-lived `codex app-server` process over stdio. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full architecture and security model.
+There is no hosted backend. The browser talks to a Node gateway on your dev machine. Each supported gateway process owns one shared `codex app-server` process and many native threads; runtime ownership, request correlations, and each device's current view determine routing. Run one gateway service per host. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full architecture and security model.
 
 ## Quick Start
 
@@ -52,23 +54,30 @@ npm test
 npm start
 ```
 
-Open `http://127.0.0.1:3001` on the same machine. For phone access over LAN or a tunnel you must set `HOST=0.0.0.0` and a non-empty `AUTH_TOKEN`; with an empty `AUTH_TOKEN` the server is restricted to loopback.
+Open `http://127.0.0.1:3001` on the same machine. Phone access is fail-closed unless the effective connection is HTTPS, its exact Origin is allowlisted, and authentication/device pairing succeeds. A same-host HTTPS proxy should normally leave `HOST=127.0.0.1`; bind a non-loopback interface only when the proxy topology requires it, with an `AUTH_TOKEN` of at least 32 characters. Follow [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md) before exposing the gateway.
 
 ## Configuration
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `3001` | HTTP port |
-| `HOST` | `127.0.0.1` | Bind address; non-loopback requires `AUTH_TOKEN` |
-| `AUTH_TOKEN` | empty | Shared secret for non-loopback access (timing-safe compare) |
+| `HOST` | `127.0.0.1` | Bind address; keep loopback behind a same-host HTTPS proxy |
+| `AUTH_TOKEN` | empty | Bootstrap secret; non-loopback binds require at least 32 characters |
 | `WORK_DIR` | — | Primary Codex workspace |
 | `WORK_DIRS` | empty | Comma-separated allowlist of extra workspaces |
 | `CODEX_BIN` | `codex` | Path to the Codex CLI binary |
+| `CODEX_DATA_DIR` | `./data` | Device, Push, and audit state root |
 | `CODEX_APPROVAL_POLICY` | `on-request` | `untrusted` \| `on-failure` \| `on-request` \| `granular` \| `never` |
 | `CODEX_SANDBOX` | `workspace-write` | `read-only` \| `workspace-write` \| `danger-full-access` |
 | `CODEX_INPUT_QUEUE_LIMIT` | `20` | Max queued inputs during a busy turn |
-| `IDLE_TIMEOUT_MS` | `600000` | Idle instance shutdown timeout |
-| `VAPID_SUBJECT` / `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | empty | Enable Web Push (all three required) |
+| `IDLE_TIMEOUT_MS` | `600000` | Busy-turn silence timeout; interrupt after no runtime activity |
+| `CODEX_ALLOWED_ORIGINS` | empty | Exact comma-separated browser origins for remote Socket.IO |
+| `CODEX_TRUSTED_PROXY_IPS` | empty | Exact direct-peer IPs allowed to supply `X-Forwarded-Proto` |
+| `CODEX_SESSION_TTL_MS` | `604800000` | In-memory, device-bound HttpOnly session lifetime |
+| `CODEX_SECURITY_AUDIT_MAX_BYTES` | `1048576` | Active security audit size before one owner-only rotation is retained |
+| `CODEX_ALLOW_REMOTE_IMAGES` | `0` | Explicitly enable guarded HTTPS image URL inputs |
+| `CODEX_ADMIN_ENABLED` / `CODEX_P3_EXPERIMENTAL` | `0` | Keep Admin and Labs out of the core surface unless explicitly enabled |
+| `VAPID_SUBJECT` / `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | empty | Enable device-bound Web Push (all three required) |
 
 ## Commands
 
@@ -84,17 +93,20 @@ npm run test:ci         # lint + tests + coverage gates + E2E
 
 ## Security
 
-- Empty `AUTH_TOKEN` → loopback-only; any LAN or tunnel deployment requires a strong token.
-- Local state (device trust, uploads, audit logs) is written with owner-only permissions.
-- CSP and frame protections; upload validation and size limits; log redaction for local paths and secrets.
-- Destructive/Admin operations sit behind an unlock plus per-action confirmation.
+- Empty `AUTH_TOKEN` means loopback-only; non-loopback binds require at least 32 characters.
+- Remote HTTP is rejected by default. Remote Socket.IO additionally requires an exact Origin allowlist and a device-bound HttpOnly session obtained from `POST /auth/session`.
+- New browsers remain locked/pending until approved; their upstream events are discarded. Device denial disconnects its sockets and removes bound sessions and Push subscriptions. External trust-file removal applies the same session/Push revocation, but deliberately preserves an already connected loopback socket.
+- Device, Push, upload, and redacted audit state is owner-only. CSP/frame protections, upload validation, SSRF guards, and bounded auth/pairing/Push limits reduce exposure.
+- Admin and Labs are disabled by default. Admin also requires a time-limited unlock and per-action confirmation.
 
 This is a control plane for a real development machine — treat any remote exposure as high risk. See [SECURITY.md](SECURITY.md) for the threat model and how to report vulnerabilities.
 
 ## Key Files
 
-- `server.js` — HTTP, Socket.IO, auth, routing, and instance lifecycle
-- `agent-appserver.js` — Codex app-server JSON-RPC bridge and event mapping
+- `server.js` — HTTP/Socket.IO gateway, authentication, receipts, routing, recovery, Push, and needs-you aggregation
+- `app-server-transport.js` / `app-server-host.js` — the single stdio transport and shared app-server multiplexer
+- `thread-runtime.js` / `thread-registry.js` — per-thread semantics and exact ownership/routing
+- `agent-appserver.js` — `ThreadRuntime` implementation and Codex event mapping
 - `public/index.html` — single-file mobile SPA/PWA: UI, approval cards, native panels
 - `scripts/mock-codex-app-server.js` — deterministic Codex protocol mock for E2E
 - `.protocol/stable/` — pinned app-server protocol baseline for drift checks

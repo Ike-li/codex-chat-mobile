@@ -1,77 +1,80 @@
 # 架构
 
-`codex-chat-mobile` 是 Codex CLI 的本地 rich client。它不把工作代理到托管后端；浏览器连接本机 Node 服务，Node 服务再连接本机 `codex app-server` 进程。
+`codex-chat-mobile` 是 Codex CLI 的自托管移动端 rich client。浏览器只连接开发机上的 Node 网关；网关通过 stdio 管理一个共享的 `codex app-server`，不会把工作代理到本项目自有的托管后端。
 
 ## 运行链路
 
 ```text
 手机浏览器 / PWA
-  <-> Socket.IO
-server.js
-  <-> agent-appserver.js 中的 CodexAppServerSession
-  <-> stdio JSON-RPC 帧
-codex app-server
+  <-> HTTPS + Socket.IO 稳定事件协议
+server.js（鉴权、设备、可靠投递、视图路由、恢复、Push）
+  <-> ThreadRuntime[] + ThreadRegistry
+  <-> AppServerHost（入站多路复用）
+  <-> AppServerTransport（唯一进程、JSON-RPC request id、stdio）
+每个 Node 网关进程一个共享 codex app-server
 ```
 
-`server.js` 负责 HTTP、Socket.IO、鉴权、设备状态、工作目录路由、实例路由、上传、Web Push、广播和 catch-up 行为。`agent-appserver.js` 负责 JSON-RPC 请求 ID、initialize/thread/turn 生命周期、app-server 通知、服务端请求、审批响应、队列、中断和兜底信封。
+各层只承担一个边界：
 
-前端刻意保持为 `public/index.html` 中的单一 PWA 界面。它渲染文本增量、reasoning、命令/工具卡片、文件变更、审批、native app-server 面板、斜杠建议、附件、实例标签和移动端安全布局。
+- `AppServerTransport` 拥有子进程生命周期、全局 JSON-RPC request id、pending response map 和 NDJSON 帧。
+- `AppServerHost` 只初始化一次共享进程，并按 thread、turn、request、process/login correlation 把入站通知和 server request 交给唯一 owner。无法确定 owner 的定向 server request 会 fail-closed，应答 JSON-RPC 错误而不是广播或挂起。
+- `ThreadRegistry` 维护 `instanceId`、`threadId`、`turnId`、`requestId` 的交叉 ownership；标识未知、过期或指向不同 runtime 时拒绝路由。
+- `ThreadRuntime`（语义入口 `thread-runtime.js`，当前实现在 `agent-appserver.js`）管理单个 thread 的 start/resume/turn、队列、中断、审批和事件映射，不拥有独立 app-server 子进程。
+- `server.js` 管理 HTTP/Socket.IO、工作区 allowlist、每个 socket 的当前视图、消息 receipt、恢复、设备、Push 和 feature flags。
+
+前端仍是 `public/index.html` 为主的移动端 PWA，并把 outbox、ACK、恢复和视图路由拆到 `public/js/` 小模块。它渲染文本增量、thinking/reasoning、命令与工具卡片、diff、审批、提问、状态栏和未知事件的 raw fallback。
 
 ## 关键数据流
 
-浏览器与网关之间的完整接口签名见 [API.md](API.md)，app-server 协议面见 [PROTOCOL.md](PROTOCOL.md)。四条主链路：
+浏览器网关签名见 [API.md](API.md)，app-server 协议面见 [PROTOCOL.md](PROTOCOL.md)。主要链路如下：
 
-- **发消息**：`user:message` → `server.js` 按 `instanceId` 路由 → 桥 `turn/start`（turn 运行中且可 steer 时改发 `turn/steer`，否则按状态入队）→ app-server 通知流（`item/started` → deltas → `item/completed` → `turn/completed`）→ 映射为带自增 `seq` 的 `agent:event` 信封 → Socket.IO 广播 + 写重放缓冲。
-- **审批**：app-server 发来 S→C 审批请求 → `ApprovalBroker` 按 method 精确分类并登记 `approvalId` → 推送 `approval_request` 信封（+ Web Push）→ 前端 `user:approval` 决议 → 桥回填 JSON-RPC response → 广播决议；监听 `serverRequest/resolved` 撤销他端已决弹窗。不存在自动决议路径。
-- **断线恢复**：客户端重连后发 `catch-up` 带最后 `seq` → 网关从环形重放缓冲增量补发，避免重复近期消息；子进程崩溃则标记实例、重启并 `thread/resume` 续接。
-- **上传**：`uploads.js` 校验、限量、限大小、owner-only 落盘后，把绝对路径注入 `turn/start`，不把原始字节塞进协议帧。
+- **可靠发消息**：浏览器先生成稳定 `clientRequestId`，把完整 payload 和目标写入 IndexedDB outbox，再发 `user:message` 并等待 ACK。服务端以稳定 device identity + request id + payload fingerprint 做 single-flight、去重和冲突拒绝，回传 `queued` / `submitted` / `steered` receipt；同一 id 原样映射为 app-server `clientUserMessageId`。每次 gateway 启动都有新 epoch；ACK 丢失、页面中断或旧 epoch 的 queued 请求进入 `needs_reconcile`，普通 drain 不会重发。客户端先用 `message:reconcile` 按 request id 查询当前 ledger（没有 thread id 也会查询），有稳定 thread 时再以 `thread/read` 的 `userMessage.clientId` 核对。provisional instance 消失后，从未尝试的 pending 请求可保留原 id 恢复/重绑；已尝试且仍未知的请求只能由用户在重复副作用警告后确认，并生成带 `retryOfClientRequestId` 的新 id。
+- **流式与实例路由**：每个浏览器 socket 维护自己的 `viewingInstanceId` 并加入 instance room。runtime 事件带 `instanceId + threadId + turnId + itemId/requestId`；网关只发送到拥有或正在查看该 runtime 的设备，不按进程级“当前标签”猜测目标。
+- **审批与提问**：app-server server request 先由 host/registry 定位 owner，再由 `ApprovalBroker` 规范化。`NeedsYouRegistry` 把 approval/question 作为带 revision 的跨 thread need 聚合；新设备可取 snapshot。在同一服务进程和 revision 内，同一 `needId`/decision 可幂等重放，冲突、过期、撤销和未知结果均有明确 ACK；这避免正常重试重复应答，但不承诺跨服务重启的绝对 exactly-once。approval/question Push 只携带泛化正文和 `thread + need` 深链；result/error 也会 Push，但没有该深链，正文取最多 180 字符的 status/message，因此错误文本可能出现在系统通知预览中。
+- **断线恢复**：客户端以精确 `instanceId + threadId + lastSeq + lastEpoch` 发 `catch-up`。epoch 一致且缓冲连续时只补缺失增量；环形缓冲有 gap 或 runtime epoch 改变时，网关先冻结当前 `throughSeq` watermark，再调用 `thread/read(includeTurns:true)` 返回 snapshot、watermark 和新 epoch。客户端重建期间暂存 live events，只应用 watermark 之后的事件，因此读取 snapshot 期间到达的增量不会丢失。
+- **结构化输入**：`attachments` 只接受缺省/null/数组；上传先经过大小、数量、类型和路径验证，再写入 0700 的 `.ccm-uploads`（文件 0600）。业务上限是单文件 10 MiB、合计 20 MiB，Socket.IO wire cap 为 32 MiB 以容纳 base64/JSON 开销。图片映射为 `localImage`，普通文件映射为 `mention`。显式 parts 还可引用 workspace 内文件、`skills/list` 返回且 enabled 的 skill，以及在 `CODEX_ALLOW_REMOTE_IMAGES=1` 下通过 HTTPS、DNS 和 SSRF 校验的公网图片。路径或 URL 不拼进提示词文本。
 
 ## 实例生命周期
 
-`server.js` 的 `agents` map 以 `instanceId` 为键，每个实例对应一个独立的 `codex app-server` 子进程和一条 `CodexAppServerSession`。新建/fork（`session:fork` → `thread/fork`）挂载新实例并切换 `viewingInstanceId`，广播 `instances` / `session_list`；空闲超过 `IDLE_TIMEOUT_MS` 的实例回收。多实例标签因此互相隔离，一条 turn 的流不会串到另一个标签。
+`server.js` 的 `agents` map 保存活跃 `ThreadRuntime`，以 UI `instanceId` 为键；`ThreadRegistry` 保证一个 app-server thread 同时只有一个 runtime owner。多个 socket 选择同一 thread 时复用 runtime，但各自维护当前视图。`session:new`、`session:fork` 和 `session:switch` 仍是 UI/运行时控制；历史列表、读取和续接只走 `thread:*`。
+
+所有 runtime 共享同一个 `AppServerHost`。共享子进程退出会通知所有已挂载 runtime；下一次需要协议调用时懒重建进程，各 runtime 再按自己的 thread id 执行 `thread/resume`。`IDLE_TIMEOUT_MS` 不是 runtime 回收策略：它只在 turn 仍为 busy 且 runtime 持续无活动时触发 `turn/interrupt` 和本地中断复位。
 
 ## 状态模型
 
-- `server.js` 中的 `agents` map：按 `instanceId` 维护活跃 app-server 会话。
-- `viewingInstanceId`：当前浏览器壳正在查看的实例。
-- app-server thread：跨 Codex App / Web 的会话主事实源，通过 `thread/list`、`thread/read`、`thread/resume` 读取和续接。
-- `sessions.js`：轻量工作区/当前指针兼容层，不作为消息事实源。
-- Codex JSONL 历史：通过 `history.js` 读取，仅作为 legacy/fallback 历史入口。
-- 上传和审计文件：本地 owner-only 文件。
-- 协议基线：`.protocol/stable/`，由当前 pin 住的 Codex CLI 版本生成。
+- **app-server thread**：会话内容、标题、时间和活动状态的唯一事实源；读取面为 `thread/list`、`thread/read`、`thread/resume` 和 `thread/status/changed`。
+- **ThreadRegistry**：仅保存当前进程内的 live ownership，不是历史数据库。
+- **每 socket 视图**：`socket.data.viewingInstanceId` 和 Socket.IO room 决定当前设备看哪个 runtime；不同设备可以同时看不同 thread。
+- **UI 本地状态**：`thread-preferences.js` 只保存按 cwd 的当前 thread 指针和界面偏好；可靠 outbox 存 IndexedDB。仓库不再使用 `sessions.json` 或 JSONL legacy history 作为 fallback，也不宣称尚未实现的草稿持久化。
+- **可靠投递**：浏览器 IndexedDB outbox 可跨刷新；服务端 `MessageReceiptLedger` 是进程内、有界的 single-flight/去重账本，服务端重启后不承诺保留 receipt。跨 epoch 安全性由 outbox 隔离状态和只读 reconciliation 保证；没有稳定 thread id 时仍先查 ledger。无法核对的已尝试请求保持未知且不会自动执行，只有从未尝试的 provisional 请求可以原 id 重绑。
+- **实时恢复**：每个 runtime 持有有界 `seq/epoch` 事件缓冲；gap 时必须回到 `thread/read` 重建。
+- **活动状态**：`thread/status/changed` 是 busy/idle/notLoaded/systemError 的协议事实，而不是由 UI 猜测。Host 为每次变化分配 revision，以 `scope:"host"` 的 `thread_status` 广播给所有已批准设备，并把最新状态覆盖到 `thread:list` 结果；若该 thread 尚无 live owner，状态仍会送达且不会为它创建 runtime。已有 owner 时才另外路由到该 runtime。
+- **需人工处理**：`NeedsYouRegistry` 保存进程内 revisioned needs；upstream resolved、turn 失败/结束或 owner 释放会撤销对应卡片。
+- **主机状态**：trusted/pending devices、Push subscriptions 和两类 audit 写入 `CODEX_DATA_DIR` 的 owner-only 文件。
 
 ## 协议边界
 
-产品依赖 `codex app-server`，不依赖旧的 `codex exec --json` 行为。稳定主链路是：
+生产基线只使用 `codex app-server`，不使用旧的 `codex exec --json`。稳定主链路为 `initialize`/`initialized` → `thread/start|resume|fork` → `turn/start|steer` → 流式通知/server request → `turn/completed|error|interrupt`。
 
-1. `initialize`
-2. `initialized`
-3. `thread/start`、`thread/resume` 或 `thread/fork`
-4. `turn/start` 或 `turn/steer`
-5. 服务端流式通知
-6. `turn/completed`、`error` 或中断处理
+审批和用户输入 server request 必须显式应答。共享 host 只有在完整 target 唯一定位 owner 后才下发；未知定向请求返回 `-32602`，不支持的未知请求返回 `-32601`。已路由到正确 runtime 后，未知 notification 可宽容忽略；未知 item type 则降级为可见 `raw_item`。
 
-审批和用户输入这类 server request 必须显式应答。未知 server request 会作为协议事件处理，不能静默卡住应用。未知 item type 会降级为可见的 raw envelope，而不是直接丢失。
-
-experimental app-server 方法必须留在 Admin 或 Labs 这类产品门控之后。除非仓库明确标记为支持，否则它们不属于普通移动端聊天路径。
+Admin 和 experimental 方法必须同时受服务端 flag 与前端 feature manifest 门控。`CODEX_ADMIN_ENABLED=0`、`CODEX_P3_EXPERIMENTAL=0` 时核心聊天不依赖这些接口。
 
 ## 安全模型
 
-- `AUTH_TOKEN` 为空时，只允许 loopback host 和 loopback socket。
-- 任何非本机或 tunnel 部署都必须使用非空 `AUTH_TOKEN`。
-- token 比较使用 timing-safe 方式。
-- 设备信任和 pending 审批状态都只保存在本机。
-- 上传文件要校验、限量、限大小，并以 owner-only 权限保存。
-- 日志和事件表面会脱敏本地路径与密钥。
-- 服务端设置 CSP 和 frame 限制。
-- 破坏性/Admin 操作必须先 unlock，再逐操作确认。
-
-这是控制真实开发机器的本地控制面。任何远程暴露都应按高风险处理。
+- 空 `AUTH_TOKEN` 只允许 loopback；非 loopback 监听要求至少 32 字符。
+- 远程明文 HTTP/Socket.IO 默认返回拒绝；HTTPS 反代必须来自精确 `CODEX_TRUSTED_PROXY_IPS` 并提供单一 `X-Forwarded-Proto`，远程 Socket Origin 必须精确列入 `CODEX_ALLOWED_ORIGINS`。
+- 远程浏览器用静态 host token 调 `POST /auth/session`，换取绑定 `deviceToken` 的内存 HttpOnly/SameSite=Strict session；远程 Socket 不接受静态 token，HTTP query token 不参与鉴权。
+- 新设备保持 pending，批准成功落盘后才解锁。设备 deny 会撤销其全部 session、删除 Push 订阅并断开在线 socket。外部原子删除 trusted-device 记录即使设备离线也会撤销 session/Push 并断开远程 socket，但会保留已经连接的 loopback socket；`DELETE /auth/session` 只撤销当前 session 并断开其 socket。
+- Push subscribe 要求已认证且已批准的设备、公网 HTTPS endpoint 和有效 key；先持久化再返回成功，投递前重新验证设备信任与全部 DNS 答案。实际 TLS 请求使用原 hostname/SNI 并 pin 已验证 IP，总超时 10 秒，响应最多读取 64 KiB。
+- 认证、配对容量、Push 容量和 Admin unlock 有界限流；Admin 默认关闭，启用后仍有 TTL、显式 Lock、逐操作确认和独立审计。
+- `security-audit.jsonl` 使用 owner-only O_APPEND、按身份/窗口聚合 rate-limit 摘要，并在默认 1 MiB 时保留一份轮转；`admin-audit.jsonl` 在 sink 递归脱敏 source/error。两者只记录元数据/hash ref，不保存命令、问题、回答、token 或附件正文，也都不是防篡改审计系统。
 
 ## 维护中的设计决策
 
-- app-server 是唯一后端。
-- Socket.IO 信封层保持为前端稳定契约。
-- 日常回归优先使用确定性的 mock app-server 测试。
-- 只有在刻意验证本地 CLI 集成时，才运行真实 Codex 冒烟测试。
-- 接受 Codex CLI 升级前必须运行协议漂移检查。
+- 每个 Node 网关进程只运行一个共享 app-server；受支持的部署是一台主机运行一个网关服务，同一 thread 只能有一个 live owner。当前代码不协调多个独立 `server.js` 进程。
+- app-server thread API 是唯一会话事实源；浏览器本地只保存 UI 偏好、可靠 outbox 和当前指针。
+- Socket.IO envelope、ACK/receipt 与 recovery snapshot 是浏览器的稳定协议边界。
+- 目标不完整或标识冲突时 fail-closed，不使用全局当前视图猜测 thread。
+- Admin/Labs default-off；P0 聊天、可靠投递、恢复和安全不依赖它们。
+- 日常回归只用确定性 mock app-server。接受 Codex CLI 升级前必须按 [PROTOCOL_UPGRADE.md](PROTOCOL_UPGRADE.md) 更新 pin、基线和协议门禁。

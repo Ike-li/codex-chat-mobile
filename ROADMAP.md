@@ -6,33 +6,33 @@ This roadmap separates what is shipped and maintained from what is still open. I
 
 ## Shipped
 
-Delivered and covered by the test gates (`npm run test:ci`):
+Delivered and covered by the required lint, unit/integration, protocol, and mock E2E gates:
 
-- **App-server bridge** — long-lived `codex app-server` over stdio, JSON-RPC 2.0 lifecycle (initialize → thread → turn), queue, interrupt, steer, fork.
-- **Approval model** — command / file-change / permission / user-input approvals via `ApprovalBroker`, plus legacy `applyPatchApproval` / `execCommandApproval` fallback and `serverRequest/resolved` revocation.
+- **Shared app-server runtime** — one `codex app-server` per Node gateway process over stdio; `AppServerTransport`, `AppServerHost`, `ThreadRegistry`, and per-thread runtimes isolate thread/turn/request ownership while sharing one child. The supported deployment runs one gateway service per host.
+- **Native thread source of truth** — `thread/list`, `thread/read`, `thread/resume`, and `thread/status/changed` drive history and activity across Codex App and Web; duplicate `sessions.json` metadata and JSONL history fallback are removed.
+- **Approval and needs-you model** — command / file-change / permission / user-input requests use exact thread/turn/item/request routing, revisioned cross-thread aggregation, process-local idempotent decision replay/conflict rejection, upstream revocation, and legacy protocol fallbacks where the pinned app-server still emits them.
 - **Streaming UI** — text deltas, reasoning (channel/kind partitioned), command/tool cards with exit codes, file-change and diff panels, plan panel, raw-envelope fallback for unknown items.
-- **Mobile shell** — single-file SPA/PWA, multi-workspace routing (`WORK_DIR` + `WORK_DIRS`), multi-instance tabs, catch-up on reconnect, status line (git + context usage).
+- **Reliable mobile shell** — single-file SPA/PWA, multi-workspace routing, per-device views, stable `clientRequestId`, ACK/receipt replay, IndexedDB outbox quarantine/reconciliation across gateway epochs, user-confirmed retry for unresolved writes, bounded event catch-up, and `thread/read` rebuild after a gap or epoch change.
 - **Native controls** — thread list/resume/archive/rename/delete, compact, rollback, model list, read-only fs, account/usage/rate-limits, MCP status, skills, external-agent-config import.
-- **Admin (P2)** — config write, plugin/marketplace, fs write/remove/copy, MCP tool call, logout — behind `ENABLE ADMIN` unlock + per-action confirm + owner-only audit log.
+- **Admin (P2)** — default-off config/plugin/fs/MCP/logout controls behind `ENABLE ADMIN`, a bounded unlock TTL and failure window, per-action confirmation, explicit Lock, and owner-only redacted audit.
 - **Labs (P3, experimental)** — web terminal via `command/exec`, thread turns/search with graceful degradation, realtime/remote-control notification tracking; gated behind `CODEX_P3_EXPERIMENTAL`.
-- **Security baseline** — loopback-only without `AUTH_TOKEN`, timing-safe token compare, device trust, upload validation + owner-only writes, symlink defense, CSP, log redaction.
-- **Attachments & push** — validated uploads injected as safe local paths, VAPID Web Push, installable PWA.
+- **Self-hosted security** — loopback-only without `AUTH_TOKEN`; remote HTTPS and exact Origin enforcement; trusted-proxy validation; device-bound HttpOnly sessions; pairing, revocation, bounded auth/Push/Admin limits; owner-only redacted security audit.
+- **Structured inputs & Push** — validated uploads map to `localImage`/`mention`, enabled skills and guarded HTTPS images remain structured. For approval/question needs, authenticated device-bound VAPID Push uses a generic body plus an exact thread+need deep link; result/error events also notify, without that deep link, and may expose up to 180 characters of status/error text in the OS notification preview.
 - **CI & protocol gate** — GitHub Actions on Node 20/22, coverage thresholds + delta, and app-server protocol drift/coverage check against `.protocol/stable/`.
 
 ## In Progress
 
-- **Open-source documentation pass** — bilingual README, LICENSE (AGPL-3.0), CONTRIBUTING, SECURITY, and the `docs/` set (ARCHITECTURE, TESTING, PROTOCOL, API, SHOWCASE, REMOTE_ACCESS, GUIDE, PROTOCOL_UPGRADE).
+- No active roadmap item is declared here. New work should start as an issue with an acceptance boundary before it moves into this section.
 
 ## Candidates
 
 Not scheduled; listed for direction. Promote to an issue before starting.
 
 - **Real ChatGPT device-code login smoke** — automation covers the mock; real-account `chatgptDeviceCode` flow still needs a manual/CI path. *(待确认)*
-- **Native pagination/search** — switch history from JSONL parsing to `thread/turns/list` / `thread/items/list` / `thread/search` once those requests are exported by the pinned CLI. *(待确认)*
+- **Native pagination/search** — keep `thread/read` / `thread/list` as the stable truth surface; adopt `thread/turns/list`, `thread/items/list`, or `thread/search` only after they are exported by the pinned stable protocol. *(待确认)*
 - **Official remote-control pairing** — track `remoteControl/*` maturing upstream; evaluate replacing self-managed device auth when the official pairing lands. *(待确认)*
 - **Realtime voice** — `thread/realtime/*` currently notification-only; real audio input is out of scope until prioritized. *(待确认)*
 - **Delta coalescing** — bridge→frontend high-frequency delta batching for very long logs (performance, not correctness). *(待确认)*
-- **Screenshots / demo GIF** — capture portrait chat + approval card for the READMEs.
 
 ## Non-Goals
 

@@ -19,3 +19,4 @@ playwright-report/
 .playwright-mcp/
 reasonix.toml
 .reasonix
+.bug-hunter/

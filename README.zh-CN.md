@@ -17,10 +17,11 @@
 ## 当前形态
 
 - 本地 Node.js 服务：Express 5 + Socket.IO。
-- Codex 桥接：通过 stdio 长驻运行 `codex app-server`，协议为 JSON-RPC 2.0。
+- Codex 桥接：每个 Node 网关进程通过 stdio 长驻运行一个共享 `codex app-server`；多个原生 thread 精确复用该进程。受支持的部署是一台主机只运行一个网关服务。
 - 前端：`public/index.html` 中的单文件移动端 SPA/PWA。
-- 核心能力：流式对话、工具卡片、审批卡片、斜杠命令、文件附件、会话历史、多工作区路由、多实例标签、Web Push、PWA 安装。
-- 安全默认值：`AUTH_TOKEN` 为空时只允许 loopback；局域网或 tunnel 访问必须设置 token；本地状态 owner-only 落盘；CSP 响应头；上传校验；协议漂移检查。
+- 核心能力：流式对话、thinking/工具/diff 卡片、审批与提问、结构化附件、app-server 原生历史、多工作区、多 thread 标签、可靠 ACK/outbox、gap 重建、needs-you 精确深链、result/error 通知、设备绑定 Web Push 和 PWA。IndexedDB 持久化 outbox，服务端内存 receipt ledger 在单次网关生命周期内去重；消失的 provisional instance 只会为从未尝试的请求恢复或安全重绑，已尝试且无法核对的请求必须经重复副作用警告确认，并使用新 ID 重试。
+- 事实源：只使用 `thread/list`、`thread/read`、`thread/resume`、`thread/status/changed`；不再维护 `sessions.json` 元数据副本或 JSONL history fallback。
+- 安全默认值：空 `AUTH_TOKEN` 只允许 loopback；远程 HTTP 默认拒绝；远程 Socket 可进入 pending，但在 HTTPS、精确 Origin、HttpOnly session 和设备批准全部满足前不能操作；设备 deny 会撤销 session/Push 并断线，外部 trust-file 撤销则保留已连接的 loopback socket；本地状态 owner-only 落盘；远程图片、Admin/Labs 默认关闭。
 
 ## 本地运行
 
@@ -38,13 +39,17 @@ npm start
 ```bash
 PORT=3001
 HOST=127.0.0.1
-AUTH_TOKEN=replace-with-a-local-secret
+AUTH_TOKEN=
 WORK_DIR=/absolute/path/to/workspace
 WORK_DIRS=/other/project,/third/project
 CODEX_BIN=/absolute/path/to/codex
 CODEX_APPROVAL_POLICY=on-request
 CODEX_SANDBOX=workspace-write
 CODEX_INPUT_QUEUE_LIMIT=20
+CODEX_ALLOWED_ORIGINS=
+CODEX_TRUSTED_PROXY_IPS=
+CODEX_ADMIN_ENABLED=0
+CODEX_P3_EXPERIMENTAL=0
 ```
 
 完整配置项：
@@ -52,18 +57,25 @@ CODEX_INPUT_QUEUE_LIMIT=20
 | 变量 | 默认值 | 用途 |
 |---|---|---|
 | `PORT` | `3001` | HTTP 端口 |
-| `HOST` | `127.0.0.1` | 绑定地址；非 loopback 必须配 `AUTH_TOKEN` |
-| `AUTH_TOKEN` | 空 | 非 loopback 访问的共享密钥（timing-safe 比较） |
+| `HOST` | `127.0.0.1` | 绑定地址；同机 HTTPS 反代通常保持 loopback |
+| `AUTH_TOKEN` | 空 | session bootstrap 密钥；非 loopback 监听时至少 32 字符 |
 | `WORK_DIR` | — | 主 Codex 工作区 |
 | `WORK_DIRS` | 空 | 逗号分隔的额外工作区白名单 |
 | `CODEX_BIN` | `codex` | Codex CLI 二进制路径 |
+| `CODEX_DATA_DIR` | `./data` | 设备、Push 和审计状态目录 |
 | `CODEX_APPROVAL_POLICY` | `on-request` | `untrusted` \| `on-failure` \| `on-request` \| `granular` \| `never` |
 | `CODEX_SANDBOX` | `workspace-write` | `read-only` \| `workspace-write` \| `danger-full-access` |
 | `CODEX_INPUT_QUEUE_LIMIT` | `20` | busy turn 期间最大排队输入数 |
-| `IDLE_TIMEOUT_MS` | `600000` | 空闲实例回收超时 |
-| `VAPID_SUBJECT` / `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | 空 | 启用 Web Push（三项齐全才生效） |
+| `IDLE_TIMEOUT_MS` | `600000` | busy turn 静默超时；无 runtime 活动后中断 turn |
+| `CODEX_ALLOWED_ORIGINS` | 空 | 远程 Socket.IO 允许的精确 Origin 列表 |
+| `CODEX_TRUSTED_PROXY_IPS` | 空 | 可提供 `X-Forwarded-Proto` 的直接对端 IP |
+| `CODEX_SESSION_TTL_MS` | `604800000` | 绑定设备的内存 HttpOnly session 有效期 |
+| `CODEX_SECURITY_AUDIT_MAX_BYTES` | `1048576` | security audit 活跃文件达到该字节数后保留一份 owner-only 轮转 |
+| `CODEX_ALLOW_REMOTE_IMAGES` | `0` | 显式启用经 HTTPS/DNS/SSRF 校验的图片 URL 输入 |
+| `CODEX_ADMIN_ENABLED` / `CODEX_P3_EXPERIMENTAL` | `0` | 显式启用 Admin / Labs；默认不进入核心聊天面 |
+| `VAPID_SUBJECT` / `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | 空 | 启用设备绑定 Web Push（三项齐全才生效） |
 
-本机打开 `http://127.0.0.1:3001`。如果要通过局域网或 tunnel 访问，必须设置 `HOST=0.0.0.0` 和非空 `AUTH_TOKEN`。没有 `AUTH_TOKEN` 时，服务启动会被限制为 loopback host。手机端连接（HTTPS / PWA / Push 的硬限制）见 [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md)。
+本机打开 `http://127.0.0.1:3001`。手机访问默认必须走 HTTPS，并配置精确 `CODEX_ALLOWED_ORIGINS`；同机反代通常继续使用 `HOST=127.0.0.1`，只有拓扑确实需要对外监听时才改 `0.0.0.0`，此时 `AUTH_TOKEN` 至少 32 字符。静态 token 只用来换取绑定设备的 HttpOnly session，不写入浏览器持久存储。完整配置见 [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md)。
 
 ## 常用命令
 
@@ -79,8 +91,10 @@ npm run test:ci
 
 ## 核心文件
 
-- `server.js`：HTTP、Socket.IO、鉴权、路由和实例生命周期。
-- `agent-appserver.js`：Codex app-server JSON-RPC 桥接和事件映射。
+- `server.js`：HTTP/Socket.IO 网关、鉴权、ACK、路由、恢复、Push 和 needs-you 聚合。
+- `app-server-transport.js` / `app-server-host.js`：唯一 stdio 传输和共享 app-server 多路复用。
+- `thread-runtime.js` / `thread-registry.js`：单 thread 语义与精确 ownership/routing。
+- `agent-appserver.js`：`ThreadRuntime` 实现和 Codex 事件映射。
 - `public/index.html`：移动端 UI、PWA 控制、审批卡片和 native 面板。
 - `scripts/mock-codex-app-server.js`：用于 E2E 的确定性 Codex 协议 mock。
 - `.protocol/stable/`：用于协议漂移检查的 app-server 协议基线。
