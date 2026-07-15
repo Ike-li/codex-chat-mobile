@@ -5,21 +5,23 @@ import { fileURLToPath } from 'node:url';
 import { writeOwnerOnlyFile } from './file-security.js';
 
 const HERE = import.meta.dirname || dirname(fileURLToPath(import.meta.url));
-// CODEX_DATA_DIR 覆盖状态根——仅测试用，与 server.js/sessions.js 同精神。
-const DATA_DIR = process.env.CODEX_DATA_DIR || join(HERE, 'data');
-const TRUSTED_DEVICES_FILE = join(DATA_DIR, 'trusted-devices.json');
-const PENDING_DEVICES_FILE = join(DATA_DIR, 'pending-devices.json');
+// CODEX_DATA_DIR 覆盖部署状态根，与 server.js 和管理脚本使用同一目录。
+const DEFAULT_DATA_DIR = join(HERE, 'data');
+const dataDir = () => process.env.CODEX_DATA_DIR || DEFAULT_DATA_DIR;
+const trustedDevicesFile = () => join(dataDir(), 'trusted-devices.json');
+const pendingDevicesFile = () => join(dataDir(), 'pending-devices.json');
 
 let trustedDevices = new Set();
 let pendingDevices = []; // Array of { deviceToken, ip, userAgent, ts }
 
 export function loadTrustedDevices() {
+  const file = trustedDevicesFile();
   try {
-    if (!existsSync(TRUSTED_DEVICES_FILE)) {
+    if (!existsSync(file)) {
       trustedDevices = new Set();
       return;
     }
-    const data = JSON.parse(readFileSync(TRUSTED_DEVICES_FILE, 'utf8'));
+    const data = JSON.parse(readFileSync(file, 'utf8'));
     if (Array.isArray(data)) {
       trustedDevices = new Set(data.filter(id => typeof id === 'string' && id.trim().length > 0));
     } else {
@@ -32,21 +34,25 @@ export function loadTrustedDevices() {
 }
 
 export function saveTrustedDevices() {
+  const file = trustedDevicesFile();
   try {
-    mkdirSync(dirname(TRUSTED_DEVICES_FILE), { recursive: true });
-    writeOwnerOnlyFile(TRUSTED_DEVICES_FILE, JSON.stringify([...trustedDevices], null, 2));
+    mkdirSync(dirname(file), { recursive: true });
+    writeOwnerOnlyFile(file, JSON.stringify([...trustedDevices], null, 2));
+    return true;
   } catch (err) {
     console.error('[devices] 保存 trusted-devices.json 失败:', err.message);
+    return false;
   }
 }
 
 export function loadPendingDevices() {
+  const file = pendingDevicesFile();
   try {
-    if (!existsSync(PENDING_DEVICES_FILE)) {
+    if (!existsSync(file)) {
       pendingDevices = [];
       return;
     }
-    const data = JSON.parse(readFileSync(PENDING_DEVICES_FILE, 'utf8'));
+    const data = JSON.parse(readFileSync(file, 'utf8'));
     if (Array.isArray(data)) {
       pendingDevices = data.filter(d => d && typeof d.deviceToken === 'string');
     } else {
@@ -58,11 +64,14 @@ export function loadPendingDevices() {
 }
 
 export function savePendingDevices() {
+  const file = pendingDevicesFile();
   try {
-    mkdirSync(dirname(PENDING_DEVICES_FILE), { recursive: true });
-    writeOwnerOnlyFile(PENDING_DEVICES_FILE, JSON.stringify(pendingDevices, null, 2));
+    mkdirSync(dirname(file), { recursive: true });
+    writeOwnerOnlyFile(file, JSON.stringify(pendingDevices, null, 2));
+    return true;
   } catch (err) {
     console.error('[devices] 保存 pending-devices.json 失败:', err.message);
+    return false;
   }
 }
 
@@ -70,6 +79,11 @@ export function isDeviceTrusted(deviceToken) {
   if (!deviceToken || typeof deviceToken !== 'string') return false;
   loadTrustedDevices();
   return trustedDevices.has(deviceToken);
+}
+
+export function getTrustedDeviceTokens() {
+  loadTrustedDevices();
+  return new Set(trustedDevices);
 }
 
 export function addPendingDevice(deviceToken, info) {
@@ -104,8 +118,12 @@ export function getLatestPendingDevice() {
 export function approveDevice(deviceToken) {
   if (!deviceToken || typeof deviceToken !== 'string') return false;
   loadTrustedDevices();
+  const previousTrustedDevices = new Set(trustedDevices);
   trustedDevices.add(deviceToken);
-  saveTrustedDevices();
+  if (!saveTrustedDevices()) {
+    trustedDevices = previousTrustedDevices;
+    return false;
+  }
 
   loadPendingDevices();
   pendingDevices = pendingDevices.filter(d => d.deviceToken !== deviceToken);
@@ -116,8 +134,12 @@ export function approveDevice(deviceToken) {
 export function denyDevice(deviceToken) {
   if (!deviceToken || typeof deviceToken !== 'string') return false;
   loadTrustedDevices();
+  const previousTrustedDevices = new Set(trustedDevices);
   trustedDevices.delete(deviceToken);
-  saveTrustedDevices();
+  if (!saveTrustedDevices()) {
+    trustedDevices = previousTrustedDevices;
+    return false;
+  }
 
   loadPendingDevices();
   pendingDevices = pendingDevices.filter(d => d.deviceToken !== deviceToken);

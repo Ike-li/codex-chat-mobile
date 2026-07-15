@@ -1,7 +1,8 @@
 // test/devices.test.mjs —— 设备白名单模块单元测试。
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -118,6 +119,15 @@ test('approveDevice: returns false for empty/null token', async () => {
   cleanup();
 });
 
+test('approveDevice: returns false and rolls back trust when persistence fails', async () => {
+  const { approveDevice, isDeviceTrusted } = await import(`../devices.js?t=${Date.now()}`);
+  mkdirSync(join(tempDir, 'trusted-devices.json.tmp'));
+
+  assert.equal(approveDevice('must-not-be-trusted'), false);
+  assert.equal(isDeviceTrusted('must-not-be-trusted'), false);
+  cleanup();
+});
+
 // ---- denyDevice ----
 
 test('denyDevice: removes device from both trusted and pending', async () => {
@@ -178,4 +188,42 @@ test('pending devices persist to file', async () => {
   const data = JSON.parse(await import('node:fs').then(fs => fs.readFileSync(file, 'utf8')));
   assert.ok(data.some(d => d.deviceToken === 'pending-persist'));
   cleanup();
+});
+
+test('one devices module instance follows CODEX_DATA_DIR changes without crossing stores', async () => {
+  const secondDir = mkdtempSync(join(tmpdir(), 'ccm-devices-second-store-'));
+  const devices = await import(`../devices.js?t=${Date.now()}`);
+  try {
+    devices.approveDevice('first-store-token');
+    assert.equal(devices.isDeviceTrusted('first-store-token'), true);
+
+    process.env.CODEX_DATA_DIR = secondDir;
+    assert.equal(devices.isDeviceTrusted('first-store-token'), false);
+    devices.approveDevice('second-store-token');
+    assert.equal(devices.isDeviceTrusted('second-store-token'), true);
+
+    process.env.CODEX_DATA_DIR = tempDir;
+    assert.equal(devices.isDeviceTrusted('first-store-token'), true);
+    assert.equal(devices.isDeviceTrusted('second-store-token'), false);
+  } finally {
+    rmSync(secondDir, { recursive: true, force: true });
+    cleanup();
+  }
+});
+
+test('device CLI list reads trusted devices from CODEX_DATA_DIR', () => {
+  const deviceToken = 'trusted-in-configured-data-dir';
+  writeFileSync(join(tempDir, 'trusted-devices.json'), JSON.stringify([deviceToken]));
+  try {
+    const result = spawnSync(process.execPath, ['scripts/device.js', 'list'], {
+      cwd: join(import.meta.dirname, '..'),
+      env: { ...process.env, CODEX_DATA_DIR: tempDir },
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(deviceToken));
+  } finally {
+    cleanup();
+  }
 });

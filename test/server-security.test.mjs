@@ -7,6 +7,9 @@ import {
   resolveListenHost,
   normalizeAddress,
   hostnameFromHeader,
+  evaluateTransportSecurity,
+  evaluateSocketHandshakeSecurity,
+  parseGatewaySecurityPolicy,
 } from '../server-security.js';
 
 // ---- normalizeAddress ----
@@ -129,7 +132,14 @@ test('server refuses non-loopback host without AUTH_TOKEN', () => {
 });
 
 test('server allows explicit remote bind only when AUTH_TOKEN is set', () => {
-  assert.equal(resolveListenHost({ env: { HOST: '0.0.0.0' }, authToken: 'secret' }), '0.0.0.0');
+  assert.equal(resolveListenHost({ env: { HOST: '0.0.0.0' }, authToken: 'a'.repeat(32) }), '0.0.0.0');
+});
+
+test('server refuses a weak AUTH_TOKEN for a remote bind', () => {
+  assert.throws(
+    () => resolveListenHost({ env: { HOST: '0.0.0.0' }, authToken: 'short-secret' }),
+    /32 characters/
+  );
 });
 
 test('resolveListenHost: allows loopback host without AUTH_TOKEN', () => {
@@ -138,7 +148,7 @@ test('resolveListenHost: allows loopback host without AUTH_TOKEN', () => {
 });
 
 test('resolveListenHost: uses custom HOST from env', () => {
-  assert.equal(resolveListenHost({ env: { HOST: '192.168.1.100' }, authToken: 'secret' }), '192.168.1.100');
+  assert.equal(resolveListenHost({ env: { HOST: '192.168.1.100' }, authToken: 'a'.repeat(32) }), '192.168.1.100');
 });
 
 // ---- Host header injection ----
@@ -150,4 +160,72 @@ test('isLoopbackHostHeader: rejects host injection attempts', () => {
   assert.equal(isLoopbackHostHeader('localhost\0.evil.com'), false);
   // Whitespace injection
   assert.equal(isLoopbackHostHeader(' localhost :3001'), true); // trimmed, still loopback
+});
+
+test('transport security rejects a direct remote HTTP request by default', () => {
+  assert.deepEqual(evaluateTransportSecurity({
+    remoteAddress: '10.0.0.42',
+    hostHeader: 'codex.example.com',
+    socketEncrypted: false,
+  }, {
+    trustedProxyIps: [],
+    allowInsecureRemote: false,
+  }), {
+    ok: false,
+    reason: 'https_required',
+    local: false,
+    remote: true,
+    secure: false,
+    viaTrustedProxy: false,
+    effectiveProtocol: 'http',
+  });
+});
+
+test('transport security accepts HTTPS asserted by an explicitly trusted proxy', () => {
+  assert.deepEqual(evaluateTransportSecurity({
+    remoteAddress: '127.0.0.1',
+    hostHeader: 'codex.example.com',
+    socketEncrypted: false,
+    forwardedProtoHeader: 'https',
+  }, {
+    trustedProxyIps: ['127.0.0.1'],
+    allowInsecureRemote: false,
+  }), {
+    ok: true,
+    reason: null,
+    local: false,
+    remote: true,
+    secure: true,
+    viaTrustedProxy: true,
+    effectiveProtocol: 'https',
+  });
+});
+
+test('socket handshake security rejects a remote origin outside the exact allowlist', () => {
+  const result = evaluateSocketHandshakeSecurity({
+    remoteAddress: '10.0.0.42',
+    hostHeader: 'codex.example.com',
+    socketEncrypted: true,
+    originHeader: 'https://evil.example',
+  }, {
+    allowedOrigins: ['https://codex.example.com'],
+    trustedProxyIps: [],
+    allowInsecureRemote: false,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'origin_not_allowed');
+  assert.equal(result.normalizedOrigin, 'https://evil.example');
+});
+
+test('gateway security policy canonicalizes and deduplicates exact origins and proxy IPs', () => {
+  assert.deepEqual(parseGatewaySecurityPolicy({
+    CODEX_ALLOWED_ORIGINS: ' https://codex.example.com/,https://codex.example.com:443,https://two.example ',
+    CODEX_TRUSTED_PROXY_IPS: '127.0.0.1,::ffff:127.0.0.1,::1',
+    CODEX_ALLOW_INSECURE_REMOTE: '0',
+  }), {
+    allowedOrigins: ['https://codex.example.com', 'https://two.example'],
+    trustedProxyIps: ['127.0.0.1', '::1'],
+    allowInsecureRemote: false,
+  });
 });

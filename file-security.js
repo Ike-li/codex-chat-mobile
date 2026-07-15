@@ -88,6 +88,33 @@ export function writeOwnerOnlyFile(path, content) {
 }
 
 /**
+ * 以 O_APPEND 追加 owner-only 文件，避免读取并重写已有内容。
+ */
+export function appendOwnerOnlyFile(path, content) {
+  if (isWindows) {
+    let fd;
+    try {
+      fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND);
+      writeFileSync(fd, content);
+      fsyncSync(fd);
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+    }
+    return;
+  }
+
+  let fd;
+  try {
+    fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND, 0o600);
+    writeFileSync(fd, content);
+    fsyncSync(fd);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+  fixPermissions(path, false);
+}
+
+/**
  * 检查路径列表的权限，返回有问题的路径
  */
 export function checkPermissions(paths, isDir = false) {
