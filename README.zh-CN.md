@@ -98,7 +98,14 @@ npm run test:ci
 - `public/index.html`：移动端 UI、PWA 控制、审批卡片和 native 面板。
 - `scripts/mock-codex-app-server.js`：用于 E2E 的确定性 Codex 协议 mock。
 - `.protocol/stable/`：用于协议漂移检查的 app-server 协议基线。
+- [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)：从本机首次对话到手机、审批、历史续接、PWA 和 Push 的快速入门。
+- [docs/WEB_UI_MAP.md](docs/WEB_UI_MAP.md)：Web 页面区域、状态和按钮地图。
+- [docs/RECIPES.md](docs/RECIPES.md)：项目分析、修改、审批、附件、跨端续接和恢复的任务配方。
+- [docs/CAPABILITY_MATRIX.md](docs/CAPABILITY_MATRIX.md)：功能可用性、配置条件、返回形式和持久化矩阵。
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)：按症状排查连接、鉴权、thread、附件、Push 和条件能力。
+- [docs/CONCEPTS.md](docs/CONCEPTS.md)：thread/runtime、精确路由、可靠投递、needs-you 和跨端共享概念。
 - [docs/SHOWCASE.md](docs/SHOWCASE.md)：功能巡览（长什么样、能干什么）。
+- [docs/WEB_CAPABILITIES.md](docs/WEB_CAPABILITIES.md)：Web 端能力参考（能看到、点击、输入和得到什么）。
 - [docs/GUIDE.md](docs/GUIDE.md)：从安装到装成 PWA 的端到端使用走查。
 - [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md)：从手机连接（HTTPS/PWA/Push 硬限制、Tailscale、隧道）。
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)：当前架构和安全模型。

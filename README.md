@@ -113,7 +113,14 @@ This is a control plane for a real development machine — treat any remote expo
 
 ## Documentation
 
+- [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) — first successful local and mobile conversation, approval, history resume, PWA, and Push
+- [docs/WEB_UI_MAP.md](docs/WEB_UI_MAP.md) — map of every visible Web UI region and control
+- [docs/RECIPES.md](docs/RECIPES.md) — task-oriented recipes for analysis, edits, approvals, attachments, cross-surface resume, and recovery
+- [docs/CAPABILITY_MATRIX.md](docs/CAPABILITY_MATRIX.md) — availability, configuration, output, and persistence matrix
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — symptom-first Web, auth, thread, attachment, Push, and feature troubleshooting
+- [docs/CONCEPTS.md](docs/CONCEPTS.md) — thread/runtime, routing, reliable delivery, needs-you, and Codex App/Web concepts
 - [docs/SHOWCASE.md](docs/SHOWCASE.md) — visual feature tour (what it looks like and what it does)
+- [docs/WEB_CAPABILITIES.md](docs/WEB_CAPABILITIES.md) — complete Web UI capability reference: visible state, actions, inputs, and results
 - [docs/GUIDE.md](docs/GUIDE.md) — end-to-end walkthrough from install to installing the PWA
 - [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md) — connect from your phone (HTTPS/PWA/Push constraints, Tailscale, tunnels)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — current architecture and security model

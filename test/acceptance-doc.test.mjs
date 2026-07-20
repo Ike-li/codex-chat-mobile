@@ -171,3 +171,51 @@ test('showcase tour exists, is linked, and its screenshots resolve', () => {
     assert.match(readDoc(readmePath), /docs\/SHOWCASE\.md/, `${readmePath} must link to the showcase tour`);
   }
 });
+
+test('web user documentation provides a complete learning and reference path', () => {
+  const docs = {
+    'GETTING_STARTED.md': {
+      content: readDoc('../docs/GETTING_STARTED.md'),
+      headings: ['# Web 端快速入门', '## 完成后的结果', '## 第一步：准备环境', '## 第二步：完成本机首次对话',
+        '## 第三步：连接手机', '## 第四步：完成一次审批', '## 第五步：续接历史 Thread', '## 第六步：安装 PWA 与 Push'],
+    },
+    'WEB_UI_MAP.md': {
+      content: readDoc('../docs/WEB_UI_MAP.md'),
+      headings: ['# Web 界面地图', '## 页面区域总览', '## 顶部状态区', '## Thread 与实例区',
+        '## 消息区', '## 输入区', '## 左侧抽屉', '## 条件入口'],
+    },
+    'RECIPES.md': {
+      content: readDoc('../docs/RECIPES.md'),
+      headings: ['# Web 端任务配方', '## 分析一个项目', '## 修改代码并检查 Diff', '## 处理审批和提问',
+        '## 在运行中补充要求或中断', '## 跨 Codex App 与 Web 续接', '## 上传文件、使用 Mention 和 Skill', '## 安全恢复结果未知的消息'],
+    },
+    'CAPABILITY_MATRIX.md': {
+      content: readDoc('../docs/CAPABILITY_MATRIX.md'),
+      headings: ['# 能力矩阵', '## 状态说明', '## 核心聊天与输出', '## 历史、恢复与多设备',
+        '## 输入、控制面与移动能力', '## 条件能力与持久化边界'],
+    },
+    'TROUBLESHOOTING.md': {
+      content: readDoc('../docs/TROUBLESHOOTING.md'),
+      headings: ['# Web 端故障排查', '## 排查顺序', '## 页面无法连接', '## 已连接但不能发送',
+        '## 对话、历史或审批异常', '## 附件、Push 或 PWA 异常', '## Admin、Labs 或模型不可用'],
+    },
+    'CONCEPTS.md': {
+      content: readDoc('../docs/CONCEPTS.md'),
+      headings: ['# 核心概念', '## 从手机到 Codex 的运行链路', '## Thread、Turn、Item、Request 与 Instance',
+        '## 原生 Thread 与浏览器视图', '## 可靠投递模型', '## Needs-you 模型', '## Codex App 与 Web 的关系'],
+    },
+  };
+
+  for (const [name, spec] of Object.entries(docs)) {
+    for (const heading of spec.headings) {
+      assert.match(spec.content, new RegExp(`^${heading}$`, 'm'), `${name} missing heading ${heading}`);
+    }
+  }
+
+  for (const readmePath of ['../README.md', '../README.zh-CN.md']) {
+    const readme = readDoc(readmePath);
+    for (const name of Object.keys(docs)) {
+      assert.match(readme, new RegExp(`docs/${name}`), `${readmePath} missing link to docs/${name}`);
+    }
+  }
+});
