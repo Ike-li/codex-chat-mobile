@@ -284,40 +284,42 @@ test('CodexAppServerSession.send queues and drains with attachments', async () =
 
 // ---- 前端新增元素存在性 ----
 const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+const appJs = readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+const allContent = html + '\n' + appJs;
 
 test('frontend: instance tabs and session switch', () => {
-  assert.match(html, /instance-tabs/, 'has instance-tabs container');
-  assert.match(html, /handleInstances/, 'has handleInstances function');
-  assert.match(html, /renderInstanceTabs/, 'has renderInstanceTabs function');
+  assert.match(allContent, /instance-tabs/, 'has instance-tabs container');
+  assert.match(allContent, /handleInstances/, 'has handleInstances function');
+  assert.match(allContent, /renderInstanceTabs/, 'has renderInstanceTabs function');
 });
 
 test('frontend: attachment elements', () => {
-  assert.match(html, /id="attach-btn"/, 'has attach button');
-  assert.match(html, /id="attach-tray"/, 'has attach tray');
-  assert.match(html, /id="file-input"/, 'has file input');
-  assert.match(html, /readFileAsAttachment/, 'has file reader');
-  assert.match(html, /renderAttachTray/, 'has tray renderer');
+  assert.match(allContent, /id="attach-btn"/, 'has attach button');
+  assert.match(allContent, /id="attach-tray"/, 'has attach tray');
+  assert.match(allContent, /id="file-input"/, 'has file input');
+  assert.match(allContent, /readFileAsAttachment/, 'has file reader');
+  assert.match(allContent, /renderAttachTray/, 'has tray renderer');
 });
 
 test('frontend: status line and new controls', () => {
-  assert.match(html, /id="status-detail"/, 'has status detail line');
-  assert.match(html, /handleStatusLine/, 'has status line handler');
-  assert.match(html, /id="workdir-select"/, 'has workdir selector');
-  assert.match(html, /id="model-input"/, 'has model input');
-  assert.match(html, /id="perm-select"/, 'has permission selector');
+  assert.match(allContent, /id="status-detail"/, 'has status detail line');
+  assert.match(allContent, /handleStatusLine/, 'has status line handler');
+  assert.match(allContent, /id="workdir-select"/, 'has workdir selector');
+  assert.match(allContent, /id="model-input"/, 'has model input');
+  assert.match(allContent, /id="perm-select"/, 'has permission selector');
 });
 
 test('frontend: PWA and push elements', () => {
-  assert.match(html, /manifest\.webmanifest/, 'has manifest link');
-  assert.match(html, /apple-mobile-web-app-capable/, 'has apple-mobile meta');
-  assert.match(html, /push-subscribe-btn/, 'has push subscribe button');
+  assert.match(allContent, /manifest\.webmanifest/, 'has manifest link');
+  assert.match(allContent, /apple-mobile-web-app-capable/, 'has apple-mobile meta');
+  assert.match(allContent, /push-subscribe-btn/, 'has push subscribe button');
 });
 
 test('frontend: history browsing uses only app-server thread/read', () => {
-  assert.match(html, /loadNativeThreadHistory/, 'has native thread history loader');
-  assert.match(html, /thread:history/, 'emits thread:history event');
-  assert.match(html, /renderHistoryMessages/, 'renders normalized thread history');
-  assert.doesNotMatch(html, /function loadHistory/, 'legacy JSONL loader is removed');
-  assert.doesNotMatch(html, /codexSessions/, 'legacy JSONL session state is removed');
-  assert.doesNotMatch(html, /session:history/, 'legacy JSONL event is not used');
+  assert.match(allContent, /loadNativeThreadHistory/, 'has native thread history loader');
+  assert.match(allContent, /thread:history/, 'emits thread:history event');
+  assert.match(allContent, /renderHistoryMessages/, 'renders normalized thread history');
+  assert.doesNotMatch(allContent, /function loadHistory/, 'legacy JSONL loader is removed');
+  assert.doesNotMatch(allContent, /codexSessions/, 'legacy JSONL session state is removed');
+  assert.doesNotMatch(allContent, /session:history/, 'legacy JSONL event is not used');
 });

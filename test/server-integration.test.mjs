@@ -47,6 +47,9 @@ test('server lifecycle exposes HTTP and Socket.IO behavior without starting Code
     assert.equal(health.status, 200);
     assert.equal(health.headers.get('x-frame-options'), 'DENY');
     assert.equal(health.headers.get('x-content-type-options'), 'nosniff');
+    const csp = health.headers.get('content-security-policy');
+    assert.match(csp, /(?:^|;\s*)script-src 'self'(?:;|$)/);
+    assert.doesNotMatch(csp, /script-src[^;]*'unsafe-inline'/);
     assert.equal((await health.json()).status, 'ok');
 
     const vapid = await fetch(`${fixture.url}/push/vapid-public-key`);
@@ -118,6 +121,45 @@ test('server lifecycle exposes HTTP and Socket.IO behavior without starting Code
     }
   } finally {
     await fixture.close();
+  }
+});
+
+test('stopServer clears every maintenance interval created by startServer', async () => {
+  const originalSetInterval = globalThis.setInterval;
+  const originalClearInterval = globalThis.clearInterval;
+  const intervals = new Map();
+  const cleared = new Set();
+  let fixture;
+
+  globalThis.setInterval = (callback, delay, ...args) => {
+    const handle = originalSetInterval(callback, delay, ...args);
+    intervals.set(handle, delay);
+    return handle;
+  };
+  globalThis.clearInterval = handle => {
+    if (intervals.has(handle)) cleared.add(handle);
+    return originalClearInterval(handle);
+  };
+
+  try {
+    fixture = await startIsolatedServer();
+    await fixture.close();
+    fixture = null;
+
+    const maintenanceIntervals = [...intervals]
+      .filter(([, delay]) => [4_000, 300_000, 3_600_000].includes(delay))
+      .map(([handle]) => handle);
+    assert.equal(maintenanceIntervals.length, 4);
+    assert.deepEqual(
+      maintenanceIntervals.filter(handle => !cleared.has(handle)),
+      [],
+      'stopServer must clear status, upload, auth-session, and failure-window intervals',
+    );
+  } finally {
+    if (fixture) await fixture.close();
+    globalThis.setInterval = originalSetInterval;
+    globalThis.clearInterval = originalClearInterval;
+    for (const handle of intervals.keys()) originalClearInterval(handle);
   }
 });
 

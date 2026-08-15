@@ -1,7 +1,7 @@
 // test/devices.test.mjs —— 设备白名单模块单元测试。
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, utimesSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -69,6 +69,16 @@ test('addPendingDevice: replaces duplicate token', async () => {
   const matches = list.filter(d => d.deviceToken === 'dup-token');
   assert.equal(matches.length, 1);
   assert.equal(matches[0].ip, '10.0.0.2');
+  cleanup();
+});
+
+test('addPendingDevice: leaves pending capacity enforcement to the server boundary', async () => {
+  const { addPendingDevice, getPendingDevices } = await import(`../devices.js?t=${Date.now()}`);
+  for (let index = 0; index < 65; index += 1) {
+    addPendingDevice(`pending-${index}`, { ip: '10.0.0.1' });
+  }
+
+  assert.equal(getPendingDevices().length, 65);
   cleanup();
 });
 
@@ -205,6 +215,37 @@ test('one devices module instance follows CODEX_DATA_DIR changes without crossin
     process.env.CODEX_DATA_DIR = tempDir;
     assert.equal(devices.isDeviceTrusted('first-store-token'), true);
     assert.equal(devices.isDeviceTrusted('second-store-token'), false);
+  } finally {
+    rmSync(secondDir, { recursive: true, force: true });
+    cleanup();
+  }
+});
+
+test('device caches include the data file path when stores have identical mtimes', async () => {
+  const secondDir = mkdtempSync(join(tmpdir(), 'ccm-devices-same-mtime-store-'));
+  const sharedMtime = new Date('2025-01-01T00:00:00.000Z');
+  const firstTrustedFile = join(tempDir, 'trusted-devices.json');
+  const secondTrustedFile = join(secondDir, 'trusted-devices.json');
+  const firstPendingFile = join(tempDir, 'pending-devices.json');
+  const secondPendingFile = join(secondDir, 'pending-devices.json');
+
+  writeFileSync(firstTrustedFile, JSON.stringify(['store-one-token']));
+  writeFileSync(secondTrustedFile, JSON.stringify(['store-two-token']));
+  writeFileSync(firstPendingFile, JSON.stringify([{ deviceToken: 'pending-one', ts: 1 }]));
+  writeFileSync(secondPendingFile, JSON.stringify([{ deviceToken: 'pending-two', ts: 1 }]));
+  for (const file of [firstTrustedFile, secondTrustedFile, firstPendingFile, secondPendingFile]) {
+    utimesSync(file, sharedMtime, sharedMtime);
+  }
+
+  const devices = await import(`../devices.js?same-mtime=${Date.now()}`);
+  try {
+    assert.equal(devices.isDeviceTrusted('store-one-token'), true);
+    assert.deepEqual(devices.getPendingDevices().map(device => device.deviceToken), ['pending-one']);
+
+    process.env.CODEX_DATA_DIR = secondDir;
+    assert.equal(devices.isDeviceTrusted('store-one-token'), false);
+    assert.equal(devices.isDeviceTrusted('store-two-token'), true);
+    assert.deepEqual(devices.getPendingDevices().map(device => device.deviceToken), ['pending-two']);
   } finally {
     rmSync(secondDir, { recursive: true, force: true });
     cleanup();

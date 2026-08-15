@@ -70,7 +70,7 @@ node verify.cjs
    - 从项目 `node_modules/mermaid/dist/mermaid.min.js` 拷贝
    - 或从 CDN 下载
 
-2. **离线使用**：所有资源都已本地化，可完全离线使用。
+2. **离线使用**：核心页面、样式和交互脚本均已本地化；Mermaid 图需要按上一步补充可选的本地脚本，否则正文仍可阅读但图表不渲染。
 
 3. **内容更新**：修改 `content/*.html` 后需重新运行 `node build.cjs`。
 

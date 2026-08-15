@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 // scripts/check-coverage.js —— CI 覆盖率门禁检查。
-// 从 c8 报告中提取覆盖率，检查是否达到阈值。
-import { execSync } from 'node:child_process';
+// 运行与 npm test 相同的串行测试集合，并从 c8 JSON summary 读取稳定指标。
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const THRESHOLDS = {
   statements: 80,
@@ -10,54 +14,61 @@ const THRESHOLDS = {
   lines: 80,
 };
 
-// Run coverage and parse output
+const HERE = dirname(fileURLToPath(import.meta.url));
+const ROOT = join(HERE, '..');
+const reportDir = mkdtempSync(join(tmpdir(), 'ccm-coverage-'));
+
 try {
-  execSync('node --test test/*.test.mjs 2>&1', {
-    encoding: 'utf8',
-    timeout: 60000,
+  const testFiles = readdirSync(join(ROOT, 'test'))
+    .filter(file => file.endsWith('.test.mjs'))
+    .sort()
+    .map(file => join('test', file));
+  const c8Bin = join(ROOT, 'node_modules', 'c8', 'bin', 'c8.js');
+
+  execFileSync(process.execPath, [
+    c8Bin,
+    '--reporter=json-summary',
+    `--report-dir=${reportDir}`,
+    `--temp-directory=${join(reportDir, 'tmp')}`,
+    process.execPath,
+    '--test',
+    '--test-concurrency=1',
+    ...testFiles,
+  ], {
+    cwd: ROOT,
+    stdio: 'inherit',
+    timeout: 120_000,
   });
 
-  // Parse c8-like coverage from node:test --experimental-test-coverage
-  // Fallback: just check npm test passes
-  console.log('✅ 所有单元测试通过');
+  console.log('✅ 所有覆盖率测试通过');
+  const summary = JSON.parse(readFileSync(join(reportDir, 'coverage-summary.json'), 'utf8')).total;
+  const actual = {
+    statements: Number(summary.statements.pct),
+    branches: Number(summary.branches.pct),
+    functions: Number(summary.functions.pct),
+    lines: Number(summary.lines.pct),
+  };
 
-  // For now, run c8 separately
-  const coverageOutput = execSync('npx c8 node --test test/*.test.mjs 2>&1 | tail -20', {
-    encoding: 'utf8',
-    timeout: 60000,
-  });
+  console.log('\n覆盖率报告:');
+  console.log(`  语句: ${actual.statements}% (阈值: ${THRESHOLDS.statements}%)`);
+  console.log(`  分支: ${actual.branches}% (阈值: ${THRESHOLDS.branches}%)`);
+  console.log(`  函数: ${actual.functions}% (阈值: ${THRESHOLDS.functions}%)`);
+  console.log(`  行:   ${actual.lines}% (阈值: ${THRESHOLDS.lines}%)`);
 
-  // Parse the All files line
-  const match = coverageOutput.match(/All files\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|/);
-  if (match) {
-    const stmts = parseFloat(match[1]);
-    const branches = parseFloat(match[2]);
-    const funcs = parseFloat(match[3]);
-    const lines = parseFloat(match[4]);
-
-    console.log(`\n覆盖率报告:`);
-    console.log(`  语句: ${stmts}% (阈值: ${THRESHOLDS.statements}%)`);
-    console.log(`  分支: ${branches}% (阈值: ${THRESHOLDS.branches}%)`);
-    console.log(`  函数: ${funcs}% (阈值: ${THRESHOLDS.functions}%)`);
-    console.log(`  行:   ${lines}% (阈值: ${THRESHOLDS.lines}%)`);
-
-    let failed = false;
-    if (stmts < THRESHOLDS.statements) { console.error(`❌ 语句覆盖率 ${stmts}% 低于阈值 ${THRESHOLDS.statements}%`); failed = true; }
-    if (branches < THRESHOLDS.branches) { console.error(`❌ 分支覆盖率 ${branches}% 低于阈值 ${THRESHOLDS.branches}%`); failed = true; }
-    if (funcs < THRESHOLDS.functions) { console.error(`❌ 函数覆盖率 ${funcs}% 低于阈值 ${THRESHOLDS.functions}%`); failed = true; }
-    if (lines < THRESHOLDS.lines) { console.error(`❌ 行覆盖率 ${lines}% 低于阈值 ${THRESHOLDS.lines}%`); failed = true; }
-
-    if (failed) {
-      console.error('\n❌ 覆盖率未达到阈值要求');
-      process.exit(1);
-    } else {
-      console.log('\n✅ 覆盖率全部达标');
+  const failed = Object.entries(THRESHOLDS)
+    .filter(([metric, threshold]) => actual[metric] < threshold);
+  if (failed.length > 0) {
+    for (const [metric, threshold] of failed) {
+      console.error(`❌ ${metric} 覆盖率 ${actual[metric]}% 低于阈值 ${threshold}%`);
     }
+    console.error('\n❌ 覆盖率未达到阈值要求');
+    process.exitCode = 1;
   } else {
-    console.error('⚠️ 无法解析覆盖率报告');
-    process.exit(1);
+    console.log('\n✅ 覆盖率全部达标');
   }
 } catch (err) {
-  console.error('❌ 测试运行失败:', err.message);
-  process.exit(1);
+  console.error('❌ 覆盖率测试或报告生成失败:', err.message);
+  process.exitCode = 1;
+} finally {
+  rmSync(reportDir, { recursive: true, force: true });
 }

@@ -107,7 +107,8 @@ This is a control plane for a real development machine — treat any remote expo
 - `app-server-transport.js` / `app-server-host.js` — the single stdio transport and shared app-server multiplexer
 - `thread-runtime.js` / `thread-registry.js` — per-thread semantics and exact ownership/routing
 - `agent-appserver.js` — `ThreadRuntime` implementation and Codex event mapping
-- `public/index.html` — single-file mobile SPA/PWA: UI, approval cards, native panels
+- `public/index.html` — mobile SPA/PWA HTML and CSS shell
+- `public/js/app.js` — external browser application module: UI interactions, approval cards, and native panels
 - `scripts/mock-codex-app-server.js` — deterministic Codex protocol mock for E2E
 - `.protocol/stable/` — pinned app-server protocol baseline for drift checks
 

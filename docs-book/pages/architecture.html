@@ -58,7 +58,7 @@
 <div class="mermaid">
 graph TB
     subgraph "表现层"
-        A[手机浏览器 / PWA<br>public/index.html]
+        A[手机浏览器 / PWA<br>index.html + js/app.js]
     end
     subgraph "网关层"
         B[server.js<br>Express + Socket.IO]
@@ -74,10 +74,10 @@ graph TB
 
 <h2 id="s2"><a class="anchor" href="#s2" aria-hidden="true"></a>各层职责</h2>
 
-<h3 id="s3"><a class="anchor" href="#s3" aria-hidden="true"></a>表现层（public/index.html）</h3>
+<h3 id="s3"><a class="anchor" href="#s3" aria-hidden="true"></a>表现层（public/index.html + public/js/app.js）</h3>
 
 <ul>
-  <li>单文件 SPA/PWA，约 143KB</li>
+  <li><code>public/index.html</code> 提供 HTML/CSS shell，<code>public/js/app.js</code> 作为外部 ESM 承载应用交互</li>
   <li>渲染：文本增量、reasoning、命令/工具卡片、文件变更、审批</li>
   <li>交互：输入框、审批按钮、斜杠命令、附件上传</li>
   <li>状态：连接状态、会话状态、实例切换</li>
@@ -256,7 +256,7 @@ sequenceDiagram
 
         <nav class="pager"><a class="prev" href="overview.html"><span class="dir">← 上一篇</span><span class="ttl">项目总览</span></a><a class="next" href="boundaries.html"><span class="dir">下一篇 →</span><span class="ttl">职责边界与生态</span></a></nav>
       </article>
-      <aside class="toc"><div class="toc-title">本页目录</div><ul><li class="h2"><a href="#s1">分层架构</a></li><li class="h2"><a href="#s2">各层职责</a></li><li class="h3"><a href="#s3">表现层（public/index.html）</a></li><li class="h3"><a href="#s4">网关层（server.js）</a></li><li class="h3"><a href="#s5">桥接层（agent-appserver.js）</a></li><li class="h3"><a href="#s6">执行层（codex app-server）</a></li><li class="h2"><a href="#s7">技术栈详解</a></li><li class="h2"><a href="#s8">关键数据流</a></li><li class="h3"><a href="#s9">1. 发消息</a></li><li class="h3"><a href="#s10">2. 审批</a></li><li class="h3"><a href="#s11">3. 断线恢复</a></li><li class="h3"><a href="#s12">4. 文件上传</a></li><li class="h2"><a href="#s13">安全边界</a></li><li class="h2"><a href="#s14">协议边界</a></li></ul></aside>
+      <aside class="toc"><div class="toc-title">本页目录</div><ul><li class="h2"><a href="#s1">分层架构</a></li><li class="h2"><a href="#s2">各层职责</a></li><li class="h3"><a href="#s3">表现层（public/index.html + public/js/app.js）</a></li><li class="h3"><a href="#s4">网关层（server.js）</a></li><li class="h3"><a href="#s5">桥接层（agent-appserver.js）</a></li><li class="h3"><a href="#s6">执行层（codex app-server）</a></li><li class="h2"><a href="#s7">技术栈详解</a></li><li class="h2"><a href="#s8">关键数据流</a></li><li class="h3"><a href="#s9">1. 发消息</a></li><li class="h3"><a href="#s10">2. 审批</a></li><li class="h3"><a href="#s11">3. 断线恢复</a></li><li class="h3"><a href="#s12">4. 文件上传</a></li><li class="h2"><a href="#s13">安全边界</a></li><li class="h2"><a href="#s14">协议边界</a></li></ul></aside>
     </div>
   </div>
 </div>

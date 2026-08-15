@@ -1,6 +1,6 @@
 // eslint.config.js —— ESLint 9 flat config。
-// 分组:Node 后端/脚本/测试(ESM)+ 浏览器 Service Worker。
-// 说明:public/index.html 的内联脚本未纳入(需 eslint-plugin-html;当前保持最小依赖)。
+// 分组：Node 后端/脚本/测试（ESM）、CJS 构建脚本和浏览器脚本。
+// public/index.html 只保留外部脚本入口，应用代码由 public/js/app.js 覆盖。
 import js from '@eslint/js';
 import globals from 'globals';
 
@@ -12,13 +12,14 @@ export default [
       'test-results/**',
       'playwright-report/**',
       'data/**',
+      '_shot.mjs',
     ],
   },
   js.configs.recommended,
   {
     // Node 后端、脚本、测试、Playwright 配置(项目为 type:module,.js 即 ESM)。
     files: ['**/*.js', '**/*.mjs'],
-    ignores: ['public/**'],
+    ignores: ['public/**', 'docs-book/assets/**'],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: 'module',
@@ -27,6 +28,28 @@ export default [
     rules: {
       'no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrors: 'none' }],
       'no-empty': ['error', { allowEmptyCatch: true }],
+    },
+  },
+  {
+    // 文档手册的 Node CommonJS 构建与校验脚本。
+    files: ['docs-book/**/*.cjs'],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: 'commonjs',
+      globals: { ...globals.node },
+    },
+    rules: {
+      'no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrors: 'none' }],
+      'no-empty': ['error', { allowEmptyCatch: true }],
+    },
+  },
+  {
+    // 文档手册浏览器脚本（经典脚本）。
+    files: ['docs-book/assets/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: 'script',
+      globals: { ...globals.browser },
     },
   },
   {
@@ -45,7 +68,7 @@ export default [
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: 'module',
-      globals: { ...globals.browser },
+      globals: { ...globals.browser, io: 'readonly' },
     },
   },
 ];

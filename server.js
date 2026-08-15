@@ -20,7 +20,7 @@ import { MessageReceiptLedger } from './message-receipt-ledger.js';
 import { NeedsYouRegistry } from './needs-you-registry.js';
 import { resolveInputParts } from './input-parts.js';
 import { maskToken, sanitize, sanitizePath } from './sanitizer.js';
-import { writeOwnerOnlyFile } from './file-security.js';
+import { writeOwnerOnlyFile, appendOwnerOnlyFile } from './file-security.js';
 import { appendJsonlAuditRecord } from './audit-log.js';
 import { createPushSender } from './push-sender.js';
 import { isPublicEndpointHostname, isPublicIpAddress } from './network-address.js';
@@ -119,6 +119,14 @@ const AUTH_SESSION_TTL_MS = Number.isInteger(rawAuthSessionTtlMs) && rawAuthSess
   ? rawAuthSessionTtlMs
   : 7 * 24 * 60 * 60 * 1000;
 const authSessions = new Map();
+let authSessionsPruneTimer = null;
+let failureWindowsPruneTimer = null;
+
+function pruneExpiredAuthSessions(now = Date.now()) {
+  for (const [key, session] of authSessions) {
+    if (session.expiresAt <= now) authSessions.delete(key);
+  }
+}
 
 // ---- Web Push ----
 const VAPID_PUBLIC_KEY  = process.env.VAPID_PUBLIC_KEY  || '';
@@ -230,14 +238,20 @@ function pushText(value) {
   return text.length > 180 ? `${text.slice(0, 180)} ...` : text;
 }
 
-function canonicalAttachmentFingerprints(attachments) {
-  return (attachments || []).map(attachment => ({
-    name: attachment.name,
-    mimeType: attachment.mimeType,
-    decodedSha256: createHash('sha256')
-      .update(Buffer.from(attachment.data, 'base64'))
-      .digest('hex'),
-  }));
+async function canonicalAttachmentFingerprints(attachments) {
+  const result = [];
+  for (const attachment of (attachments || [])) {
+    // Yield to event loop between attachments to avoid blocking on large files
+    if (attachment.data && attachment.data.length > 1_000_000) await new Promise(resolve => setImmediate(resolve));
+    result.push({
+      name: attachment.name,
+      mimeType: attachment.mimeType,
+      decodedSha256: createHash('sha256')
+        .update(Buffer.from(attachment.data, 'base64'))
+        .digest('hex'),
+    });
+  }
+  return result;
 }
 
 function canonicalInputPartFingerprints(parts) {
@@ -353,7 +367,7 @@ app.use((req, res, next) => {
 app.use((_req, res, next) => {
   res.setHeader('Content-Security-Policy', [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline'",
+    "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data:",
     "connect-src 'self' ws: wss:",
@@ -370,6 +384,15 @@ const clientIp = v => normalizeAddress(v);
 const authFailureWindows = new Map();
 const adminUnlockFailureWindows = new Map();
 
+function pruneExpiredFailureWindows(now = Date.now()) {
+  for (const [key, value] of authFailureWindows) {
+    if (value.resetAt <= now) authFailureWindows.delete(key);
+  }
+  for (const [key, value] of adminUnlockFailureWindows) {
+    if (value.resetAt <= now) adminUnlockFailureWindows.delete(key);
+  }
+}
+
 function recordAuthFailure(address, now = Date.now()) {
   const key = clientIp(address) || 'unknown';
   let window = authFailureWindows.get(key);
@@ -378,11 +401,7 @@ function recordAuthFailure(address, now = Date.now()) {
   }
   window.count += 1;
   authFailureWindows.set(key, window);
-  if (authFailureWindows.size > 10_000) {
-    for (const [candidate, value] of authFailureWindows) {
-      if (value.resetAt <= now) authFailureWindows.delete(candidate);
-    }
-  }
+  if (authFailureWindows.size > 10_000) pruneExpiredFailureWindows(now);
   const rateLimited = window.count > AUTH_MAX_FAILURES;
   return {
     rateLimited,
@@ -1417,22 +1436,22 @@ function emitServerEnvelope(socket, type, payload) {
 function appendAdminAudit(entry) {
   try {
     mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-    const previous = existsSync(ADMIN_AUDIT_FILE) ? readFileSync(ADMIN_AUDIT_FILE, 'utf8') : '';
-    writeOwnerOnlyFile(
+    appendOwnerOnlyFile(
       ADMIN_AUDIT_FILE,
-      previous + JSON.stringify({ ts: Date.now(), ...sanitizeAdminAuditValue(entry) }) + '\n',
+      JSON.stringify({ ts: Date.now(), ...sanitizeAdminAuditValue(entry) }) + '\n',
     );
   } catch {
     // Admin audit failures should not leak details or crash the socket handler.
   }
 }
 
-function sanitizeAdminAuditValue(value) {
+function sanitizeAdminAuditValue(value, depth = 0) {
+  if (depth > 10) return '[too deep]';
   if (typeof value === 'string') return sanitize(value);
-  if (Array.isArray(value)) return value.map(sanitizeAdminAuditValue);
+  if (Array.isArray(value)) return value.map(v => sanitizeAdminAuditValue(v, depth + 1));
   if (value && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value).map(([key, nested]) => (
-      [key, sanitizeAdminAuditValue(nested)]
+      [key, sanitizeAdminAuditValue(nested, depth + 1)]
     )));
   }
   return value;
@@ -1790,10 +1809,13 @@ io.on('connection', socket => {
       return;
     }
     const clientIdentity = deviceToken ? `device:${deviceToken}` : `socket:${socket.id}`;
+    const attachmentFingerprints = clientRequestId
+      ? await canonicalAttachmentFingerprints(attachments)
+      : [];
     const requestFingerprint = clientRequestId
       ? createHash('sha256').update(JSON.stringify({
         text: text.trim(),
-        attachments: canonicalAttachmentFingerprints(attachments),
+        attachments: attachmentFingerprints,
         parts: canonicalInputPartFingerprints(requestedParts),
         target: requestedThreadId
           ? { threadId: requestedThreadId }
@@ -2752,23 +2774,27 @@ let statusRefreshTimer = null;
 let pruneUploadsTimer = null;
 
 async function refreshStatusLine() {
+  const tasks = [];
   for (const socket of io.sockets.sockets.values()) {
     if (socket.deviceApproved !== true) continue;
-    try {
-      const agent = agents.get(socket.data.viewingInstanceId) ?? null;
-      const payload = await buildStatusLine({
-        agent,
-        cwd: agent?.cwd || WORK_DIR,
-        versions
-      });
-      socket.emit('agent:event', {
-        seq: 0, epoch: 'server', sessionId: agent?.sessionId ?? null, ts: Date.now(),
-        type: 'status_line', payload
-      });
-    } catch (err) {
-      console.error('[statusline] 刷新失败:', err.message);
-    }
+    tasks.push((async () => {
+      try {
+        const agent = agents.get(socket.data.viewingInstanceId) ?? null;
+        const payload = await buildStatusLine({
+          agent,
+          cwd: agent?.cwd || WORK_DIR,
+          versions
+        });
+        socket.emit('agent:event', {
+          seq: 0, epoch: 'server', sessionId: agent?.sessionId ?? null, ts: Date.now(),
+          type: 'status_line', payload
+        });
+      } catch (err) {
+        console.error('[statusline] 刷新失败:', err.message);
+      }
+    })());
   }
+  await Promise.all(tasks);
 }
 
 function scheduleStatusRefresh() {
@@ -2800,6 +2826,14 @@ export function startServer() {
       }
     }, 3600000);
     pruneUploadsTimer.unref?.();
+
+    // 每 5 分钟清理过期认证会话，防止内存泄漏
+    authSessionsPruneTimer = setInterval(pruneExpiredAuthSessions, 300_000);
+    authSessionsPruneTimer.unref?.();
+
+    // 每 5 分钟清理过期限流窗口
+    failureWindowsPruneTimer = setInterval(pruneExpiredFailureWindows, 300_000);
+    failureWindowsPruneTimer.unref?.();
   });
   return httpServer;
 }
@@ -2810,6 +2844,10 @@ export function stopServer(callback) {
   statusRefreshTimer = null;
   clearInterval(pruneUploadsTimer);
   pruneUploadsTimer = null;
+  clearInterval(authSessionsPruneTimer);
+  authSessionsPruneTimer = null;
+  clearInterval(failureWindowsPruneTimer);
+  failureWindowsPruneTimer = null;
   for (const agent of agents.values()) {
     try { agent.dispose?.(); } catch { /* noop */ }
     threadRegistry.release(agent);

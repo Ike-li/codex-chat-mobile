@@ -16,7 +16,7 @@
 <ul>
   <li><strong>选择 app-server 模式</strong>：放弃旧的 <code>codex exec --json</code>，采用长驻 <code>codex app-server</code> 子进程</li>
   <li><strong>stdio JSON-RPC</strong>：通过标准输入输出通信，避免网络协议复杂性</li>
-  <li><strong>单文件前端</strong>：<code>public/index.html</code> 作为唯一前端，简化部署</li>
+  <li><strong>初始单文件前端</strong>：原型阶段由 <code>public/index.html</code> 独立承载前端；当前已拆为 HTML/CSS shell 与外部应用模块</li>
 </ul>
 
 <p><strong>技术选型理由</strong>：</p>

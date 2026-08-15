@@ -62,7 +62,7 @@ graph TB
         A[agent-appserver.js<br>JSON-RPC Bridge]
     end
     subgraph "表现层"
-        P[public/index.html<br>SPA/PWA]
+        P[index.html + js/app.js<br>SPA/PWA]
     end
     subgraph "支撑模块"
         B[approval-broker.js<br>审批分类]
@@ -106,7 +106,7 @@ graph TB
     </tr>
     <tr>
       <td>前端 SPA</td>
-      <td><code>public/index.html</code></td>
+      <td><code>public/index.html</code> + <code>public/js/app.js</code></td>
       <td>UI 渲染、交互、PWA</td>
       <td>不持有业务逻辑</td>
     </tr>

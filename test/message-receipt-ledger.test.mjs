@@ -39,6 +39,36 @@ test('receipt ledger shares one pending result and rejects a conflicting fingerp
   });
 });
 
+test('receipt ledger keeps pending ownership past the ready timeout until the owner settles', async () => {
+  const ledger = new MessageReceiptLedger({ readyTtlMs: 5 });
+  const owner = ledger.claim({
+    identity: 'device:a', requestId: 'req-slow', fingerprint: 'same-payload',
+  });
+  const waiting = ledger.claim({
+    identity: 'device:a', requestId: 'req-slow', fingerprint: 'same-payload',
+  });
+  const replay = ledger.replay(waiting.handle);
+
+  await new Promise(resolve => setTimeout(resolve, 20));
+
+  assert.equal(ledger.stats().size, 1);
+  assert.equal(ledger.claim({
+    identity: 'device:a', requestId: 'req-slow', fingerprint: 'same-payload',
+  }).kind, 'duplicate');
+  assert.equal(ledger.claim({
+    identity: 'device:a', requestId: 'req-slow', fingerprint: 'different-payload',
+  }).kind, 'conflict');
+
+  ledger.settle(owner.handle, {
+    ok: true,
+    receipt: { clientRequestId: 'req-slow', state: 'submitted' },
+  });
+  assert.deepEqual(await replay, {
+    ok: true,
+    receipt: { clientRequestId: 'req-slow', state: 'submitted' },
+  });
+});
+
 test('receipt ledger keeps runtime receipt transitions monotonic across settle races', async () => {
   const ledger = new MessageReceiptLedger();
 

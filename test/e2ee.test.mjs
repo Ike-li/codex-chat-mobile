@@ -42,16 +42,59 @@ test('完整握手：clientHello → serverHello → clientAuth → secureReady'
   assert.equal(client.ready, true);
 });
 
+test('握手状态机拒绝乱序调用', () => {
+  const server = new E2EEHandshake({ isServer: true, identityKeyPair: serverId });
+  const client = new E2EEHandshake({ isServer: false, identityKeyPair: clientId });
+
+  assert.throws(
+    () => client.handleServerHello({}),
+    /invalid state for handleServerHello/,
+  );
+  assert.throws(
+    () => client.markReady(),
+    /invalid state for markReady/,
+  );
+  assert.throws(
+    () => server.handleClientAuth({}),
+    /invalid state for handleClientAuth/,
+  );
+});
+
+test('握手状态机拒绝重复状态转换', () => {
+  const server = new E2EEHandshake({ isServer: true, identityKeyPair: serverId });
+  const client = new E2EEHandshake({ isServer: false, identityKeyPair: clientId });
+
+  const clientHello = client.startClientHello();
+  assert.throws(() => client.startClientHello(), /invalid state for startClientHello/);
+
+  const serverHello = server.handleClientHello(clientHello);
+  assert.throws(() => server.handleClientHello(clientHello), /invalid state for handleClientHello/);
+
+  const clientAuth = client.handleServerHello(serverHello);
+  assert.throws(() => client.handleServerHello(serverHello), /invalid state for handleServerHello/);
+
+  server.handleClientAuth(clientAuth);
+  assert.throws(() => server.handleClientAuth(clientAuth), /invalid state for handleClientAuth/);
+
+  client.markReady();
+  assert.throws(() => client.markReady(), /invalid state for markReady/);
+});
+
 test('握手后加密往返：明文 → 加密 → 解密 → 原文', () => {
   const server = new E2EEHandshake({ isServer: true, identityKeyPair: serverId });
   const client = new E2EEHandshake({ isServer: false, identityKeyPair: clientId });
 
-  // 执行握手
-  server.handleClientHello(client.startClientHello());
-  client.handleServerHello(server.handleClientHello(client.startClientHello()));
-  // 重新来过——实际上 handshake 有状态，我们重新做一次完整的
-  // 因为在上面第一步中 client.startClientHello() 和 server.handleClientHello() 已经配对了
-  // 我们需要重新创建
+  // 执行完整握手
+  const ch = client.startClientHello();
+  const sh = server.handleClientHello(ch);
+  const ca = client.handleServerHello(sh);
+  server.handleClientAuth(ca);
+  client.markReady();
+
+  // 加密往返
+  const ct = client.send('hello');
+  const pt = server.recv(ct);
+  assert.equal(pt, 'hello');
 });
 
 test('握手后加密往返（完整流程）', () => {

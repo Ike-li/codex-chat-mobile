@@ -1,6 +1,9 @@
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { writeOwnerOnlyFile } from './file-security.js';
+import { appendOwnerOnlyFile } from './file-security.js';
+import { truncate } from './text-utils.js';
+
+const TRUNCATE_SUFFIX = ' ... (truncated)';
 
 const DEFAULT_DECISIONS = ['accept', 'decline'];
 const TOOL_SUMMARY_CAP = 600;
@@ -200,7 +203,6 @@ export class ApprovalBroker {
     if (!this.auditPath) return;
     try {
       mkdirSync(dirname(this.auditPath), { recursive: true, mode: 0o700 });
-      const previous = existsSync(this.auditPath) ? readFileSync(this.auditPath, 'utf8') : '';
       const line = JSON.stringify({
         ts: Date.now(),
         event,
@@ -208,7 +210,7 @@ export class ApprovalBroker {
         method,
         ...auditMetadata(event, detail),
       });
-      writeOwnerOnlyFile(this.auditPath, previous + line + '\n');
+      appendOwnerOnlyFile(this.auditPath, line + '\n');
     } catch {
       // Audit failures must not block the protocol response path.
     }
@@ -270,7 +272,7 @@ function normalizeChanges(changes) {
   return changes.map(change => ({
     path: typeof change?.path === 'string' ? change.path : '',
     kind: changeKind(change),
-    diff: truncate(typeof change?.diff === 'string' ? change.diff : '', TOOL_SUMMARY_CAP * 2),
+    diff: truncate(typeof change?.diff === 'string' ? change.diff : '', TOOL_SUMMARY_CAP * 2, TRUNCATE_SUFFIX),
   }));
 }
 
@@ -279,7 +281,7 @@ function changesFromFileMap(fileChanges) {
   return Object.entries(fileChanges).map(([path, change]) => ({
     path,
     kind: changeKind(change),
-    diff: truncate(typeof change?.diff === 'string' ? change.diff : '', TOOL_SUMMARY_CAP * 2),
+    diff: truncate(typeof change?.diff === 'string' ? change.diff : '', TOOL_SUMMARY_CAP * 2, TRUNCATE_SUFFIX),
   }));
 }
 
@@ -321,11 +323,7 @@ function normalizeAnswers(answers) {
 }
 
 function truncateString(value, cap = TOOL_SUMMARY_CAP) {
-  return truncate(typeof value === 'string' ? value : '', cap);
-}
-
-function truncate(value, cap) {
-  return value.length > cap ? `${value.slice(0, cap)} ... (truncated)` : value;
+  return truncate(typeof value === 'string' ? value : '', cap, TRUNCATE_SUFFIX);
 }
 
 function approvalKey(value) {

@@ -36,7 +36,7 @@
   // ── 侧栏滚动位置：跨页面保持（跳转后不回到顶部）──────────────────
   if (sidebar) {
     var saveNavScroll = function () {
-      try { sessionStorage.setItem('docsbook-nav-scroll', String(sidebar.scrollTop)); } catch (e) {}
+      try { sessionStorage.setItem('docsbook-nav-scroll', String(sidebar.scrollTop)); } catch { /* Storage may be unavailable. */ }
     };
     // 点击导航链接、卸载前都记一次，覆盖各种跳转路径
     [].forEach.call(sidebar.querySelectorAll('.nav a'), function (a) {
@@ -208,7 +208,7 @@
         sequence: { useMaxWidth: true }, quadrantChart: { useMaxWidth: true },
       });
       window.mermaid.run({ nodes: blocks });
-    } catch (err) { /* noop */ }
+    } catch { /* noop */ }
   };
   [].forEach.call(document.querySelectorAll('.mermaid'), function (b) { b.dataset.src = b.textContent; });
   if (window.mermaid) window.__renderMermaid();
@@ -241,7 +241,7 @@
     [].forEach.call(document.querySelectorAll('.mermaid'), function (m) {
       if (m.dataset.lbBound) return;
       m.dataset.lbBound = '1';
-      m.addEventListener('click', function (e) {
+      m.addEventListener('click', function () {
         if (window.getSelection().toString().length > 0) return;
         var svg = m.querySelector('svg');
         if (!svg) return;

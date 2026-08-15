@@ -3,164 +3,176 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+const appJs = readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+const allContent = html + '\n' + appJs;
+
+test('HTML loads the application from an external module and contains no inline scripts', () => {
+  assert.match(html, /<script\s+type="module"\s+src="\/js\/app\.js"><\/script>/);
+  const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
+  assert.ok(scripts.length > 0);
+  for (const [, attributes, body] of scripts) {
+    assert.match(attributes, /\bsrc=/i);
+    assert.equal(body.trim(), '');
+  }
+});
 
 test('mobile shell exposes session state and quick terminal controls', () => {
-  assert.match(html, /id="session-meta"/);
-  assert.match(html, /id="send-btn"/);
-  assert.match(html, /id="interrupt-btn"/);
-  assert.match(html, /id="attach-btn"/);
-  assert.match(html, /id="model-trigger"/);
-  assert.match(html, /id="perm-trigger"/);
+  assert.match(allContent, /id="session-meta"/);
+  assert.match(allContent, /id="send-btn"/);
+  assert.match(allContent, /id="interrupt-btn"/);
+  assert.match(allContent, /id="attach-btn"/);
+  assert.match(allContent, /id="model-trigger"/);
+  assert.match(allContent, /id="perm-trigger"/);
 });
 
 test('client handles queued input, reconnect catch-up, status, and ANSI output', () => {
-  assert.match(html, /case 'status'/);
-  assert.match(html, /case 'queued_message'/);
-  assert.match(html, /case 'dequeued_message'/);
-  assert.match(html, /case 'tool_output_delta'/);
-  assert.match(html, /socket\.emit\('catch-up'/);
-  assert.match(html, /function renderAnsi/);
-  assert.match(html, /function retryLastFailed/);
-  assert.match(html, /function copyLatestOutput/);
-  assert.match(html, /aria-live="polite"/);
+  assert.match(allContent, /case 'status'/);
+  assert.match(allContent, /case 'queued_message'/);
+  assert.match(allContent, /case 'dequeued_message'/);
+  assert.match(allContent, /case 'tool_output_delta'/);
+  assert.match(allContent, /socket\.emit\('catch-up'/);
+  assert.match(allContent, /function renderAnsi/);
+  assert.match(allContent, /function retryLastFailed/);
+  assert.match(allContent, /function copyLatestOutput/);
+  assert.match(allContent, /aria-live="polite"/);
 });
 
 test('client applies app-server thread status to thread and instance activity', () => {
-  assert.match(html, /case 'thread_status'/);
-  assert.match(html, /function handleThreadStatus\(payload\)/);
-  assert.match(html, /from '\/js\/thread-status\.js'/);
-  assert.match(html, /applyThreadStatus\(appThreads, payload\)/);
-  assert.match(html, /mergeThreadList\(appThreads, ack\.threads/);
-  assert.match(html, /threadStatusPresentation\(/);
-  assert.match(html, /instance\.sessionId === payload\.threadId/);
-  assert.match(html, /statusRevision/);
-  assert.match(html, /thread-status-dot/);
-  assert.match(html, /scheduleThreadListRefresh\(\)/);
+  assert.match(allContent, /case 'thread_status'/);
+  assert.match(allContent, /function handleThreadStatus\(payload\)/);
+  assert.match(allContent, /from '\/js\/thread-status\.js'/);
+  assert.match(allContent, /applyThreadStatus\(appThreads, payload\)/);
+  assert.match(allContent, /mergeThreadList\(appThreads, ack\.threads/);
+  assert.match(allContent, /threadStatusPresentation\(/);
+  assert.match(allContent, /instance\.sessionId === payload\.threadId/);
+  assert.match(allContent, /statusRevision/);
+  assert.match(allContent, /thread-status-dot/);
+  assert.match(allContent, /scheduleThreadListRefresh\(\)/);
 });
 
 test('client applies runtime message receipt transitions to the persistent outbox', () => {
-  assert.match(html, /case 'message_receipt'/);
-  assert.match(html, /messageOutbox\.acceptReceipt\(ev\.payload\)/);
+  assert.match(allContent, /case 'message_receipt'/);
+  assert.match(allContent, /messageOutbox\.acceptReceipt\(ev\.payload\)/);
 });
 
 test('client reconciles optimistic and queued message bubbles by clientRequestId', () => {
-  assert.match(html, /dataset\.clientRequestId/);
-  assert.match(html, /promoteOfflineBubble\(clientRequestId\)/);
-  assert.match(html, /promoteQueuedBubble\(clientRequestId/);
-  assert.match(html, /appendUserBubble\(ev\.payload\.text, ev\.payload\.attachments, ev\.payload\.parts, ev\.payload\.clientRequestId\)/);
-  assert.doesNotMatch(html, /offlineUserBubbles\.findIndex\(q => q\.text === text\)/);
+  assert.match(allContent, /dataset\.clientRequestId/);
+  assert.match(allContent, /promoteOfflineBubble\(clientRequestId\)/);
+  assert.match(allContent, /promoteQueuedBubble\(clientRequestId/);
+  assert.match(allContent, /appendUserBubble\(ev\.payload\.text, ev\.payload\.attachments, ev\.payload\.parts, ev\.payload\.clientRequestId\)/);
+  assert.doesNotMatch(allContent, /offlineUserBubbles\.findIndex\(q => q\.text === text\)/);
 });
 
 test('copy buffer is restored from replayed Codex output events', () => {
-  assert.match(html, /let latestOutputText = '';/);
-  assert.match(html, /function rememberOutput\(text\)/);
-  assert.match(html, /rememberOutput\(streamText\)/);
-  assert.match(html, /rememberOutput\(msg\)/);
-  assert.match(html, /const text = latestOutputText\.trim\(\)/);
-  assert.match(html, /function fallbackCopyText\(text\)/);
-  assert.match(html, /fallbackCopyText\(text\)/);
-  assert.match(html, /function showCopyFallback\(text\)/);
-  assert.match(html, /copy-fallback/);
+  assert.match(allContent, /let latestOutputText = '';/);
+  assert.match(allContent, /function rememberOutput\(text\)/);
+  assert.match(allContent, /rememberOutput\(streamText\)/);
+  assert.match(allContent, /rememberOutput\(msg\)/);
+  assert.match(allContent, /const text = latestOutputText\.trim\(\)/);
+  assert.match(allContent, /function fallbackCopyText\(text\)/);
+  assert.match(allContent, /fallbackCopyText\(text\)/);
+  assert.match(allContent, /function showCopyFallback\(text\)/);
+  assert.match(allContent, /copy-fallback/);
 });
 
 test('mobile keyboard uses visual viewport safe area instead of fixed screen height', () => {
-  assert.match(html, /--app-height/);
-  assert.match(html, /--keyboard-inset/);
-  assert.match(html, /visualViewport/);
-  assert.match(html, /function syncVisualViewport\(\)/);
-  assert.match(html, /resize', syncVisualViewport/);
-  assert.match(html, /scroll', syncVisualViewport/);
+  assert.match(allContent, /--app-height/);
+  assert.match(allContent, /--keyboard-inset/);
+  assert.match(allContent, /visualViewport/);
+  assert.match(allContent, /function syncVisualViewport\(\)/);
+  assert.match(allContent, /resize', syncVisualViewport/);
+  assert.match(allContent, /scroll', syncVisualViewport/);
 });
 
 test('client checks auth requirement before opening the socket', () => {
-  assert.match(html, /id="auth-gate"/);
-  assert.match(html, /id="auth-token-input"/);
-  assert.match(html, /autoConnect: false/);
-  assert.match(html, /function bootstrapAuth\(\)/);
-  assert.match(html, /fetch\('\/health'/);
-  assert.match(html, /connectSocket\(\{ allowEmpty: true \}\)/);
-  assert.match(html, /function connectSocket\(/);
-  assert.match(html, /bootstrapAuth\(\);/);
-  assert.match(html, /authForm\.addEventListener\('submit'/);
-  assert.match(html, /socket\.connect\(\)/);
-  assert.match(html, /socket\.on\('connect_error'/);
+  assert.match(allContent, /id="auth-gate"/);
+  assert.match(allContent, /id="auth-token-input"/);
+  assert.match(allContent, /autoConnect: false/);
+  assert.match(allContent, /function bootstrapAuth\(\)/);
+  assert.match(allContent, /fetch\('\/health'/);
+  assert.match(allContent, /connectSocket\(\{ allowEmpty: true \}\)/);
+  assert.match(allContent, /function connectSocket\(/);
+  assert.match(allContent, /bootstrapAuth\(\);/);
+  assert.match(allContent, /authForm\.addEventListener\('submit'/);
+  assert.match(allContent, /socket\.connect\(\)/);
+  assert.match(allContent, /socket\.on\('connect_error'/);
 });
 
 test('browser exchanges the host token for an HttpOnly session without persisting it', () => {
-  assert.match(html, /fetch\('\/auth\/session'/);
-  assert.match(html, /credentials: 'same-origin'/);
-  assert.doesNotMatch(html, /localStorage\.setItem\('codex_auth_token'/);
-  assert.doesNotMatch(html, /localStorage\.getItem\('codex_auth_token'/);
-  assert.doesNotMatch(html, /socket\.auth = \{ token: authToken/);
+  assert.match(allContent, /fetch\('\/auth\/session'/);
+  assert.match(allContent, /credentials: 'same-origin'/);
+  assert.doesNotMatch(allContent, /localStorage\.setItem\('codex_auth_token'/);
+  assert.doesNotMatch(allContent, /localStorage\.getItem\('codex_auth_token'/);
+  assert.doesNotMatch(allContent, /socket\.auth = \{ token: authToken/);
 });
 
 test('client creates device credentials with Web Crypto instead of Math.random', () => {
-  assert.match(html, /crypto\.randomUUID\(\)/);
-  assert.match(html, /crypto\.getRandomValues\(/);
-  assert.doesNotMatch(html, /deviceToken = 'dev_' \+ Math\.random/);
+  assert.match(allContent, /crypto\.randomUUID\(\)/);
+  assert.match(allContent, /crypto\.getRandomValues\(/);
+  assert.doesNotMatch(allContent, /deviceToken = 'dev_' \+ Math\.random/);
 });
 
 test('client binds push subscriptions with the current auth and device credentials', () => {
-  assert.match(html, /'x-device-token': deviceToken/);
-  assert.match(html, /credentials: 'same-origin'/);
-  assert.doesNotMatch(html, /fetch\('\/push\/subscribe'[\s\S]{0,300}'x-auth-token'/);
-  assert.match(html, /if \(!subscribeResponse\.ok\)/);
+  assert.match(allContent, /'x-device-token': deviceToken/);
+  assert.match(allContent, /credentials: 'same-origin'/);
+  assert.doesNotMatch(allContent, /fetch\('\/push\/subscribe'[\s\S]{0,300}'x-auth-token'/);
+  assert.match(allContent, /if \(!subscribeResponse\.ok\)/);
 });
 
 test('client renders rich approval, user input, and raw item cards', () => {
-  assert.match(html, /case 'user_input_request'/);
-  assert.match(html, /case 'raw_item'/);
-  assert.match(html, /function renderApprovalDetails/);
-  assert.match(html, /function handleUserInputRequest/);
-  assert.match(html, /function handleRawItem/);
-  assert.match(html, /payload\.changes/);
-  assert.match(html, /payload\.permissions/);
-  assert.match(html, /JSON\.stringify\(payload\.item/);
+  assert.match(allContent, /case 'user_input_request'/);
+  assert.match(allContent, /case 'raw_item'/);
+  assert.match(allContent, /function renderApprovalDetails/);
+  assert.match(allContent, /function handleUserInputRequest/);
+  assert.match(allContent, /function handleRawItem/);
+  assert.match(allContent, /payload\.changes/);
+  assert.match(allContent, /payload\.permissions/);
+  assert.match(allContent, /JSON\.stringify\(payload\.item/);
 });
 
 test('client marks user-input cards complete only after a successful server ACK', () => {
-  const start = html.indexOf('function handleUserInputRequest');
-  const end = html.indexOf('function renderQuestion', start);
-  const handler = html.slice(start, end);
+  const start = allContent.indexOf('function handleUserInputRequest');
+  const end = allContent.indexOf('function renderQuestion', start);
+  const handler = allContent.slice(start, end);
   assert.match(handler, /socket\.emit\('user:approval',[\s\S]*ack =>/);
   assert.match(handler, /if \(!ack\?\.ok\)/);
   assert.ok(handler.indexOf('if (!ack?.ok)') < handler.indexOf('markInputCardDone'));
 });
 
 test('client keeps unknown needs visible but never renders them as actionable', () => {
-  const start = html.indexOf('function renderNeedsYouPanel');
-  const end = html.indexOf('function openNeed', start);
-  const handler = html.slice(start, end);
+  const start = allContent.indexOf('function renderNeedsYouPanel');
+  const end = allContent.indexOf('function openNeed', start);
+  const handler = allContent.slice(start, end);
   assert.match(handler, /need\.state === 'unknown'/);
   assert.match(handler, /结果未知，等待上游终态/);
-  assert.match(html, /need\.state !== 'pending'/);
+  assert.match(allContent, /need\.state !== 'pending'/);
 });
 
 test('client renders ChatGPT device-code login envelopes', () => {
-  assert.match(html, /id="account-login-btn"/);
-  assert.match(html, /id="account-login-panel"/);
-  assert.match(html, /case 'account_login'/);
-  assert.match(html, /case 'account_updated'/);
-  assert.match(html, /function startChatgptDeviceLogin/);
-  assert.match(html, /function handleAccountLogin/);
-  assert.match(html, /function handleAccountUpdated/);
-  assert.match(html, /socket\.emit\('account:loginStart'/);
-  assert.match(html, /socket\.emit\('account:loginCancel'/);
+  assert.match(allContent, /id="account-login-btn"/);
+  assert.match(allContent, /id="account-login-panel"/);
+  assert.match(allContent, /case 'account_login'/);
+  assert.match(allContent, /case 'account_updated'/);
+  assert.match(allContent, /function startChatgptDeviceLogin/);
+  assert.match(allContent, /function handleAccountLogin/);
+  assert.match(allContent, /function handleAccountUpdated/);
+  assert.match(allContent, /socket\.emit\('account:loginStart'/);
+  assert.match(allContent, /socket\.emit\('account:loginCancel'/);
 });
 
 test('client renders summary and full reasoning streams separately', () => {
-  assert.match(html, /case 'reasoning'/);
-  assert.match(html, /function appendReasoning/);
-  assert.match(html, /summary_part_added/);
-  assert.match(html, /reasoning-summary/);
-  assert.match(html, /reasoning-full/);
-  assert.match(html, /payload\.channel/);
+  assert.match(allContent, /case 'reasoning'/);
+  assert.match(allContent, /function appendReasoning/);
+  assert.match(allContent, /summary_part_added/);
+  assert.match(allContent, /reasoning-summary/);
+  assert.match(allContent, /reasoning-full/);
+  assert.match(allContent, /payload\.channel/);
 });
 
 test('client exposes session fork control', () => {
-  assert.match(html, /fork-instance-btn/);
-  assert.match(html, /function forkCurrentSession/);
-  assert.match(html, /socket\.emit\('session:fork'/);
+  assert.match(allContent, /fork-instance-btn/);
+  assert.match(allContent, /function forkCurrentSession/);
+  assert.match(allContent, /socket\.emit\('session:fork'/);
 });
 
 test('client exposes P1 native app-server controls and readonly status panels', () => {
@@ -176,7 +188,7 @@ test('client exposes P1 native app-server controls and readonly status panels', 
     'native-skills-btn',
     'native-import-btn',
   ]) {
-    assert.match(html, new RegExp(`id="${id}"`));
+    assert.match(allContent, new RegExp(`id="${id}"`));
   }
 
   for (const event of [
@@ -196,20 +208,20 @@ test('client exposes P1 native app-server controls and readonly status panels', 
     'externalAgentConfig:detect',
     'externalAgentConfig:import',
   ]) {
-    assert.match(html, new RegExp(`socket\\.emit\\('${event.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
+    assert.match(allContent, new RegExp(`socket\\.emit\\('${event.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
   }
 
-  assert.match(html, /function refreshNativeThreads/);
-  assert.match(html, /function renderNativeThreadList/);
-  assert.match(html, /function startCompact/);
-  assert.match(html, /function rollbackThread/);
-  assert.match(html, /function loadNativeModels/);
-  assert.match(html, /function openFileBrowser/);
-  assert.match(html, /function readNativeFile/);
-  assert.match(html, /function loadAccountPanel/);
-  assert.match(html, /function loadMcpPanel/);
-  assert.match(html, /function loadSkillsPanel/);
-  assert.match(html, /function detectExternalAgentConfig/);
+  assert.match(allContent, /function refreshNativeThreads/);
+  assert.match(allContent, /function renderNativeThreadList/);
+  assert.match(allContent, /function startCompact/);
+  assert.match(allContent, /function rollbackThread/);
+  assert.match(allContent, /function loadNativeModels/);
+  assert.match(allContent, /function openFileBrowser/);
+  assert.match(allContent, /function readNativeFile/);
+  assert.match(allContent, /function loadAccountPanel/);
+  assert.match(allContent, /function loadMcpPanel/);
+  assert.match(allContent, /function loadSkillsPanel/);
+  assert.match(allContent, /function detectExternalAgentConfig/);
 
   for (const [id, handler] of [
     ['native-compact-btn', 'startCompact'],
@@ -220,85 +232,85 @@ test('client exposes P1 native app-server controls and readonly status panels', 
     ['native-skills-btn', 'loadSkillsPanel'],
     ['native-import-btn', 'detectExternalAgentConfig'],
   ]) {
-    assert.match(html, new RegExp(`\\$\\('${id}'\\)\\.onclick = ${handler}`));
+    assert.match(allContent, new RegExp(`\\$\\('${id}'\\)\\.onclick = ${handler}`));
   }
-  assert.match(html, /\$\('native-thread-refresh'\)\.onclick = \(\) => refreshNativeThreads\(true\)/);
-  assert.match(html, /\$\('native-files-btn'\)\.onclick = \(\) => openFileBrowser\(serverCwd\)/);
+  assert.match(allContent, /\$\('native-thread-refresh'\)\.onclick = \(\) => refreshNativeThreads\(true\)/);
+  assert.match(allContent, /\$\('native-files-btn'\)\.onclick = \(\) => openFileBrowser\(serverCwd\)/);
 });
 
 test('client uses app-server threads as the only session drawer and history source', () => {
-  assert.match(html, /socket\.emit\('thread:history'/);
-  assert.match(html, /function loadNativeThreadHistory/);
-  assert.match(html, /renderHistoryMessages/);
-  assert.match(html, /thread:select', \{ threadId: s\.id, cwd: s\.cwd, title: s\.title \}/);
-  assert.match(html, /loadNativeThreadHistory\(s\)/);
-  assert.match(html, /const allItems = appThreads\.filter/);
-  assert.match(html, /if \(socket\.connected\) refreshNativeThreads\(\)/);
-  assert.doesNotMatch(html, /\bcodexSessions\b/);
-  assert.doesNotMatch(html, /socket\.emit\('session:history'/);
-  assert.doesNotMatch(html, /socket\.emit\('session:list'/);
-  assert.doesNotMatch(html, /case 'session_list'/);
-  assert.doesNotMatch(html, /function handleSessionList/);
-  assert.doesNotMatch(html, /function loadHistory/);
-  assert.doesNotMatch(html, /source === 'codex'/);
+  assert.match(allContent, /socket\.emit\('thread:history'/);
+  assert.match(allContent, /function loadNativeThreadHistory/);
+  assert.match(allContent, /renderHistoryMessages/);
+  assert.match(allContent, /thread:select', \{ threadId: s\.id, cwd: s\.cwd, title: s\.title \}/);
+  assert.match(allContent, /loadNativeThreadHistory\(s\)/);
+  assert.match(allContent, /const allItems = appThreads\.filter/);
+  assert.match(allContent, /if \(socket\.connected\) refreshNativeThreads\(\)/);
+  assert.doesNotMatch(allContent, /\bcodexSessions\b/);
+  assert.doesNotMatch(allContent, /socket\.emit\('session:history'/);
+  assert.doesNotMatch(allContent, /socket\.emit\('session:list'/);
+  assert.doesNotMatch(allContent, /case 'session_list'/);
+  assert.doesNotMatch(allContent, /function handleSessionList/);
+  assert.doesNotMatch(allContent, /function loadHistory/);
+  assert.doesNotMatch(allContent, /source === 'codex'/);
 });
 
 test('client stores the current thread as a browser preference partitioned by cwd', () => {
-  assert.match(html, /from '\/js\/thread-preferences\.js'/);
-  assert.match(html, /getCurrentThread\(localStorage, serverCwd\)/);
-  assert.match(html, /setCurrentThread\(localStorage, serverCwd, currentSessionId\)/);
-  assert.match(html, /clearCurrentThread\(localStorage, serverCwd/);
-  assert.doesNotMatch(html, /codex_current_session_id/);
+  assert.match(allContent, /from '\/js\/thread-preferences\.js'/);
+  assert.match(allContent, /getCurrentThread\(localStorage, serverCwd\)/);
+  assert.match(allContent, /setCurrentThread\(localStorage, serverCwd, currentSessionId\)/);
+  assert.match(allContent, /clearCurrentThread\(localStorage, serverCwd/);
+  assert.doesNotMatch(allContent, /codex_current_session_id/);
 });
 
 test('client buffers live events while applying an epoch-aware thread/read recovery snapshot', () => {
-  assert.match(html, /from '\/js\/recovery-state\.js'/);
-  assert.match(html, /function requestCatchUp/);
-  assert.match(html, /lastEpoch[,}]/);
-  assert.match(html, /bufferRecoveryEvent\(activeRecovery, ev\)/);
-  assert.match(html, /completeRecovery\(state, ack\)/);
-  assert.match(html, /recovery\.snapshot\.messages/);
-  assert.match(html, /codex_last_epoch:/);
+  assert.match(allContent, /from '\/js\/recovery-state\.js'/);
+  assert.match(allContent, /function requestCatchUp/);
+  assert.match(allContent, /lastEpoch[,}]/);
+  assert.match(allContent, /bufferRecoveryEvent\(activeRecovery, ev\)/);
+  assert.match(allContent, /completeRecovery\(state, ack\)/);
+  assert.match(allContent, /recovery\.snapshot\.messages/);
+  assert.match(allContent, /codex_last_epoch:/);
 });
 
 test('client persists one stable message request before clearing input or draining it', () => {
-  assert.match(html, /from '\/js\/message-request\.js'/);
-  assert.match(html, /from '\/js\/message-outbox\.js'/);
-  assert.match(html, /from '\/js\/indexeddb-outbox\.js'/);
-  assert.match(html, /from '\/js\/socket-ack\.js'/);
-  assert.match(html, /createMessageRequest\(/);
-  assert.match(html, /await messageOutbox\.enqueue\(request\)/);
-  assert.match(html, /emitWithAck\(socket, 'user:message', payload/);
-  assert.match(html, /messageOutbox\.drain\(options\)/);
-  assert.doesNotMatch(html, /\bofflineQueue\b/);
+  assert.match(allContent, /from '\/js\/message-request\.js'/);
+  assert.match(allContent, /from '\/js\/message-outbox\.js'/);
+  assert.match(allContent, /from '\/js\/indexeddb-outbox\.js'/);
+  assert.match(allContent, /from '\/js\/socket-ack\.js'/);
+  assert.match(allContent, /createMessageRequest\(/);
+  assert.match(allContent, /await messageOutbox\.enqueue\(request\)/);
+  assert.match(allContent, /emitWithAck\(socket, 'user:message', payload/);
+  assert.match(allContent, /messageOutbox\.drain\(options\)/);
+  assert.doesNotMatch(allContent, /\bofflineQueue\b/);
 
-  const sendBody = html.slice(html.indexOf('async function sendMessage()'));
+  const sendBody = allContent.slice(allContent.indexOf('async function sendMessage()'));
   assert.ok(sendBody.indexOf('await messageOutbox.enqueue(request)') < sendBody.indexOf("inputEl.value = '';"));
 });
 
 test('new messages drain the complete active view lane instead of bypassing its FIFO head', () => {
-  const sendBody = html.slice(html.indexOf('async function sendMessage()'));
+  const sendBody = allContent.slice(allContent.indexOf('async function sendMessage()'));
   assert.match(sendBody, /shouldSend: outboxRequestMatchesView/);
   assert.doesNotMatch(sendBody, /shouldSend: stored => stored\.clientRequestId === request\.clientRequestId/);
 });
 
 test('client reconciles unknown outbox results through the read-only gateway path before draining', () => {
-  assert.match(html, /let gatewayEpoch = null;/);
-  assert.match(html, /getGatewayEpoch: \(\) => gatewayEpoch/);
-  assert.match(html, /reconcileTransport: async payload/);
-  assert.match(html, /emitWithAck\(socket, 'message:reconcile'/);
-  assert.match(html, /gatewayEpoch = payload\.gatewayEpoch/);
-  assert.match(html, /await messageOutbox\.reconcile\(/);
-  assert.match(html, /request\.state === 'needs_reconcile'/);
-  assert.match(html, /结果未知/);
-  assert.match(html, /messageOutbox\.retryAfterConfirmation\(/);
-  assert.match(html, /再次发送可能重复执行/);
+  assert.match(allContent, /let gatewayEpoch = null;/);
+  assert.match(allContent, /getGatewayEpoch: \(\) => gatewayEpoch/);
+  assert.match(allContent, /reconcileTransport: async payload/);
+  assert.match(allContent, /emitWithAck\(socket, 'message:reconcile'/);
+  assert.match(allContent, /gatewayEpoch = payload\.gatewayEpoch/);
+  assert.match(allContent, /await messageOutbox\.reconcile\(/);
+  assert.match(allContent, /request\.state === 'needs_reconcile'/);
+  assert.match(allContent, /结果未知/);
+  assert.match(allContent, /messageOutbox\.retryAfterConfirmation\(/);
+  assert.match(allContent, /再次发送可能重复执行/);
 });
 
 test('confirmed unknown retries bind a fresh request to the current view lane', () => {
-  const start = html.indexOf('retryButton.onclick = async () =>');
-  const end = html.indexOf("el.querySelector('.bubble')?.appendChild(retryButton);", start);
-  const handler = html.slice(start, end);
+  const start = allContent.indexOf('retryButton.onclick = async () =>');
+  const end = allContent.indexOf("el.querySelector('.bubble')?.appendChild(retryButton);", start);
+  const handler = allContent.slice(start, end);
 
   assert.ok(start >= 0 && end > start);
   assert.match(handler, /const target = await ensureViewTarget\(\)/);
@@ -311,13 +323,13 @@ test('confirmed unknown retries bind a fresh request to the current view lane', 
 });
 
 test('client surfaces provisional orphans, reconciles attempted ones, and rebinds only unattempted ones', () => {
-  assert.match(html, /from '\/js\/outbox-recovery\.js'/);
-  assert.match(html, /let instanceSnapshotReceived = false/);
-  assert.match(html, /isProvisionalInstanceOrphan\(/);
+  assert.match(allContent, /from '\/js\/outbox-recovery\.js'/);
+  assert.match(allContent, /let instanceSnapshotReceived = false/);
+  assert.match(allContent, /isProvisionalInstanceOrphan\(/);
 
-  const start = html.indexOf('async function syncOutboxView()');
-  const end = html.indexOf('syncVisualViewport();', start);
-  const syncBody = html.slice(start, end);
+  const start = allContent.indexOf('async function syncOutboxView()');
+  const end = allContent.indexOf('syncVisualViewport();', start);
+  const syncBody = allContent.slice(start, end);
   assert.ok(start >= 0 && end > start);
   assert.match(syncBody, /orphanedAttemptIds/);
   assert.match(syncBody, /shouldReconcile:[\s\S]*orphanedAttemptIds\.has/);
@@ -327,20 +339,20 @@ test('client surfaces provisional orphans, reconciles attempted ones, and rebind
   assert.match(syncBody, /unboundRecovery[,}]/);
   assert.match(syncBody, /shouldSend: outboxRequestMatchesView/);
 
-  const instancesStart = html.indexOf('function handleInstances(payload)');
-  const instancesEnd = html.indexOf('function renderInstanceTabs()', instancesStart);
-  const instancesHandler = html.slice(instancesStart, instancesEnd);
+  const instancesStart = allContent.indexOf('function handleInstances(payload)');
+  const instancesEnd = allContent.indexOf('function renderInstanceTabs()', instancesStart);
+  const instancesHandler = allContent.slice(instancesStart, instancesEnd);
   assert.match(instancesHandler, /instanceSnapshotReceived = true/);
   assert.match(instancesHandler, /syncOutboxView\(\)/);
 });
 
 test('client sends selected files and skills as durable structured input parts', () => {
-  assert.match(html, /let currentInputParts = \[\]/);
-  assert.match(html, /function addInputPart\(part\)/);
-  assert.match(html, /addInputPart\(\{ kind: 'mention'/);
-  assert.match(html, /addInputPart\(\{ kind: 'skill'/);
-  assert.match(html, /createMessageRequest\(\{ text, attachments, parts, target \}\)/);
-  assert.doesNotMatch(html, /const mention = `@\$\{path\}`/);
+  assert.match(allContent, /let currentInputParts = \[\]/);
+  assert.match(allContent, /function addInputPart\(part\)/);
+  assert.match(allContent, /addInputPart\(\{ kind: 'mention'/);
+  assert.match(allContent, /addInputPart\(\{ kind: 'skill'/);
+  assert.match(allContent, /createMessageRequest\(\{ text, attachments, parts, target \}\)/);
+  assert.doesNotMatch(allContent, /const mention = `@\$\{path\}`/);
 });
 
 test('client exposes P2 admin controls behind unlock and per-action confirmation', () => {
@@ -361,16 +373,16 @@ test('client exposes P2 admin controls behind unlock and per-action confirmation
     'admin-mcp-call-btn',
     'admin-logout-btn',
   ]) {
-    assert.match(html, new RegExp(`id="${id}"`));
+    assert.match(allContent, new RegExp(`id="${id}"`));
   }
 
-  assert.match(html, /function openAdminPanel/);
-  assert.match(html, /function unlockAdminMode/);
-  assert.match(html, /function lockAdminMode/);
-  assert.match(html, /function runAdminAction/);
-  assert.match(html, /promptRequired\('Unlock phrase', 'ENABLE ADMIN'\)/);
-  assert.match(html, /promptRequired\('Confirm action', eventName\)/);
-  assert.match(html, /adminConfirm: confirmation/);
+  assert.match(allContent, /function openAdminPanel/);
+  assert.match(allContent, /function unlockAdminMode/);
+  assert.match(allContent, /function lockAdminMode/);
+  assert.match(allContent, /function runAdminAction/);
+  assert.match(allContent, /promptRequired\('Unlock phrase', 'ENABLE ADMIN'\)/);
+  assert.match(allContent, /promptRequired\('Confirm action', eventName\)/);
+  assert.match(allContent, /adminConfirm: confirmation/);
 
   for (const event of [
     'admin:unlock',
@@ -388,10 +400,10 @@ test('client exposes P2 admin controls behind unlock and per-action confirmation
     'admin:mcpToolCall',
     'admin:accountLogout',
   ]) {
-    assert.match(html, new RegExp(`socket\\.emit\\('${event.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
+    assert.match(allContent, new RegExp(`socket\\.emit\\('${event.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
   }
 
-  assert.match(html, /\$\('native-admin-btn'\)\.onclick = openAdminPanel/);
+  assert.match(allContent, /\$\('native-admin-btn'\)\.onclick = openAdminPanel/);
 });
 
 test('client exposes P3 experimental labs controls and isolated event renderers', () => {
@@ -405,7 +417,7 @@ test('client exposes P3 experimental labs controls and isolated event renderers'
     'p3-thread-turns-btn',
     'p3-thread-search-btn',
   ]) {
-    assert.match(html, new RegExp(`id="${id}"`));
+    assert.match(allContent, new RegExp(`id="${id}"`));
   }
 
   for (const event of [
@@ -417,17 +429,17 @@ test('client exposes P3 experimental labs controls and isolated event renderers'
     'p3:threadTurns',
     'p3:threadSearch',
   ]) {
-    assert.match(html, new RegExp(`socket\\.emit\\('${event.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
+    assert.match(allContent, new RegExp(`socket\\.emit\\('${event.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
   }
 
   for (const type of ['term_output', 'term_exit', 'realtime', 'remote_control']) {
-    assert.match(html, new RegExp(`case '${type}'`));
+    assert.match(allContent, new RegExp(`case '${type}'`));
   }
 
-  assert.match(html, /function openP3Panel/);
-  assert.match(html, /function spawnP3Terminal/);
-  assert.match(html, /function handleP3TerminalOutput/);
-  assert.match(html, /function handleP3Realtime/);
-  assert.match(html, /function handleP3RemoteControl/);
-  assert.match(html, /\$\('native-p3-btn'\)\.onclick = openP3Panel/);
+  assert.match(allContent, /function openP3Panel/);
+  assert.match(allContent, /function spawnP3Terminal/);
+  assert.match(allContent, /function handleP3TerminalOutput/);
+  assert.match(allContent, /function handleP3Realtime/);
+  assert.match(allContent, /function handleP3RemoteControl/);
+  assert.match(allContent, /\$\('native-p3-btn'\)\.onclick = openP3Panel/);
 });

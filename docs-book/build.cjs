@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /* ══════════════════════════════════════════════════════════════════
-   build.js — 把 content/<slug>.html 片段编译成完整的多页静态站点
-   用法：node build.js   （在输出目录下运行）
-   依赖：book.config.js（全书结构）、content/<slug>.html（内容片段）
+   build.cjs — 把 content/<slug>.html 片段编译成完整的多页静态站点
+   用法：node build.cjs   （在输出目录下运行）
+   依赖：book.config.cjs（全书结构）、content/<slug>.html（内容片段）
    产物：index.html + pages/*.html + assets/{style.css,app.js,search-index.js}
    ══════════════════════════════════════════════════════════════════ */
 const fs = require('fs');
@@ -138,7 +138,6 @@ function crumbs(p) {
 // ── 完整 HTML 外壳 ────────────────────────────────────────────────
 function shell(p, bodyHtml, toc) {
   const b = base(p);
-  const indexHref = p.home ? 'index.html' : '../index.html';
   const needMermaid = /class="mermaid"/.test(bodyHtml);
   const mermaidTag = needMermaid
     ? `<script src="${b}assets/mermaid.min.js"></script>`
@@ -275,7 +274,7 @@ const anyMermaid = flat.some((p) => {
 });
 if (anyMermaid && !fs.existsSync(path.join(ASSETS, 'mermaid.min.js')))
   console.log('⚠ 检测到 mermaid 图，但 assets/mermaid.min.js 不存在。'
-    + '获取方式见 skill 的「关键约束 · 离线可用」；缺失时图将不渲染。');
+    + '获取方式见 docs-book/README.md；缺失时图将不渲染。');
 ['style.css', 'app.js'].forEach((f) => {
   if (!fs.existsSync(path.join(ASSETS, f)))
     console.log(`⚠ assets/${f} 不存在 —— 页面会裸奔（无样式/无交互）。请从 skill 的 templates/ 拷入。`);

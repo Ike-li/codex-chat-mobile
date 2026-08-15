@@ -1,6 +1,6 @@
 // devices.js —— 管理受信任和等待确认的设备指纹列表。
-import { readFileSync, existsSync, mkdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { readFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeOwnerOnlyFile } from './file-security.js';
 
@@ -13,20 +13,30 @@ const pendingDevicesFile = () => join(dataDir(), 'pending-devices.json');
 
 let trustedDevices = new Set();
 let pendingDevices = []; // Array of { deviceToken, ip, userAgent, ts }
+let lastTrustedSignature = null;
+let lastPendingSignature = null;
 
-export function loadTrustedDevices() {
+function cacheSignature(file, stat) {
+  return `${resolve(file)}\0${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+}
+
+export function loadTrustedDevices({ force = false } = {}) {
   const file = trustedDevicesFile();
   try {
     if (!existsSync(file)) {
       trustedDevices = new Set();
+      lastTrustedSignature = null;
       return;
     }
+    const signature = cacheSignature(file, statSync(file));
+    if (!force && signature === lastTrustedSignature) return;
     const data = JSON.parse(readFileSync(file, 'utf8'));
     if (Array.isArray(data)) {
       trustedDevices = new Set(data.filter(id => typeof id === 'string' && id.trim().length > 0));
     } else {
       trustedDevices = new Set();
     }
+    lastTrustedSignature = signature;
   } catch (err) {
     console.error('[devices] 读取 trusted-devices.json 失败:', err.message);
     trustedDevices = new Set();
@@ -45,19 +55,23 @@ export function saveTrustedDevices() {
   }
 }
 
-export function loadPendingDevices() {
+export function loadPendingDevices({ force = false } = {}) {
   const file = pendingDevicesFile();
   try {
     if (!existsSync(file)) {
       pendingDevices = [];
+      lastPendingSignature = null;
       return;
     }
+    const signature = cacheSignature(file, statSync(file));
+    if (!force && signature === lastPendingSignature) return;
     const data = JSON.parse(readFileSync(file, 'utf8'));
     if (Array.isArray(data)) {
       pendingDevices = data.filter(d => d && typeof d.deviceToken === 'string');
     } else {
       pendingDevices = [];
     }
+    lastPendingSignature = signature;
   } catch (err) {
     pendingDevices = [];
   }
@@ -117,7 +131,7 @@ export function getLatestPendingDevice() {
 
 export function approveDevice(deviceToken) {
   if (!deviceToken || typeof deviceToken !== 'string') return false;
-  loadTrustedDevices();
+  loadTrustedDevices({ force: true });
   const previousTrustedDevices = new Set(trustedDevices);
   trustedDevices.add(deviceToken);
   if (!saveTrustedDevices()) {
@@ -133,7 +147,7 @@ export function approveDevice(deviceToken) {
 
 export function denyDevice(deviceToken) {
   if (!deviceToken || typeof deviceToken !== 'string') return false;
-  loadTrustedDevices();
+  loadTrustedDevices({ force: true });
   const previousTrustedDevices = new Set(trustedDevices);
   trustedDevices.delete(deviceToken);
   if (!saveTrustedDevices()) {
@@ -147,5 +161,5 @@ export function denyDevice(deviceToken) {
   return true;
 }
 
-loadTrustedDevices();
-loadPendingDevices();
+loadTrustedDevices({ force: true });
+loadPendingDevices({ force: true });

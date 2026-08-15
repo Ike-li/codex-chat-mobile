@@ -106,6 +106,14 @@ export function verify(publicKeyDer, data, signature) {
 }
 
 // ---- 握手状态机 ----
+const HANDSHAKE_STATE = {
+  INIT: 'init',
+  CLIENT_HELLO_SENT: 'client_hello_sent',
+  CLIENT_HELLO_RECEIVED: 'client_hello_received',
+  SERVER_HELLO_RECEIVED: 'server_hello_received',
+  READY: 'ready',
+};
+
 export class E2EEHandshake {
   // server 侧
   constructor({ isServer, identityKeyPair }) {
@@ -119,6 +127,7 @@ export class E2EEHandshake {
 
     this.sendCounter = 0;
     this.recvCounter = 0;
+    this.state = HANDSHAKE_STATE.INIT;
     // 方向：send = 我的方向位，recv = 对方的方向位
     if (isServer) {
       this.sendDir = DIRECTION_BIT.SERVER_TO_CLIENT;
@@ -132,7 +141,9 @@ export class E2EEHandshake {
 
   // 客户端发起：生成临时密钥，输出 ClientHello
   startClientHello() {
+    if (this.state !== HANDSHAKE_STATE.INIT) throw new Error('E2EE: invalid state for startClientHello');
     this.ephKeyPair = generateEphemeralKeyPair();
+    this.state = HANDSHAKE_STATE.CLIENT_HELLO_SENT;
     return {
       type: 'clientHello',
       ephPub: this.ephKeyPair.publicKey.toString('base64'),
@@ -141,6 +152,7 @@ export class E2EEHandshake {
 
   // 服务端处理 ClientHello → ServerHello
   handleClientHello(msg) {
+    if (this.state !== HANDSHAKE_STATE.INIT) throw new Error('E2EE: invalid state for handleClientHello');
     this.ephKeyPair = generateEphemeralKeyPair();
     this.peerEphPub = Buffer.from(msg.ephPub, 'base64');
 
@@ -151,6 +163,7 @@ export class E2EEHandshake {
       Buffer.from('session-key')
     );
 
+    this.state = HANDSHAKE_STATE.CLIENT_HELLO_RECEIVED;
     return {
       type: 'serverHello',
       ephPub: this.ephKeyPair.publicKey.toString('base64'),
@@ -160,6 +173,7 @@ export class E2EEHandshake {
 
   // 客户端处理 ServerHello → ClientAuth
   handleServerHello(msg) {
+    if (this.state !== HANDSHAKE_STATE.CLIENT_HELLO_SENT) throw new Error('E2EE: invalid state for handleServerHello');
     this.peerEphPub = Buffer.from(msg.ephPub, 'base64');
     this.peerIdentityPub = Buffer.from(msg.identityPub, 'base64');
 
@@ -176,6 +190,7 @@ export class E2EEHandshake {
     ]);
     const sig = sign(this.identityKeyPair.privateKey, handshakeData);
 
+    this.state = HANDSHAKE_STATE.SERVER_HELLO_RECEIVED;
     return {
       type: 'clientAuth',
       identityPub: this.identityKeyPair.publicKey.toString('base64'),
@@ -185,6 +200,7 @@ export class E2EEHandshake {
 
   // 服务端处理 ClientAuth → SecureReady
   handleClientAuth(msg) {
+    if (this.state !== HANDSHAKE_STATE.CLIENT_HELLO_RECEIVED) throw new Error('E2EE: invalid state for handleClientAuth');
     this.peerIdentityPub = Buffer.from(msg.identityPub, 'base64');
     const signature = Buffer.from(msg.signature, 'base64');
 
@@ -198,12 +214,15 @@ export class E2EEHandshake {
     }
 
     this.ready = true;
+    this.state = HANDSHAKE_STATE.READY;
     return { type: 'secureReady' };
   }
 
   // 客户端标记 ready
   markReady() {
+    if (this.state !== HANDSHAKE_STATE.SERVER_HELLO_RECEIVED) throw new Error('E2EE: invalid state for markReady');
     this.ready = true;
+    this.state = HANDSHAKE_STATE.READY;
   }
 
   // ---- 加密通信 ----

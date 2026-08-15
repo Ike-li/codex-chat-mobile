@@ -1,15 +1,16 @@
 #!/usr/bin/env node
 /* 校验：内部链接有效性 + mermaid 基本语法 + 常见 HTML 问题 + 残留 emoji
-   用法：node verify.js   （在输出目录下运行，与 build.js 同级）*/
+   用法：node verify.cjs   （在输出目录下运行，与 build.cjs 同级）*/
 const fs = require('fs');
 const path = require('path');
-const book = require('./book.config.js');
+const book = require('./book.config.cjs');
 
 const CONTENT = path.join(__dirname, 'content');
 const slugs = new Set();
 book.parts.forEach(p => p.pages.forEach(pg => slugs.add(pg.slug)));
 
 let problems = [];
+let warnings = [];
 let mermaidCount = 0, linkCount = 0;
 
 book.parts.forEach(part => part.pages.forEach(pg => {
@@ -46,7 +47,7 @@ book.parts.forEach(part => part.pages.forEach(pg => {
   if (/<(html|body|head)[\s>]/.test(html)) problems.push(`[HTML] ${pg.slug}.html 含 html/body/head`);
   // callout 结构：每个 callout 必须内含一个 .body
   const calloutOpen = (html.match(/<div class="callout/g) || []).length;
-  const bodyCount = (html.match(/<div class="callout[^"]*">\s*<div class="body">/g) || []).length;
+  const bodyCount = (html.match(/<div class="callout[^"]*">\s*(?:<div class="title">[\s\S]*?<\/div>\s*)?<div class="body">/g) || []).length;
   if (calloutOpen !== bodyCount) problems.push(`[组件] ${pg.slug}.html callout(${calloutOpen}) 与 body(${bodyCount}) 数量不匹配`);
   // 残留 emoji（保留 ✓✕★◐ 等几何/功能字符）
   const KEEP = '✓✕✗★☆○●◆◇■□▪▫◐◑◯⌘↵←→↑↓↔§※•·—–';
@@ -64,11 +65,14 @@ book.parts.forEach(part => part.pages.forEach(pg => {
   if (!fs.existsSync(path.join(__dirname, 'assets', f))) problems.push(`[资产] assets/${f} 缺失`);
 });
 if (mermaidCount > 0 && !fs.existsSync(path.join(__dirname, 'assets', 'mermaid.min.js')))
-  problems.push(`[资产] 用了 ${mermaidCount} 张 mermaid 图但 assets/mermaid.min.js 缺失`);
+  warnings.push(`[资产] 用了 ${mermaidCount} 张 mermaid 图但 assets/mermaid.min.js 缺失，图表渲染需按 README 补充可选本地依赖`);
 
 console.log(`检查 ${slugs.size} 页 · ${linkCount} 个内部链接 · ${mermaidCount} 张 mermaid 图`);
+if (warnings.length) {
+  console.log(`\n⚠ ${warnings.length} 个可选依赖提醒：`); warnings.forEach(p => console.log('  ' + p));
+}
 if (problems.length) {
   console.log(`\n⚠ 发现 ${problems.length} 个问题：`); problems.forEach(p => console.log('  ' + p));
   process.exitCode = 1;   // 让调用方（agent/CI）能感知失败，而不是永远"看起来通过"
 }
-else console.log('✓ 未发现链接/mermaid/HTML/资产问题');
+else console.log('✓ 未发现阻断问题');

@@ -2,13 +2,14 @@
 // 生产环境由 AppServerHost/AppServerTransport 共享一个 stdio JSON-RPC 子进程；
 // 本类负责 start/resume/turn、队列、中断、事件映射和审批。
 // CodexAppServerSession 仅保留为迁移期兼容导出名。
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { AppServerTransport } from './app-server-transport.js';
 import { ApprovalBroker } from './approval-broker.js';
-import { writeOwnerOnlyFile } from './file-security.js';
+import { appendOwnerOnlyFile } from './file-security.js';
 import { sanitize, sanitizePath } from './sanitizer.js';
 import { buildUserInputs } from './user-inputs.js';
+import { truncate } from './text-utils.js';
 
 const BUFFER_CAP = 500;
 const TOOL_SUMMARY_CAP = 600;
@@ -1463,7 +1464,7 @@ export class ThreadRuntime {
     };
     this.buffer.push(envelope);
     if (this.buffer.length > this.bufferCap) {
-      this.buffer.shift();
+      this.buffer.splice(0, this.buffer.length - this.bufferCap);
       this.bufferTrimmed = true;
     }
     this.onEvent(envelope);
@@ -1549,8 +1550,7 @@ export class ThreadRuntime {
     if (!this.rpcLogPath) return;
     try {
       mkdirSync(dirname(this.rpcLogPath), { recursive: true, mode: 0o700 });
-      const previous = existsSync(this.rpcLogPath) ? readFileSync(this.rpcLogPath, 'utf8') : '';
-      writeOwnerOnlyFile(this.rpcLogPath, previous + JSON.stringify(entry) + '\n');
+      appendOwnerOnlyFile(this.rpcLogPath, JSON.stringify(entry) + '\n');
     } catch {
       // Observability must not interfere with JSON-RPC protocol progress.
     }
@@ -1577,10 +1577,6 @@ function normalizeServerRequestParams(runtime, rpcId, method, params) {
 // Compatibility export for existing integrations while the runtime split rolls out.
 export { ThreadRuntime as CodexAppServerSession };
 
-function truncate(s, cap) {
-  if (typeof s !== 'string') return '';
-  return s.length > cap ? s.slice(0, cap) + ' …（已截断）' : s;
-}
 
 function buildRpcLogEntry(details) {
   const sensitiveMethod = SENSITIVE_RPC_KEY_RE.test(details.method || '');

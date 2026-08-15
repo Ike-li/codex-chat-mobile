@@ -5,7 +5,7 @@
 <div class="mermaid">
 graph TB
     subgraph "表现层"
-        A[手机浏览器 / PWA<br>public/index.html]
+        A[手机浏览器 / PWA<br>index.html + js/app.js]
     end
     subgraph "网关层"
         B[server.js<br>Express + Socket.IO]
@@ -21,10 +21,10 @@ graph TB
 
 <h2>各层职责</h2>
 
-<h3>表现层（public/index.html）</h3>
+<h3>表现层（public/index.html + public/js/app.js）</h3>
 
 <ul>
-  <li>单文件 SPA/PWA，约 143KB</li>
+  <li><code>public/index.html</code> 提供 HTML/CSS shell，<code>public/js/app.js</code> 作为外部 ESM 承载应用交互</li>
   <li>渲染：文本增量、reasoning、命令/工具卡片、文件变更、审批</li>
   <li>交互：输入框、审批按钮、斜杠命令、附件上传</li>
   <li>状态：连接状态、会话状态、实例切换</li>

@@ -50,7 +50,7 @@
   <div class="k">后端</div>
   <div class="v">Node.js ≥ 20 + Express 5 + Socket.IO</div>
   <div class="k">前端</div>
-  <div class="v">单文件 SPA/PWA（<code>public/index.html</code>，143KB）</div>
+  <div class="v">HTML/CSS shell + 外部 ESM（<code>public/index.html</code> + <code>public/js/app.js</code>）</div>
   <div class="k">协议</div>
   <div class="v">JSON-RPC 2.0 over stdio（连接 <code>codex app-server</code>）</div>
   <div class="k">认证</div>
@@ -87,7 +87,8 @@ graph TB
 <ul>
   <li><code>server.js</code>：HTTP、Socket.IO、鉴权、路由、实例生命周期</li>
   <li><code>agent-appserver.js</code>：JSON-RPC 桥、事件映射、审批代理</li>
-  <li><code>public/index.html</code>：UI 渲染、交互、PWA</li>
+  <li><code>public/index.html</code>：移动端 PWA 的 HTML/CSS shell</li>
+  <li><code>public/js/app.js</code>：UI 渲染、交互和浏览器应用编排</li>
   <li><code>codex app-server</code>：AI 对话、工具执行、文件操作</li>
 </ul>
 
@@ -113,9 +114,9 @@ graph TB
       <td>Codex 会话桥（app-server 模式）</td>
     </tr>
     <tr>
-      <td><code>public/index.html</code></td>
-      <td>~3000</td>
-      <td>单文件 SPA/PWA</td>
+      <td><code>public/index.html</code> + <code>public/js/app.js</code></td>
+      <td>1769 + 3113</td>
+      <td>SPA/PWA shell + 外部应用模块</td>
     </tr>
     <tr>
       <td><code>approval-broker.js</code></td>
