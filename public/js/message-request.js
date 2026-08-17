@@ -1,3 +1,5 @@
+import { sanitizeTurnOverrides } from './cli-settings.js';
+
 export function createMessageRequest(input = {}, options = {}) {
   const createId = options.createId || (() => globalThis.crypto.randomUUID());
   const now = options.now || (() => Date.now());
@@ -21,6 +23,8 @@ export function createMessageRequest(input = {}, options = {}) {
   } else if (typeof input.target?.instanceId === 'string' && input.target.instanceId) {
     payload.instanceId = input.target.instanceId;
   }
+  const turn = sanitizeTurnOverrides(input.turn);
+  if (Object.keys(turn).length) payload.turn = turn;
 
   return {
     clientRequestId,

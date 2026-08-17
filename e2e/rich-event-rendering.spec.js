@@ -29,6 +29,7 @@ test.describe('P0 协议桥、审批与 Socket.IO', () => {
     await approveCard.getByRole('button', { name: '批准' }).click();
     await expect(approveCard).toContainText('已批准');
     await expect(page.getByText('exit: 0').last()).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('.command-card').last()).toContainText('命令');
     await expect(page.getByText('command approved and executed').last()).toBeVisible();
     await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });
 
@@ -52,6 +53,13 @@ test.describe('P0 协议桥、审批与 Socket.IO', () => {
     await sendMessage(page, 'rich event plain message');
     await expect(page.locator('.msg.user').last()).toContainText('rich event plain message');
     await expect(page.locator('.msg.codex').last()).toContainText('Mock response to: rich event plain message', { timeout: 10000 });
+    await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });
+
+    await sendMessage(page, 'FILE_CHANGE_FIXTURE');
+    const fileCard = page.locator('.file-change-card').last();
+    await expect(fileCard).toBeVisible({ timeout: 10000 });
+    await expect(fileCard).toContainText('src/example.js');
+    await expect(fileCard).toContainText('新增');
     await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });
   });
 });

@@ -32,33 +32,7 @@ function expectNoForbiddenRuntimeErrors(errors) {
   }
 }
 
-async function expectPopoverInViewport(page, selector, label) {
-  const popover = page.locator(selector);
-  await expect(popover, `${label} should be visible`).toBeVisible();
-  const box = await popover.evaluate(element => {
-    const rect = element.getBoundingClientRect();
-    const view = element.ownerDocument.defaultView;
-    return {
-      left: rect.left,
-      top: rect.top,
-      right: rect.right,
-      bottom: rect.bottom,
-      width: rect.width,
-      height: rect.height,
-      viewportWidth: view.innerWidth,
-      viewportHeight: view.innerHeight,
-      visible: view.getComputedStyle(element).display !== 'none',
-    };
-  });
 
-  expect(box.visible, `${label} should not be display:none`).toBeTruthy();
-  expect(box.width, `${label} should have width`).toBeGreaterThan(0);
-  expect(box.height, `${label} should have height`).toBeGreaterThan(0);
-  expect(box.left, `${label} should not overflow left`).toBeGreaterThanOrEqual(0);
-  expect(box.top, `${label} should not overflow top`).toBeGreaterThanOrEqual(0);
-  expect(box.right, `${label} should not overflow right`).toBeLessThanOrEqual(box.viewportWidth + 1);
-  expect(box.bottom, `${label} should not overflow bottom`).toBeLessThanOrEqual(box.viewportHeight + 1);
-}
 
 test.describe('Popovers And Slash Suggestions', () => {
   test('Popovers And Slash Suggestions', async ({ page }) => {
@@ -81,18 +55,29 @@ test.describe('Popovers And Slash Suggestions', () => {
     await slashPopup.locator('.slash-item[data-cmd="/status"]').first().click();
     await expect(input).toHaveValue(/^\/status\s/);
 
-    // 3. Open `#mode-trigger`, `#perm-trigger`, and `#model-trigger`.
-    await page.locator('#mode-trigger').click();
-    await expectPopoverInViewport(page, '#mode-popover', 'mode popover');
+    const defaults = page.locator('[data-testid="composer-defaults"]');
+    await expect(defaults).toBeVisible();
+    const defaultsBox = await defaults.boundingBox();
+    expect(defaultsBox.height, 'composer chips must stay on one line').toBeLessThanOrEqual(40);
+    await expect(page.locator('#model-trigger-text')).not.toHaveText('');
+    await expect(page.locator('#perm-trigger-text')).toHaveText(/按请求|权限|默认/);
 
-    await page.locator('#perm-trigger').click();
-    await expectPopoverInViewport(page, '#perm-popover', 'permission popover');
-
-    await page.locator('#model-trigger').click();
-    await expectPopoverInViewport(page, '#model-popover', 'model popover');
-    await page.locator('#model-popover .model-list .popover-item[data-model="gpt-5.4-mini"]').first().click();
-    await expect(page.locator('#model-trigger-text')).toContainText('5.4-mini');
-    await expect(page.locator('.msg.user').last()).toContainText('/model gpt-5.4-mini');
+    await defaults.click();
+    await expect(page.locator('#session-settings')).toBeVisible();
+    await expect(page.locator('#mode-list .popover-item[data-value="/chat"]')).toBeVisible();
+    for (const approval of ['untrusted', 'on-failure', 'on-request', 'never']) {
+      await expect(page.locator(`#approval-list [data-approval="${approval}"]`)).toBeVisible();
+    }
+    for (const sandbox of ['read-only', 'workspace-write', 'danger-full-access']) {
+      await expect(page.locator(`#sandbox-list [data-sandbox="${sandbox}"]`)).toBeVisible();
+    }
+    const miniModel = page.locator('#model-list .popover-item[data-model="gpt-5.4-mini"]').first();
+    await expect(miniModel).toBeVisible({ timeout: 10000 });
+    await miniModel.click();
+    await expect(page.locator('#model-trigger-text')).toContainText('5.4-Mini');
+    await page.locator('#session-settings-close').click();
+    await expect(page.locator('#session-settings')).toBeHidden();
+    await expect(page.locator('.msg.user')).toHaveCount(0);
     await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });
 
     expectNoForbiddenRuntimeErrors(runtimeErrors);

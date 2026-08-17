@@ -32,13 +32,13 @@
 
 ## 模型与思考强度
 
-一个弹窗切换模型（GPT-5.5 / 5.4 / 5.4-Mini）和思考强度（低 / 中 / 高），随时调整这一轮的算力投入。
+一个弹窗切换本机 `model/list` 返回的模型和该模型支持的思考强度（`low` / `medium` / `high` / `xhigh` / `max` 等），随时调整下一轮的算力投入。
 
 ![模型与思考强度切换](assets/showcase/05-model.png)
 
 ## 审批策略与沙箱
 
-在「请求批准 / 替我批准 / 完全访问权限 / 自定义」之间切换审批策略，配合沙箱模式控制 Codex 能碰什么——安全边界始终握在你手里。
+在 CLI 审批策略（`untrusted` / `on-failure` / `on-request` / `never`）和沙箱（`read-only` / `workspace-write` / `danger-full-access`）之间切换，控制 Codex 能碰什么——安全边界始终握在你手里。
 
 ![审批策略切换](assets/showcase/06-permissions.png)
 

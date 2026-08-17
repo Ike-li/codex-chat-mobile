@@ -125,8 +125,9 @@ test('an attempted provisional orphan waits for fresh-id confirmation before sen
   await expect(page.locator('.msg.codex').filter({ hasText: 'Mock response to: confirm attempted orphan retry' }))
     .toHaveCount(0);
 
-  page.once('dialog', dialog => dialog.accept());
   await bubble.locator('.unknown-retry-btn').click();
+  await expect(page.locator('#confirm-modal')).toBeVisible();
+  await page.locator('#confirm-ok').click();
 
   await expect(page.locator('.msg.codex').filter({ hasText: 'Mock response to: confirm attempted orphan retry' }))
     .toHaveCount(1, { timeout: 10000 });

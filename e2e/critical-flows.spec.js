@@ -62,10 +62,33 @@ test.describe('关键用户旅程', () => {
     // Wait for state to leave idle (message sent)
     await expect(page.locator('#state-label')).not.toHaveText('idle', { timeout: 5000 });
 
-    // Click interrupt button
-    await page.locator('#interrupt-btn').click();
+    await expect(page.locator('#send-btn')).toHaveAttribute('data-mode', 'stop');
+    await page.locator('#send-btn').click();
+    await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });
+    await expect(page.getByText('已中断').last()).toBeVisible({ timeout: 10000 });
+  });
 
-    // Status should eventually return to idle
+  test('进行中可追加一条，停止钮仍可中断', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('#state-label')).not.toHaveText('offline', { timeout: 10000 });
+    await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });
+
+    await page.locator('#msg-input').fill('SLOW_TURN');
+    await page.locator('#send-btn').click();
+    await expect(page.locator('#send-btn')).toHaveAttribute('data-mode', 'stop', { timeout: 5000 });
+    await expect(page.locator('#followup-btn')).toBeHidden();
+
+    await page.locator('#msg-input').fill('FOLLOW_UP');
+    await expect(page.locator('#followup-btn')).toBeVisible();
+    await expect(page.locator('#send-btn')).toHaveAttribute('data-mode', 'stop');
+    await page.locator('#followup-btn').click();
+
+    await expect(page.locator('.msg.user').filter({ hasText: 'FOLLOW_UP' })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('已向当前运行任务追加指令').last()).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('#followup-btn')).toBeHidden();
+    await expect(page.locator('#send-btn')).toHaveAttribute('data-mode', 'stop');
+
+    await page.locator('#send-btn').click();
     await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });
   });
 
@@ -74,10 +97,25 @@ test.describe('关键用户旅程', () => {
 
     // Header should be visible
     await expect(page.locator('#header')).toBeVisible();
-    await expect(page.locator('#header-title')).toContainText('Codex Chat');
+    await expect(page.locator('#header-context')).toBeVisible();
     await expect(page.locator('#status-dot')).toBeVisible();
     // session-meta is hidden by default (CSS display:none), only shown on tap
     await expect(page.locator('#session-meta')).toBeAttached();
+  });
+
+  test('助手回复按 Markdown 渲染', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('#state-label')).not.toHaveText('offline', { timeout: 10000 });
+    await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });
+
+    await page.locator('#msg-input').fill('MARKDOWN_FIXTURE');
+    await page.locator('#send-btn').click();
+    await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });
+
+    const bubble = page.locator('.msg.codex .bubble.md').last();
+    await expect(bubble.locator('strong')).toHaveText('bold');
+    await expect(bubble.locator('code')).toHaveText('code');
+    await expect(bubble.locator('li')).toHaveCount(2);
   });
 
   test('输入区域元素存在', async ({ page }) => {
@@ -85,8 +123,8 @@ test.describe('关键用户旅程', () => {
 
     // Input area elements
     await expect(page.locator('#msg-input')).toBeVisible();
-    await expect(page.locator('#send-btn')).toBeVisible();
-    await expect(page.locator('#interrupt-btn')).toBeAttached();
+    await expect(page.locator('#send-btn')).toBeHidden();
+    await expect(page.locator('#interrupt-btn')).toHaveCount(0);
     await expect(page.locator('#attach-btn')).toBeVisible();
   });
 
@@ -111,7 +149,7 @@ test.describe('关键用户旅程', () => {
 
     // Input should still be visible
     await expect(page.locator('#msg-input')).toBeVisible();
-    await expect(page.locator('#send-btn')).toBeVisible();
+    await expect(page.locator('#attach-btn')).toBeVisible();
   });
 
   test('会话恢复：刷新后重新连接', async ({ page }) => {

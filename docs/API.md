@@ -32,11 +32,14 @@
 
 | 事件 | 参数 | ACK |
 |---|---|---|
-| `user:message` | `text`、`attachments[]`、`parts[]` 至少一项非空；可靠发送时带 `clientRequestId`、`instanceId` / `threadId` | `{ok, instanceId, threadId, receipt?, duplicate}` |
+| `user:message` | `text`、`attachments[]`、`parts[]` 至少一项非空；可选 `turn`：`model`、`effort`、`approvalPolicy`、`sandbox`、`serviceTier`；可靠发送时带 `clientRequestId`、`instanceId` / `threadId` | `{ok, instanceId, threadId, receipt?, duplicate}` |
 | `message:reconcile` | `clientRequestId`、可用时带稳定 `threadId`、`attemptedGatewayEpoch`、`cwd` | `{ok, resolved, source, gatewayEpoch, receipt? / outcome?, resultUnknown?}`；只读，不派发消息 |
 | `user:interrupt` | `instanceId`、`threadId`、`turnId`；缺省时使用该 Socket 当前视图 | `{ok:true, instanceId, threadId}` 或 `stale_target` |
 | `user:approval` | `needId`、`approvalId`、`decision`，以及精确目标 `instanceId`、`threadId`、`turnId`、`itemId`；回答问题时带 `answers` | `{ok, duplicate, errorCode?, resultUnknown?, needId, state, revision, instanceId, threadId}` |
 | `needs-you:snapshot` | — | `{ok:true, revision, needs}`，仅含 pending / unknown 项 |
+| `conn:ping` | — | `{ok:true, t}`；无业务副作用，待审批设备也可调用 |
+
+`user:message` 的可选 `turn` 覆盖当前 runtime 的 CLI 对等项，并写入 `turn/start`：`model`、`effort`、`approvalPolicy`（`untrusted` / `on-failure` / `on-request` / `never`）、`sandbox`（`read-only` / `workspace-write` / `danger-full-access`，会转成 `sandboxPolicy`）、`serviceTier`。非法值会被丢掉，消息本身仍会发送。同一 `clientRequestId` 的指纹包含这些覆盖项。
 
 `user:message` 的 `text` 上限为 50,000 字符。`attachments` 只能缺省、为 `null` 或为数组；其他类型立即 ACK `invalid_attachments`。`attachments[]` 每项为 `{name, mimeType, data}`，其中 `data` 是严格 base64；最多 10 个、单个 10 MiB、合计 20 MiB。Socket.IO `maxHttpBufferSize` 为 32 MiB，仅用于容纳最大合法附件的 base64/JSON wire 开销，不改变业务上限。文件先写入 0700 的 `.ccm-uploads/`（文件 0600），再转换为 app-server 结构化 `UserInput`：
 
@@ -99,6 +102,9 @@
 | `models:read` | `cwd`、`includeHidden` | `{ok:true, models, nextCursor, capabilities}` |
 | `fs:readDirectory` | `cwd`、`path`（默认 WORK_DIR） | `{ok:true, entries, path}` |
 | `fs:readFile` | `cwd`、`path` | `{ok:true, dataBase64, path}` |
+| `files:search` | `cwd`、`query` | `{ok:true, paths, cwd}`；只在 allowlist cwd 内模糊匹配相对路径 |
+| `git:status` | `cwd` | `{ok:true, branch, staged, unstaged, untracked, conflicted, truncated}`；非 git 仓返回 `errorCode:"not_git"` |
+| `git:diff` | `cwd`、`path`、`side`（`staged`/`unstaged`） | `{ok:true, path, side, patch, binary, truncated, empty}`；越界路径 `errorCode:"bad_path"` |
 | `mcp:read` | `cwd`、`limit`（默认 50） | `{ok:true, servers, nextCursor}` |
 | `skills:read` | `cwd`、`forceReload` | `{ok:true, entries}` |
 | `externalAgentConfig:detect` | `cwd`、`includeHome` | `{ok:true, items}` |

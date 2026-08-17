@@ -10,6 +10,7 @@ import { appendOwnerOnlyFile } from './file-security.js';
 import { sanitize, sanitizePath } from './sanitizer.js';
 import { buildUserInputs } from './user-inputs.js';
 import { truncate } from './text-utils.js';
+import { buildTurnStartOverrides, sanitizeTurnOverrides } from './public/js/cli-settings.js';
 
 const BUFFER_CAP = 500;
 const TOOL_SUMMARY_CAP = 600;
@@ -61,6 +62,7 @@ export class ThreadRuntime {
     this.transport = null;
     this.transportFactory = transportFactory || (options => new AppServerTransport(options));
     this.busy = false;
+    this.turnEpoch = 0;
     this.disposed = false;
     this.lastActivity = Date.now();
     this.idleTimer = null;
@@ -98,6 +100,16 @@ export class ThreadRuntime {
     // 审批/沙箱（仅 app-server 后端）：默认 on-request + workspace-write，可经环境变量覆盖。
     this.approvalPolicy = process.env.CODEX_APPROVAL_POLICY || 'on-request';
     this.sandbox = process.env.CODEX_SANDBOX || 'workspace-write';
+    this.turnOverrides = {};
+  }
+
+  applyTurnOverrides(turn) {
+    const clean = sanitizeTurnOverrides(turn);
+    if (!Object.keys(clean).length) return clean;
+    this.turnOverrides = { ...this.turnOverrides, ...clean };
+    if (clean.approvalPolicy) this.approvalPolicy = clean.approvalPolicy;
+    if (clean.sandbox) this.sandbox = clean.sandbox;
+    return clean;
   }
 
   // ---- 子进程与 JSON-RPC 底层 ----
@@ -444,11 +456,26 @@ export class ThreadRuntime {
     const ready = (async () => {
       await this.ensureInitialized();
       if (this.sessionId) {
-        if (process.env.LOG_STDERR) console.error('[appserver] thread/resume', { approvalPolicy: this.approvalPolicy, sandbox: this.sandbox });
-        await this.request('thread/resume', { threadId: this.sessionId, cwd: this.cwd, approvalPolicy: this.approvalPolicy, sandbox: this.sandbox });
+        const resumeParams = {
+          threadId: this.sessionId,
+          cwd: this.cwd,
+          approvalPolicy: this.approvalPolicy,
+          sandbox: this.sandbox,
+        };
+        if (this.turnOverrides.model) resumeParams.model = this.turnOverrides.model;
+        if (this.turnOverrides.serviceTier) resumeParams.serviceTier = this.turnOverrides.serviceTier;
+        if (process.env.LOG_STDERR) console.error('[appserver] thread/resume', resumeParams);
+        await this.request('thread/resume', resumeParams);
       } else {
-        if (process.env.LOG_STDERR) console.error('[appserver] thread/start', { approvalPolicy: this.approvalPolicy, sandbox: this.sandbox });
-        const r = await this.request('thread/start', { cwd: this.cwd, approvalPolicy: this.approvalPolicy, sandbox: this.sandbox });
+        const startParams = {
+          cwd: this.cwd,
+          approvalPolicy: this.approvalPolicy,
+          sandbox: this.sandbox,
+        };
+        if (this.turnOverrides.model) startParams.model = this.turnOverrides.model;
+        if (this.turnOverrides.serviceTier) startParams.serviceTier = this.turnOverrides.serviceTier;
+        if (process.env.LOG_STDERR) console.error('[appserver] thread/start', startParams);
+        const r = await this.request('thread/start', startParams);
         this.sessionId = r?.thread?.id ?? r?.threadId ?? null;
         if (this.sessionId) this.onSessionId?.(this.sessionId, this.firstMessage);
       }
@@ -476,7 +503,7 @@ export class ThreadRuntime {
     return this.startTurn(text, savedAttachments, parts);
   }
 
-  async dispatchUserMessage({ text, savedAttachments, parts, clientRequestId } = {}) {
+  async dispatchUserMessage({ text, savedAttachments, parts, clientRequestId, turn } = {}) {
     text = typeof text === 'string' ? text.trim() : '';
     const hasAttachments = Array.isArray(savedAttachments) && savedAttachments.length > 0;
     const hasParts = Array.isArray(parts) && parts.length > 0;
@@ -487,16 +514,16 @@ export class ThreadRuntime {
       if (this.currentTurnId) {
         return this.steerTurnDispatch(text, savedAttachments, parts, clientRequestId);
       }
-      return this.enqueueInputDispatch(text, savedAttachments, parts, clientRequestId);
+      return this.enqueueInputDispatch(text, savedAttachments, parts, clientRequestId, turn);
     }
-    return this.startTurnDispatch(text, savedAttachments, parts, clientRequestId);
+    return this.startTurnDispatch(text, savedAttachments, parts, clientRequestId, turn);
   }
 
   enqueueInput(text, savedAttachments, parts) {
     return this.enqueueInputDispatch(text, savedAttachments, parts).accepted;
   }
 
-  enqueueInputDispatch(text, savedAttachments, parts, clientRequestId) {
+  enqueueInputDispatch(text, savedAttachments, parts, clientRequestId, turn) {
     if (this.inputQueue.length >= this.inputQueueLimit) {
       this.emit('system', { message: `输入队列已满（上限 ${this.inputQueueLimit} 条），请等待当前任务完成后再发送`, isError: true });
       this.emitStatus('queue_full');
@@ -508,7 +535,7 @@ export class ThreadRuntime {
         reason: 'queue_full',
       };
     }
-    const entry = { text, savedAttachments, parts, clientRequestId, queuedAt: Date.now() };
+    const entry = { text, savedAttachments, parts, clientRequestId, turn, queuedAt: Date.now() };
     this.inputQueue.push(entry);
     const queuedMessage = {
       text,
@@ -534,7 +561,9 @@ export class ThreadRuntime {
     return outcome.accepted;
   }
 
-  async startTurnDispatch(text, savedAttachments, parts, clientRequestId) {
+  async startTurnDispatch(text, savedAttachments, parts, clientRequestId, turn) {
+    this.applyTurnOverrides(turn);
+    const turnEpoch = this.turnEpoch;
     this.busy = true;
     this.lastActivity = Date.now();
     if (this.firstMessage === null) this.firstMessage = text;
@@ -551,11 +580,21 @@ export class ThreadRuntime {
 
     try {
       await this.ensureReady();
+      if (this.disposed || this.turnEpoch !== turnEpoch) {
+        return {
+          accepted: false,
+          state: 'rejected',
+          clientRequestId,
+          threadId: this.sessionId,
+          reason: 'interrupted',
+        };
+      }
       // turn/start 立即返回 inProgress；完成经 turn/completed 通知。
       const params = {
         threadId: this.sessionId,
         cwd: this.cwd,
-        input: buildUserInputs({ text, attachments: savedAttachments, parts })
+        input: buildUserInputs({ text, attachments: savedAttachments, parts }),
+        ...buildTurnStartOverrides(this.turnOverrides),
       };
       if (clientRequestId) params.clientUserMessageId = clientRequestId;
       const turnStart = await this.request('turn/start', params);
@@ -688,6 +727,7 @@ export class ThreadRuntime {
       next.savedAttachments,
       next.parts,
       next.clientRequestId,
+      next.turn,
     );
     if (!outcome.accepted) this.emitMessageReceipt(outcome);
     return outcome.accepted;
@@ -974,6 +1014,8 @@ export class ThreadRuntime {
     switch (item.type) {
       case 'agentMessage':
         break; // 流式 delta 已处理
+      case 'userMessage':
+        break; // 发送路径已发 user_message，回声不再画 RAW 卡
       case 'commandExecution':
         if (!completed) {
           this.emit('tool_use', {
@@ -1049,6 +1091,7 @@ export class ThreadRuntime {
   }
 
   async abort() {
+    this.turnEpoch += 1;
     if (this.child && this.sessionId && this.currentTurnId) {
       try {
         await this.request('turn/interrupt', {
@@ -1068,6 +1111,7 @@ export class ThreadRuntime {
     this.approvalBroker.clearItems();
     this.currentTurnId = null;
     this.emitStatus(dropped ? 'interrupt_cleared_queue' : 'interrupt');
+    this.emit('system', { message: '已中断', isError: false });
   }
 
   async forkThread(options = {}) {

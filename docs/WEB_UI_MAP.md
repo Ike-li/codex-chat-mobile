@@ -5,12 +5,12 @@
 ## 页面区域总览
 
 ```text
-┌ 顶部状态区：菜单 / thread 标题 / 模式 / cwd / 账号 / 连接状态 ┐
-├ Thread 与实例区：活跃 runtime 标签 / Fork / 新建              ┤
-├ Needs-you：跨 thread 审批和提问聚合                           ┤
+┌ 顶部状态区：会话钮+延迟 / 工作区胶囊 / 首页与新会话 ┐
+├ 连接横幅：断线或重连时的可读状态（非阻断）              ┤
+├ Needs-you：跨 thread 审批和提问聚合                    ┤
 ├ 消息区：用户、助手、reasoning、工具、diff、审批、结果         ┤
-├ 输入区：附件 / 权限 / 模型 / 文本 / 发送或中断                ┤
-└ 左侧抽屉：历史 thread、原生控制、工作区、Admin/Labs 条件入口 ┘
+├ 输入区：附件 / 权限 / 模型 / 文本 / @ 引用 / 发送或中断        ┤
+└ 左侧抽屉：历史 thread、原生控制、工作区、Push、Admin/Labs 条件入口 ┘
 ```
 
 页面上显示的 session/thread 状态属于当前 Socket 视图；切换标签不会改变另一台设备正在查看的 runtime。
@@ -19,27 +19,23 @@
 
 顶部包含：
 
-- 菜单按钮：打开左侧抽屉；
-- thread 标题和状态点：running、needs-you、error、not-loaded 等；
-- Chat/Plan 模式入口；
-- session meta：cwd、thread 和连接信息；
-- 可展开状态详情：sandbox、approval、queue、context 等；
-- 工作区选择器：仅显示 `WORK_DIR`/`WORK_DIRS` allowlist；
-- 账号登录按钮；
-- Socket 连接状态点。
+- 菜单按钮：打开左侧抽屉；右下角叠连接状态点。
+- `#conn-rtt`：测到往返延迟后显示「延迟 Nms / Ns」，差网用 warn/bad 着色。
+- `#header-context`：中间工作区胶囊，显示 `#header-project`（cwd 最后一段）；`status_line.git.changed` 非零时显示 `#header-changes`。点击打开只读工作区 sheet（文件 / git 改动）。
+- `#header-home`：回空会话（清本地视图，不调用 `session:new`）；下一次发送再懒开 runtime。
+- `#header-new`：立刻 `session:new` 并清空消息区。
+- `#thread-title`：当前 thread 名（对辅助技术可见；没有绑定 thread 时为「新会话」）。
+- `#conn-banner`：连接超过阈值后显示「连接中 / 已断开 / 已重新连接」，可点立即重试。
+- 不提供 ChatGPT / Codex 账号登录入口；凭证只在本机配置。
+- 不提供 CLI 镜像 / 控制台按钮。
 
-点击标题区域可展开或收起状态详情。host-scope `thread/status/changed` 能更新未加载 thread 的状态，但不会为它创建 runtime。
+工作区切换在左侧抽屉；Chat/Plan 在输入区。host-scope `thread/status/changed` 能更新未加载 thread 的状态，但不会为它创建 runtime。
 
 ## Thread 与实例区
 
-横向标签代表当前 gateway 中的活跃 `ThreadRuntime`：
+主界面不再展示活跃 runtime 标签条。当前会话由抽屉列表和空状态表示；新建会话可点顶栏 `+`，或左侧抽屉的 `+ 新会话` / 底部 FAB。
 
-- 点击标签：只切换本设备当前 Socket 的视图；
-- `⎇`：Fork 当前 thread，返回新的 thread 和 instance；
-- `+`：创建 provisional instance，首次发送后绑定新 thread；
-- 标签状态：显示 busy、idle、needs-you 或错误状态。
-
-instance 是网关运行时视图，不是历史事实源。历史中的 thread 可以暂时没有活跃 instance。
+历史 thread 仍在抽屉列表中选择。instance 是网关运行时视图，不是历史事实源。
 
 ## 消息区
 
@@ -48,9 +44,9 @@ instance 是网关运行时视图，不是历史事实源。历史中的 thread 
 | 卡片 | 内容 |
 |---|---|
 | 用户消息 | 文本、附件/skill 元数据和发送状态 |
-| 助手消息 | 流式 text delta |
+| 助手消息 | 流式 GFM Markdown（消毒后；历史同样渲染） |
 | Reasoning | summary 或 full reasoning |
-| 命令/工具 | 输入、实时输出、状态和 exit code |
+| 命令/工具 | 标题「命令」、可折起命令行、实时输出、结束时 exit code 与成败色 |
 | MCP/Search | 调用参数摘要和结果 |
 | File change/Diff | 文件列表、change kind 和 diff |
 | Plan | 当前 turn 的步骤计划 |
@@ -66,11 +62,13 @@ instance 是网关运行时视图，不是历史事实源。历史中的 thread 
 输入区包含：
 
 - `+`：选择附件；
-- 权限入口：请求批准、风险批准、完全访问或自定义；
-- 模型/reasoning/speed 入口；
-- 文本框：普通内容和 `/` 命令；
-- `↑`：发送；
-- `■`：有活跃 turn 时精确中断。
+- 一颗摘要胶囊：`模型 · 按请求 · 思考`，整颗点开底部会话设置 sheet（模式 / 审批 / 沙箱 / 模型 / 思考）；
+- 附件和发送钉在右侧；输入为空时发送钮隐藏，有内容或 turn 进行中才出现；
+- 权限入口：CLI 审批策略（`untrusted` / `on-failure` / `on-request` / `never`）和沙箱（`read-only` / `workspace-write` / `danger-full-access`），以及绕过批准和沙箱；
+- 模型/思考强度/服务档位入口：模型来自 `models:read`，思考强度来自该模型的 `supportedReasoningEfforts`；
+- 文本框：普通内容、`/` 命令和 `@` 文件引用（候选来自 `files:search`，选中后加入结构化 mention，不把路径拼进提示词）；
+- 粘贴图片会进入附件托盘；点图片 chip 可预览；
+- 主按钮：空闲且有内容时是 `↑` 发送；turn 进行中变成 `■` 停止，停止过程中禁用并显示「正在停止」。进行中再输入时，左侧多一颗 `↑`（`#followup-btn`），把下一条发给当前 turn（`steered`）或排进该 runtime 队列（`queued`，气泡标 Queued #N）。停止会清掉未执行的队列。回车在有草稿时发送，空草稿且进行中才中断。
 
 附件先显示为可删除 chip。Skills 面板选择的 skill 也会作为下一条消息的结构化 chip。发送成功前，消息已进入 IndexedDB outbox；清空输入框不等于服务端已经执行。
 
@@ -78,11 +76,15 @@ instance 是网关运行时视图，不是历史事实源。历史中的 thread 
 
 抽屉包含：
 
-- 新会话和原生 thread 列表；
+- 当前项目名（`#drawer-project`，来自当前 cwd 最后一段）；
+- `#drawer-projects`：白名单工作区目录树。点目录名展开/再点收起（可同时展开多个）；点行内 `＋` 才在该目录新建并切 cwd；点会话才打开并切过去；
+- 打开抽屉时当前 cwd 默认展开，展开集合记在浏览器 localStorage；
 - thread 的打开、重命名、Archive/Unarchive 和删除操作；
-- Threads、Compact、Rollback、Models、Files、Account、MCP、Skills、Import；
 - 浮动新建按钮；
-- 配置多个工作区时的工作区切换。
+- 配置多个工作区时的工作区切换；
+- `#push-subscribe-btn`：HTTPS + VAPID 可用时显示「开启推送通知」。
+
+Threads / Compact / Rollback / Models 等工具面板仍在 DOM 中，当前对用户隐藏，后续再收口。
 
 只读控制面返回 app-server 原生数据。Files 只允许读取目标 workspace 范围；Import 先检测迁移项，再由用户选择导入。
 

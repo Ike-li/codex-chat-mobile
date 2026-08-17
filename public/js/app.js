@@ -11,13 +11,41 @@ import {
   mergeThreadList,
   threadStatusPresentation,
 } from '/js/thread-status.js';
+import { resolveComposerPrimaryMode } from '/js/composer-mode.js';
+import { projectLabel } from '/js/project-label.js';
+import { loadExpandedDirs, persistExpandedDirs, toggleExpandedDir } from '/js/drawer-dirs.js';
+import { renderMarkdown } from '/js/markdown.js';
+import { commandCard, fileChangeCard } from '/js/tool-cards.js';
+import { resolveConnectionBanner } from '/js/connection-banner.js';
+import { formatRttChip, formatWorkspaceChangeBadge } from '/js/header-chrome.js';
+import { createConfirmController } from '/js/confirm-dialog.js';
+import { detectAtMentionQuery, applyAtMentionPick, mentionPartFromSearchHit } from '/js/at-mention.js';
+import { pickPastedImage, attachmentPreview } from '/js/attachments-ui.js';
+import { createWorkspacePanel } from '/js/workspace-panel.js';
+import {
+  APPROVAL_OPTIONS,
+  SANDBOX_OPTIONS,
+  clampEffortForModel,
+  clampServiceTierForModel,
+  formatModelBadge,
+  formatPermissionBadge,
+  formatComposerPermission,
+  formatComposerModel,
+  formatComposerEffort,
+  loadCliSettings,
+  reasoningOptionsForModel,
+  resolveSelectedModel,
+  saveCliSettings,
+  sanitizeTurnOverrides,
+  serviceTiersForModel,
+  visibleModels,
+} from '/js/cli-settings.js';
 
 (function() {
   const $ = id => document.getElementById(id);
   const messagesEl = $('messages');
   const inputEl = $('msg-input');
   const sendBtn = $('send-btn');
-  const interruptBtn = $('interrupt-btn');
   const attachBtn = $('attach-btn');
   const fileInput = $('file-input');
   const attachTray = $('attach-tray');
@@ -29,17 +57,35 @@ import {
   const statusDetail = $('status-detail');
   const drawerOverlay = $('drawer-overlay');
   const drawer = $('drawer');
-  const sessionListEl = $('session-list');
+
   const pendingPanel = $('pending-panel');
   const needsYouPanel = $('needs-you-panel');
-  const accountLoginBtn = $('account-login-btn');
-  const accountLoginPanel = $('account-login-panel');
   const nativePanel = $('native-panel');
   const authGate = $('auth-gate');
   const authForm = $('auth-form');
   const authTokenInput = $('auth-token-input');
   const authError = $('auth-error');
   const deviceAuth = $('device-auth');
+  const confirmDialog = createConfirmController({
+    modal: $('confirm-modal'),
+    titleEl: $('confirm-title'),
+    bodyEl: $('confirm-body'),
+    inputWrap: $('confirm-input-wrap'),
+    inputEl: $('confirm-input'),
+    okBtn: $('confirm-ok'),
+    cancelBtn: $('confirm-cancel'),
+  });
+  const connBanner = $('conn-banner');
+  const connBannerText = $('conn-banner-text');
+  const connBannerDetail = $('conn-banner-detail');
+  const connBannerSpinner = $('conn-banner-spinner');
+  const connBannerRetry = $('conn-banner-retry');
+  const atMentionPopup = $('at-mention-popup');
+  let connPhase = 'connecting';
+  let connSince = Date.now();
+  let connBannerWasVisible = false;
+  let connBannerTimer = null;
+  let atMentionReqId = 0;
   const deviceIdDisplay = $('device-id-display');
 
   // Device token
@@ -72,10 +118,15 @@ import {
 
   // State
   let busy = false;
+  let interruptPending = false;
   let streamingEl = null;
   let streamText = '';
+  let streamMdTimer = null;
+  const STREAM_MD_INTERVAL_MS = 80;
   let currentSessionId = null;
   let appThreads = [];
+  let sessionsByCwd = new Map();
+  let expandedDirs = new Set();
   let showArchivedThreads = false;
   let features = { admin: false, labs: false };
   let adminUnlocked = false;
@@ -100,13 +151,11 @@ import {
   let currentViewingId = null;
   let offlineUserBubbles = []; // [{text, el}]
   let renderedOutboxIds = new Set();
-  let activeAccountLoginId = null;
   let restoringThreadId = null;
   let activeRecovery = null;
   let targetSetupPromise = null;
   let outboxSyncPromise = null;
   let outboxSyncRequested = false;
-  let threadListGeneration = 0;
   let threadRefreshTimer = null;
 
   function viewTarget() {
@@ -123,7 +172,15 @@ import {
     if (!ack?.ok) return false;
     restoringThreadId = null;
     activeRecovery = null;
-    if (ack.cwd) serverCwd = ack.cwd;
+    if (ack.cwd) {
+      serverCwd = ack.cwd;
+      expandedDirs.add(ack.cwd);
+      persistExpandedDirs(localStorage, expandedDirs);
+      if (sessionsByCwd.has(ack.cwd)) appThreads = sessionsByCwd.get(ack.cwd);
+      const sel = $('workdir-select');
+      if (sel) sel.value = ack.cwd;
+      renderDrawerProject();
+    }
     if (Object.prototype.hasOwnProperty.call(ack, 'instanceId')) currentViewingId = ack.instanceId || null;
     if (Object.prototype.hasOwnProperty.call(ack, 'threadId')) rememberCurrentThread(ack.threadId);
     renderInstanceTabs();
@@ -240,6 +297,75 @@ import {
   // Socket
   const socket = io({ autoConnect: false, auth: { deviceToken } });
   const isTransportConnected = () => socket.connected && navigator.onLine !== false;
+
+  function overlayBlocksBanner() {
+    return authGate?.classList.contains('show') || deviceAuth?.classList.contains('show');
+  }
+
+  function paintConnectionBanner() {
+    const view = resolveConnectionBanner({
+      phase: connPhase,
+      elapsedMs: Date.now() - connSince,
+      suppressed: overlayBlocksBanner(),
+      wasVisible: connBannerWasVisible,
+    });
+    if (!connBanner) return;
+    if (!view) {
+      connBanner.hidden = true;
+      return;
+    }
+    connBannerWasVisible = true;
+    connBanner.hidden = false;
+    connBanner.dataset.tone = view.tone;
+    if (connBannerText) connBannerText.textContent = view.label;
+    if (connBannerDetail) {
+      connBannerDetail.textContent = view.detail || '';
+      connBannerDetail.hidden = !view.detail;
+    }
+    if (connBannerSpinner) connBannerSpinner.hidden = !view.spinner;
+    if (connBannerRetry) connBannerRetry.hidden = !view.retry;
+  }
+
+  function setConnectionPhase(phase) {
+    if (phase !== connPhase) {
+      if (phase === 'online') connBannerWasVisible = !connBanner?.hidden;
+      else connBannerWasVisible = false;
+      connPhase = phase;
+      connSince = Date.now();
+    }
+    paintConnectionBanner();
+    if (connBannerTimer) clearInterval(connBannerTimer);
+    connBannerTimer = setInterval(paintConnectionBanner, 500);
+  }
+
+  const workspacePanel = createWorkspacePanel({
+    modal: $('workspace-modal'),
+    filesTab: $('workspace-tab-files'),
+    changesTab: $('workspace-tab-changes'),
+    filesTools: $('workspace-files-tools'),
+    gitTools: $('workspace-git-tools'),
+    filesBody: $('file-browse-body'),
+    changesBody: $('git-changes-body'),
+    pathEl: $('file-browse-path'),
+    backBtn: $('file-browse-back'),
+    gitBranchEl: $('git-changes-branch'),
+    socket,
+    getCwd: () => serverCwd,
+    escHtml,
+    onMention(path) {
+      addInputPart({ kind: 'mention', name: path.split('/').pop() || path, path });
+      workspacePanel.close();
+      inputEl.focus();
+    },
+  });
+  $('workspace-close')?.addEventListener('click', () => workspacePanel.close());
+  $('git-changes-refresh')?.addEventListener('click', () => workspacePanel.refreshGit());
+  $('workspace-modal')?.addEventListener('click', event => {
+    if (event.target === $('workspace-modal')) workspacePanel.close();
+  });
+  connBannerRetry?.addEventListener('click', () => {
+    if (!socket.connected) socket.connect();
+  });
   const outboxStore = createIndexedDbMessageStore();
   const messageOutbox = createMessageOutbox({
     store: outboxStore,
@@ -411,17 +537,22 @@ import {
   window.visualViewport?.addEventListener('scroll', syncVisualViewport);
 
   socket.on('connect', () => {
+    setConnectionPhase('online');
     renderConnectionState();
     requestCatchUp();
+    startRttMonitor();
   });
 
   socket.on('disconnect', () => {
     adminUnlocked = false;
+    setConnectionPhase('offline');
     renderConnectionState();
+    clearRtt();
     appendSystem('已断开连接，尝试重连中...', false);
   });
 
   socket.on('connect_error', err => {
+    setConnectionPhase(socket.connected ? 'online' : 'offline');
     renderConnectionState();
     if (err?.message === 'unauthorized') {
       socket.disconnect();
@@ -432,10 +563,20 @@ import {
     appendSystem(`连接失败：${err?.message || 'unknown'}`, true);
   });
 
-  window.addEventListener('offline', renderConnectionState);
+  window.addEventListener('offline', () => {
+    setConnectionPhase('offline');
+    renderConnectionState();
+  });
   window.addEventListener('online', () => {
+    setConnectionPhase(socket.connected ? 'online' : 'connecting');
     renderConnectionState();
     if (socket.connected) syncOutboxView();
+    else socket.connect();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    paintConnectionBanner();
+    if (!socket.connected) socket.connect();
   });
 
   socket.on('agent:event', processAgentEvent);
@@ -466,210 +607,268 @@ import {
     messagesEl.style.display = isEmpty ? 'none' : 'flex';
   }
 
-  // Redesign - State for Reasoning and Mode
-  let selectedModel = localStorage.getItem('codex_selected_model') || 'gpt-5.5';
-  let selectedReasoning = localStorage.getItem('codex_selected_reasoning') || '超高';
-  let selectedSpeed = localStorage.getItem('codex_selected_speed') || '标准';
+  const storedCliSettings = loadCliSettings(localStorage);
+  let selectedModel = storedCliSettings.model || '';
+  let selectedReasoning = storedCliSettings.effort || '';
+  let selectedServiceTier = storedCliSettings.serviceTier || '';
+  let selectedApproval = storedCliSettings.approvalPolicy || '';
+  let selectedSandbox = storedCliSettings.sandbox || '';
   let selectedMode = '/chat';
+  let availableModels = [];
 
-  // Ensure model-input element starts with the selected model
   const miInput = $('model-input');
-  if (miInput) {
-    miInput.value = selectedModel;
+  if (miInput && selectedModel) miInput.value = selectedModel;
+  const permSelect = $('perm-select');
+  if (permSelect) permSelect.value = selectedApproval;
+
+  function displayModelId() {
+    return selectedModel || resolveSelectedModel('', availableModels);
   }
 
-  // Redesign - Sync inline triggers and popovers
+  function currentModelRecord() {
+    const id = displayModelId();
+    return availableModels.find(model => (model.model || model.id) === id)
+      || { model: id, displayName: id };
+  }
+
+  function modelsForPicker() {
+    const visible = visibleModels(availableModels);
+    if (selectedModel && !visible.some(model => (model.model || model.id) === selectedModel)) {
+      return [{ model: selectedModel, displayName: selectedModel }, ...visible];
+    }
+    return visible;
+  }
+
+  function currentTurnSettings() {
+    return sanitizeTurnOverrides({
+      model: selectedModel,
+      effort: selectedReasoning,
+      approvalPolicy: selectedApproval,
+      sandbox: selectedSandbox,
+      serviceTier: selectedServiceTier,
+    });
+  }
+
+  function persistComposerSettings() {
+    saveCliSettings(localStorage, currentTurnSettings());
+    if (miInput) miInput.value = selectedModel;
+    if (permSelect) permSelect.value = selectedApproval;
+  }
+
+  function renderPopoverItems(container, items, dataAttr, selectedId) {
+    if (!container) return;
+    container.innerHTML = items.map(item => `
+      <div class="popover-item${item.id && item.id === selectedId ? ' selected' : ''}" data-${dataAttr}="${escHtml(item.id)}">
+        <span class="popover-item-icon">${item.icon || ''}</span>
+        <div class="popover-item-details">
+          <span class="popover-item-title">${escHtml(item.title)}</span>
+          ${item.desc ? `<span class="popover-item-desc">${escHtml(item.desc)}</span>` : ''}
+        </div>
+        <span class="popover-item-check">✓</span>
+      </div>
+    `).join('');
+  }
+
+  function renderCliSettingsPopovers() {
+    const modelRecord = currentModelRecord();
+    renderPopoverItems($('approval-list'), APPROVAL_OPTIONS, 'approval', selectedApproval);
+    renderPopoverItems($('sandbox-list'), SANDBOX_OPTIONS, 'sandbox', selectedSandbox);
+    renderPopoverItems(
+      $('model-list'),
+      modelsForPicker().map(model => ({
+        id: model.model || model.id,
+        title: model.displayName || model.model || model.id,
+        desc: model.model || model.id,
+        icon: model.isDefault ? '⭐' : '🤖',
+      })),
+      'model',
+      displayModelId(),
+    );
+    renderPopoverItems(
+      $('reasoning-list'),
+      reasoningOptionsForModel(modelRecord).map(option => ({
+        ...option,
+        icon: option.id === selectedReasoning ? '●' : '○',
+      })),
+      'reasoning',
+      selectedReasoning,
+    );
+    const tiers = serviceTiersForModel(modelRecord);
+    const speedLabel = $('speed-section-label');
+    const speedList = $('speed-list');
+    if (speedLabel) speedLabel.hidden = tiers.length === 0;
+    if (speedList) {
+      speedList.hidden = tiers.length === 0;
+      renderPopoverItems(
+        speedList,
+        tiers.map(tier => ({
+          id: tier.id,
+          title: tier.name || tier.id,
+          desc: tier.description || '',
+          icon: /fast|priority/i.test(`${tier.id} ${tier.name}`) ? '⚡' : '⚪',
+        })),
+        'speed',
+        selectedServiceTier,
+      );
+    }
+    const bypassList = $('bypass-list');
+    if (bypassList) {
+      const active = selectedApproval === 'never' && selectedSandbox === 'danger-full-access';
+      bypassList.innerHTML = `
+        <div class="popover-item${active ? ' selected' : ''}" data-bypass="1">
+          <span class="popover-item-icon">☠️</span>
+          <div class="popover-item-details">
+            <span class="popover-item-title">绕过批准和沙箱</span>
+            <span class="popover-item-desc">对应 --dangerously-bypass-approvals-and-sandbox</span>
+          </div>
+          <span class="popover-item-check">✓</span>
+        </div>`;
+    }
+    updateFloatingBadges();
+  }
+
+  function applyComposerModel(modelId) {
+    selectedModel = modelId;
+    const record = currentModelRecord();
+    selectedReasoning = clampEffortForModel(selectedReasoning, record);
+    selectedServiceTier = clampServiceTierForModel(selectedServiceTier, record);
+    persistComposerSettings();
+    renderCliSettingsPopovers();
+  }
+
+  function loadComposerModels() {
+    renderCliSettingsPopovers();
+    if (!socket.connected) return;
+    socket.emit('models:read', { cwd: serverCwd }, ack => {
+      if (!ack?.ok) return;
+      availableModels = ack.models || [];
+      if (selectedModel) {
+        selectedModel = resolveSelectedModel(selectedModel, availableModels);
+        const record = currentModelRecord();
+        if (selectedReasoning) selectedReasoning = clampEffortForModel(selectedReasoning, record);
+        if (selectedServiceTier) selectedServiceTier = clampServiceTierForModel(selectedServiceTier, record);
+        persistComposerSettings();
+      }
+      renderCliSettingsPopovers();
+    });
+  }
+
   function updateFloatingBadges() {
-    const currentModel = $('model-input').value || selectedModel || 'gpt-5.5';
-    const currentPolicy = $('perm-select').value || 'on-request';
-
-    // Format model name
-    let modelDisplay = currentModel;
-    if (modelDisplay.toLowerCase().startsWith('gpt-')) {
-      modelDisplay = modelDisplay.slice(4);
-    }
-
-    // Map policy text & icon
-    let policyDisplay = '请求批准';
-    let policyIcon = '🖐️';
-    if (currentPolicy === 'never') {
-      policyDisplay = '完全访问';
-      policyIcon = '⚠️';
-    } else if (currentPolicy === 'unlessTrusted') {
-      policyDisplay = '替我审批';
-      policyIcon = '🛡️';
-    } else if (currentPolicy === 'custom') {
-      policyDisplay = '自定义';
-      policyIcon = '⚙️';
-    } else {
-      policyDisplay = '请求批准';
-      policyIcon = '🖐️';
-    }
-
-    // Update inline triggers text
     const permTextEl = $('perm-trigger-text');
     if (permTextEl) {
-      permTextEl.innerHTML = `${policyIcon} ${policyDisplay}`;
+      permTextEl.textContent = formatComposerPermission({
+        approvalPolicy: selectedApproval || sessionStatus?.approvalPolicy || '',
+        sandbox: selectedSandbox || sessionStatus?.sandbox || '',
+      });
     }
 
     const modelTextEl = $('model-trigger-text');
+    const record = currentModelRecord();
     if (modelTextEl) {
-      const speedIndicator = selectedSpeed === '快速' ? ' · ⚡' : '';
-      modelTextEl.textContent = `${modelDisplay} ${selectedReasoning}${speedIndicator}`;
+      modelTextEl.textContent = formatComposerModel({
+        model: displayModelId(),
+        displayName: record.displayName,
+      }) || '模型';
     }
 
-    // Sync selected class inside Permission Popover
-    document.querySelectorAll('#perm-popover .popover-item').forEach(item => {
-      const val = item.dataset.value;
-      item.classList.toggle('selected', val === currentPolicy);
-    });
+    const effortText = formatComposerEffort(selectedReasoning);
+    const effortWrap = $('effort-trigger');
+    const effortTextEl = $('effort-trigger-text');
+    if (effortTextEl) effortTextEl.textContent = effortText;
+    if (effortWrap) effortWrap.hidden = !effortText;
 
-    // Sync selected class inside Model List Popover
-    document.querySelectorAll('#model-popover .model-list .popover-item').forEach(item => {
-      const m = item.dataset.model;
-      const matchesKnown = currentModel.toLowerCase().includes(m);
-      item.classList.toggle('selected', matchesKnown);
-    });
-
-    // Sync selected class inside Reasoning List Popover
-    document.querySelectorAll('#model-popover .reasoning-list .popover-item').forEach(item => {
-      const r = item.dataset.reasoning;
-      item.classList.toggle('selected', r === selectedReasoning);
-    });
-
-    // Sync selected class inside Speed List Popover
-    document.querySelectorAll('#model-popover .speed-list .popover-item').forEach(item => {
-      const s = item.dataset.speed;
-      item.classList.toggle('selected', s === selectedSpeed);
-    });
-
-    // Sync mode header display
-    const modeTextEl = $('mode-trigger-text');
-    if (modeTextEl) {
-      modeTextEl.textContent = selectedMode === '/plan' ? '📋 计划模式' : '💬 对话模式';
+    const defaults = $('composer-defaults');
+    if (defaults) {
+      defaults.title = [
+        formatComposerModel({ model: displayModelId(), displayName: record.displayName }) || '模型',
+        formatPermissionBadge({
+          approvalPolicy: selectedApproval || sessionStatus?.approvalPolicy || '',
+          sandbox: selectedSandbox || sessionStatus?.sandbox || '',
+        }),
+        formatModelBadge({
+          model: displayModelId(),
+          effort: selectedReasoning,
+          serviceTier: selectedServiceTier,
+          displayName: record.displayName,
+        }),
+      ].filter(Boolean).join('\n');
     }
-    document.querySelectorAll('#mode-popover .popover-item').forEach(item => {
-      const val = item.dataset.value;
-      item.classList.toggle('selected', val === selectedMode);
+
+    document.querySelectorAll('#mode-list .popover-item').forEach(item => {
+      item.classList.toggle('selected', item.dataset.value === selectedMode);
     });
   }
 
-  // Redesign - Toggles and Clicks for Popovers
-  const permTrigger = $('perm-trigger');
-  const permPopover = $('perm-popover');
-  const modelTrigger = $('model-trigger');
-  const modelPopover = $('model-popover');
-  const modeTrigger = $('mode-trigger');
-  const modePopover = $('mode-popover');
-
-  // Helper to close all popovers
-  function closeAllPopovers() {
-    permPopover?.classList.remove('show');
-    modelPopover?.classList.remove('show');
-    modePopover?.classList.remove('show');
+  const sessionSettings = $('session-settings');
+  function openSessionSettings() {
+    if (sessionSettings) sessionSettings.hidden = false;
   }
-
-  if (permTrigger) {
-    permTrigger.onclick = e => {
-      e.stopPropagation();
-      const show = !permPopover.classList.contains('show');
-      closeAllPopovers();
-      if (show) permPopover.classList.add('show');
-    };
+  function closeSessionSettings() {
+    if (sessionSettings) sessionSettings.hidden = true;
   }
-
-  if (modelTrigger) {
-    modelTrigger.onclick = e => {
-      e.stopPropagation();
-      const show = !modelPopover.classList.contains('show');
-      closeAllPopovers();
-      if (show) modelPopover.classList.add('show');
-    };
-  }
-
-  if (modeTrigger) {
-    modeTrigger.onclick = e => {
-      e.stopPropagation();
-      const show = !modePopover.classList.contains('show');
-      closeAllPopovers();
-      if (show) modePopover.classList.add('show');
-    };
-  }
-
-  // Wire Permission Popover options
-  document.querySelectorAll('#perm-popover .popover-item').forEach(item => {
-    item.onclick = () => {
-      const val = item.dataset.value;
-      $('perm-select').value = val;
-      inputEl.value = '/approval-policy ' + (val || 'on-request');
-      sendMessage();
-      closeAllPopovers();
-    };
+  $('composer-defaults')?.addEventListener('click', event => {
+    event.stopPropagation();
+    if (sessionSettings?.hidden === false) closeSessionSettings();
+    else openSessionSettings();
+  });
+  $('session-settings-close')?.addEventListener('click', closeSessionSettings);
+  sessionSettings?.addEventListener('click', event => {
+    if (event.target === sessionSettings) closeSessionSettings();
   });
 
-  // Wire Model Popover options
-  document.querySelectorAll('#model-popover .model-list .popover-item').forEach(item => {
-    item.onclick = () => {
-      const m = item.dataset.model;
-      selectedModel = m;
-      localStorage.setItem('codex_selected_model', m);
-      $('model-input').value = m;
-      inputEl.value = '/model ' + m;
-      sendMessage();
-      updateFloatingBadges();
-      closeAllPopovers();
-    };
+  $('approval-list')?.addEventListener('click', event => {
+    const item = event.target.closest('[data-approval]');
+    if (!item) return;
+    selectedApproval = item.dataset.approval;
+    persistComposerSettings();
+    renderCliSettingsPopovers();
+  });
+  $('sandbox-list')?.addEventListener('click', event => {
+    const item = event.target.closest('[data-sandbox]');
+    if (!item) return;
+    selectedSandbox = item.dataset.sandbox;
+    persistComposerSettings();
+    renderCliSettingsPopovers();
+  });
+  $('bypass-list')?.addEventListener('click', event => {
+    if (!event.target.closest('[data-bypass]')) return;
+    selectedApproval = 'never';
+    selectedSandbox = 'danger-full-access';
+    persistComposerSettings();
+    renderCliSettingsPopovers();
+  });
+  $('model-list')?.addEventListener('click', event => {
+    const item = event.target.closest('[data-model]');
+    if (!item) return;
+    applyComposerModel(item.dataset.model);
+  });
+  $('reasoning-list')?.addEventListener('click', event => {
+    const item = event.target.closest('[data-reasoning]');
+    if (!item) return;
+    selectedReasoning = item.dataset.reasoning;
+    persistComposerSettings();
+    renderCliSettingsPopovers();
+  });
+  $('speed-list')?.addEventListener('click', event => {
+    const item = event.target.closest('[data-speed]');
+    if (!item) return;
+    const next = item.dataset.speed || '';
+    selectedServiceTier = selectedServiceTier === next ? '' : next;
+    persistComposerSettings();
+    renderCliSettingsPopovers();
   });
 
-  // Wire Reasoning Popover options
-  document.querySelectorAll('#model-popover .reasoning-list .popover-item').forEach(item => {
-    item.onclick = () => {
-      const r = item.dataset.reasoning;
-      selectedReasoning = r;
-      localStorage.setItem('codex_selected_reasoning', r);
-      inputEl.value = '/reasoning ' + r;
-      sendMessage();
-      updateFloatingBadges();
-      closeAllPopovers();
-    };
-  });
-
-  // Wire Speed Popover options
-  document.querySelectorAll('#model-popover .speed-list .popover-item').forEach(item => {
-    item.onclick = () => {
-      const s = item.dataset.speed;
-      selectedSpeed = s;
-      localStorage.setItem('codex_selected_speed', s);
-      inputEl.value = '/speed ' + (s === '快速' ? 'fast' : 'standard');
-      sendMessage();
-      updateFloatingBadges();
-      closeAllPopovers();
-    };
-  });
-
-  // Wire Mode Popover options
-  document.querySelectorAll('#mode-popover .popover-item').forEach(item => {
+  document.querySelectorAll('#mode-list .popover-item').forEach(item => {
     item.onclick = () => {
       const val = item.dataset.value;
       selectedMode = val;
       inputEl.value = val;
+      closeSessionSettings();
       sendMessage();
-      closeAllPopovers();
     };
   });
 
-  // Close popovers when clicking outside
-  document.addEventListener('click', e => {
-    if (permPopover && !permPopover.contains(e.target) && e.target !== permTrigger) {
-      permPopover.classList.remove('show');
-    }
-    if (modelPopover && !modelPopover.contains(e.target) && e.target !== modelTrigger) {
-      modelPopover.classList.remove('show');
-    }
-    if (modePopover && !modePopover.contains(e.target) && e.target !== modeTrigger) {
-      modePopover.classList.remove('show');
-    }
-  });
+  renderCliSettingsPopovers();
 
   // Redesign - Slash Autocomplete trigger & control
   const slashPopup = $('slash-popup');
@@ -694,10 +893,67 @@ import {
     } else {
       hideSlashPopup();
     }
+    scheduleAtMention(val);
   });
 
   function showSlashPopup() { slashPopup.classList.add('show'); }
   function hideSlashPopup() { slashPopup.classList.remove('show'); }
+
+  function hideAtMentionPopup() {
+    atMentionReqId += 1;
+    if (atMentionPopup) {
+      atMentionPopup.classList.remove('show');
+      atMentionPopup.hidden = true;
+      atMentionPopup.innerHTML = '';
+    }
+  }
+
+  function scheduleAtMention(value) {
+    const cursor = inputEl.selectionStart ?? value.length;
+    const hit = detectAtMentionQuery(value.slice(0, cursor));
+    if (!hit) {
+      hideAtMentionPopup();
+      return;
+    }
+    hideSlashPopup();
+    const reqId = ++atMentionReqId;
+    if (atMentionPopup) {
+      atMentionPopup.hidden = false;
+      atMentionPopup.classList.add('show');
+      atMentionPopup.innerHTML = '<div class="at-mention-item">查找文件…</div>';
+    }
+    socket.emit('files:search', { cwd: serverCwd, query: hit.query }, ack => {
+      if (reqId !== atMentionReqId) return;
+      const paths = ack?.ok ? (ack.paths || []) : [];
+      if (!atMentionPopup) return;
+      if (!paths.length) {
+        atMentionPopup.innerHTML = `<div class="at-mention-item">${escHtml(ack?.ok ? '没有匹配的文件' : (ack?.error || '无法搜索文件'))}</div>`;
+        return;
+      }
+      atMentionPopup.innerHTML = paths.map(path => (
+        `<button type="button" class="at-mention-item" data-path="${escHtml(path)}">${escHtml(path)}</button>`
+      )).join('');
+    });
+  }
+
+  atMentionPopup?.addEventListener('mousedown', event => event.preventDefault());
+  atMentionPopup?.addEventListener('click', event => {
+    const item = event.target.closest('[data-path]');
+    if (!item) return;
+    const cursor = inputEl.selectionStart ?? inputEl.value.length;
+    const hit = detectAtMentionQuery(inputEl.value.slice(0, cursor));
+    if (!hit) return;
+    const next = applyAtMentionPick(inputEl.value, {
+      matchStart: hit.matchStart,
+      cursorPos: cursor,
+      path: item.dataset.path,
+    });
+    inputEl.value = next.text;
+    inputEl.setSelectionRange(next.cursorPos, next.cursorPos);
+    addInputPart(mentionPartFromSearchHit(item.dataset.path, serverCwd));
+    hideAtMentionPopup();
+    applyComposerMode();
+  });
 
   document.querySelectorAll('.slash-item').forEach(item => {
     item.onclick = () => {
@@ -714,6 +970,9 @@ import {
   document.addEventListener('click', e => {
     if (!slashPopup.contains(e.target) && e.target !== inputEl) {
       hideSlashPopup();
+    }
+    if (atMentionPopup && !atMentionPopup.contains(e.target) && e.target !== inputEl) {
+      hideAtMentionPopup();
     }
   });
 
@@ -828,10 +1087,7 @@ import {
         appendReasoning(ev.payload);
         break;
       case 'account_login':
-        handleAccountLogin(ev.payload);
-        break;
       case 'account_updated':
-        handleAccountUpdated(ev.payload);
         break;
       case 'compact':
         handleCompact(ev.payload);
@@ -971,79 +1227,6 @@ import {
     }
   }
 
-  function startChatgptDeviceLogin() {
-    if (!socket.connected) {
-      appendSystem('连接后才能启动 ChatGPT 登录', true);
-      return;
-    }
-    handleAccountLogin({ status: 'starting' });
-    socket.emit('account:loginStart', { type: 'chatgptDeviceCode' }, ack => {
-      if (!ack?.ok) {
-        handleAccountLogin({ status: 'failed', error: ack?.error || '登录启动失败' });
-        return;
-      }
-      handleAccountLogin({
-        status: 'pending',
-        loginId: ack.loginId,
-        verificationUrl: ack.verificationUrl,
-        userCode: ack.userCode
-      });
-    });
-  }
-
-  function handleAccountLogin(payload) {
-    const status = payload?.status || 'unknown';
-    if (payload?.loginId) activeAccountLoginId = payload.loginId;
-    if (status === 'completed' || status === 'failed' || status === 'canceled' || status === 'cancel_missing') {
-      activeAccountLoginId = null;
-    }
-    accountLoginPanel.hidden = false;
-
-    if (status === 'starting') {
-      accountLoginPanel.innerHTML = '<div class="account-login-row"><div class="account-login-main"><strong>正在启动 ChatGPT 登录...</strong></div></div>';
-      return;
-    }
-    if (status === 'pending') {
-      const verificationUrl = payload.verificationUrl || '';
-      const userCode = payload.userCode || '';
-      accountLoginPanel.innerHTML = `<div class="account-login-row">
-        <div class="account-login-main">
-          <strong>ChatGPT 设备码登录</strong>
-          <span class="account-login-code">${escHtml(userCode)}</span>
-          <a class="account-login-url" href="${escHtml(verificationUrl)}" target="_blank" rel="noopener">${escHtml(verificationUrl)}</a>
-        </div>
-        <button class="deny-btn account-login-cancel" type="button">取消</button>
-      </div>`;
-      const cancel = accountLoginPanel.querySelector('.account-login-cancel');
-      cancel.onclick = () => {
-        if (!activeAccountLoginId) return;
-        socket.emit('account:loginCancel', { loginId: activeAccountLoginId }, ack => {
-          if (!ack?.ok) handleAccountLogin({ status: 'failed', error: ack?.error || '取消登录失败' });
-        });
-      };
-      return;
-    }
-    if (status === 'completed') {
-      accountLoginPanel.innerHTML = '<div class="account-login-row"><div class="account-login-main"><strong>ChatGPT 登录完成</strong><span>账号状态已更新。</span></div></div>';
-      appendSystem('ChatGPT 登录完成', false);
-      return;
-    }
-    if (status === 'canceled' || status === 'cancel_missing') {
-      accountLoginPanel.innerHTML = '<div class="account-login-row"><div class="account-login-main"><strong>ChatGPT 登录已取消</strong></div></div>';
-      return;
-    }
-    accountLoginPanel.innerHTML = `<div class="account-login-row"><div class="account-login-main"><strong>ChatGPT 登录失败</strong><span>${escHtml(payload?.error || 'unknown error')}</span></div></div>`;
-  }
-
-  function handleAccountUpdated(payload) {
-    const authMode = payload?.authMode || 'unknown';
-    const planType = payload?.planType || 'unknown';
-    if (accountLoginPanel.hidden) accountLoginPanel.hidden = false;
-    if (authMode === 'chatgpt') {
-      accountLoginPanel.innerHTML = `<div class="account-login-row"><div class="account-login-main"><strong>ChatGPT 已登录</strong><span>${escHtml(planType)}</span></div></div>`;
-    }
-  }
-
   function handleInit(payload, event) {
     applyFeatureManifest(payload.features);
     gatewayEpoch = payload.gatewayEpoch || gatewayEpoch;
@@ -1065,22 +1248,12 @@ import {
       renderWorkdirSelect();
     }
 
-    // Sync models
-    const mi = document.getElementById('model-input');
-    mi.onchange = () => {
-      const m = mi.value.trim();
-      if (m) { inputEl.value = '/model ' + m; sendMessage(); }
-      updateFloatingBadges();
-    };
-
-    const ps = document.getElementById('perm-select');
-    ps.onchange = () => {
-      const p = ps.value;
-      if (p) { inputEl.value = '/approval-policy ' + p; sendMessage(); ps.value = ''; }
-      updateFloatingBadges();
-    };
+    loadComposerModels();
 
     renderSessionMeta();
+    expandedDirs = loadExpandedDirs(localStorage, serverCwd);
+    renderDrawerProject();
+    renderDrawerProjects();
     renderInstanceTabs();
     updateFloatingBadges();
     if (socket.connected) refreshNativeThreads();
@@ -1207,25 +1380,125 @@ import {
   function renderWorkdirSelect() {
     const sel = document.getElementById('workdir-select');
     const container = document.getElementById('workdir-container');
-    if (workDirs.length <= 1) { container.style.display = 'none'; return; }
-    container.style.display = 'flex';
-    sel.innerHTML = workDirs.map(d => {
-      const name = d.split('/').pop() || d;
-      return `<option value="${escHtml(d)}"${d === serverCwd ? ' selected' : ''}>${escHtml(name)}</option>`;
-    }).join('');
-    sel.onchange = () => handleWorkdirChange(sel.value);
+    if (container) container.hidden = true;
+    if (sel && workDirs.length) {
+      sel.innerHTML = workDirs.map(d => {
+        const name = d.split('/').pop() || d;
+        return `<option value="${escHtml(d)}"${d === serverCwd ? ' selected' : ''}>${escHtml(name)}</option>`;
+      }).join('');
+      sel.onchange = () => handleWorkdirChange(sel.value);
+    }
+    renderDrawerProject();
+    renderDrawerProjects();
+  }
+
+  function renderDrawerProject() {
+    const name = projectLabel(serverCwd) || '项目';
+    const el = $('drawer-project');
+    if (el) {
+      el.textContent = name;
+      el.title = serverCwd || '';
+    }
+    const headerProject = $('header-project');
+    if (headerProject) {
+      headerProject.textContent = name;
+      headerProject.title = serverCwd || '';
+    }
+    const headerContext = $('header-context');
+    if (headerContext) {
+      headerContext.title = serverCwd ? `工作区：${serverCwd}` : '浏览工作区文件和改动';
+    }
+  }
+
+  function rememberExpandedDirs() {
+    persistExpandedDirs(localStorage, expandedDirs);
+  }
+
+  function applyWorkspace(cwd, { clearChat = true } = {}) {
+    if (!cwd) return;
+    const changed = cwd !== serverCwd;
+    if (changed) {
+      serverCwd = cwd;
+      restoringThreadId = null;
+      activeRecovery = null;
+      currentViewingId = null;
+      currentSessionId = getCurrentThread(localStorage, serverCwd);
+      sessionStatus = null;
+      appThreads = sessionsByCwd.get(cwd) || [];
+      const sel = $('workdir-select');
+      if (sel) sel.value = cwd;
+      if (clearChat) clearMessages();
+    }
+    expandedDirs.add(cwd);
+    rememberExpandedDirs();
+    renderDrawerProject();
+  }
+
+  function toggleDirExpand(cwd) {
+    const result = toggleExpandedDir(expandedDirs, cwd);
+    expandedDirs = result.set;
+    rememberExpandedDirs();
+    renderDrawerProjects();
+    if (result.expanded) refreshThreadsForCwd(cwd);
+  }
+
+  function renderDrawerProjects() {
+    const root = $('drawer-projects');
+    if (!root) return;
+    const dirs = workDirs.length ? workDirs : (serverCwd ? [serverCwd] : []);
+    if (!dirs.length) {
+      root.innerHTML = '';
+      root.hidden = true;
+      return;
+    }
+    root.hidden = false;
+    root.innerHTML = `<div class="drawer-section-label">项目</div>`;
+    for (const dir of dirs) {
+      const name = projectLabel(dir) || dir;
+      const expanded = expandedDirs.has(dir);
+      const current = dir === serverCwd;
+      const block = document.createElement('div');
+      block.className = 'drawer-project-block' + (current ? ' current' : '') + (expanded ? ' expanded' : '');
+      block.innerHTML = `<div class="drawer-project-item${current ? ' active' : ''}" title="${escHtml(dir)}">`
+        + `<button type="button" class="dir-toggle" data-cwd="${escHtml(dir)}">`
+        + `<span class="project-icon">${expanded ? '📂' : '📁'}</span>`
+        + `<span class="dir-arrow${expanded ? ' rotated' : ''}">▶</span>`
+        + `<span class="dir-name">${escHtml(name)}</span>`
+        + `</button>`
+        + `<button type="button" class="dir-new" data-new-cwd="${escHtml(dir)}" title="在此工作区新建会话">＋</button>`
+        + `</div>`
+        + `<div class="dir-subtree${expanded ? ' expanded' : ''}"></div>`;
+      root.appendChild(block);
+      if (expanded) fillDirSubtree(block.querySelector('.dir-subtree'), dir);
+    }
+    root.querySelectorAll('.dir-toggle').forEach(btn => {
+      btn.onclick = () => toggleDirExpand(btn.dataset.cwd);
+    });
+    root.querySelectorAll('.dir-new').forEach(btn => {
+      btn.onclick = event => {
+        event.stopPropagation();
+        createNewSession(btn.dataset.newCwd);
+        closeDrawer();
+      };
+    });
+  }
+
+  function fillDirSubtree(container, cwd) {
+    if (!container) return;
+    const threads = (sessionsByCwd.get(cwd) || (cwd === serverCwd ? appThreads : [])).filter(item => item.id);
+    if (!threads.length) {
+      container.innerHTML = '<div class="session-empty">暂无会话</div>';
+      return;
+    }
+    container.innerHTML = '';
+    for (const thread of threads) container.appendChild(createSessionRow(thread));
   }
 
   function handleWorkdirChange(cwd) {
-    serverCwd = cwd;
-    restoringThreadId = null;
-    activeRecovery = null;
-    currentViewingId = null;
-    currentSessionId = getCurrentThread(localStorage, serverCwd);
-    sessionStatus = null;
-    document.getElementById('workdir-select').value = cwd;
-    clearMessages();
-    refreshNativeThreads();
+    if (!cwd || cwd === serverCwd) return;
+    applyWorkspace(cwd, { clearChat: true });
+    renderDrawerProjects();
+    refreshThreadsForCwd(cwd);
   }
 
   function handleStatus(payload) {
@@ -1252,42 +1525,44 @@ import {
     syncOutboxView();
   }
 
-  function renderInstanceTabs() {
-    const tabs = document.getElementById('instance-tabs');
-    if (instanceList.length <= 1 && !currentSessionId) { tabs.style.display = 'none'; return; }
-    tabs.style.display = 'flex';
-    let html = '';
-    for (const inst of instanceList) {
-      const active = inst.instanceId === currentViewingId ? ' active' : '';
-      const name = (inst.sessionId || 'new').slice(0, 8);
-      const dot = inst.busy ? '⚡' : '○';
-      html += `<button class="instance-tab${active}" data-iid="${escHtml(inst.instanceId)}" style="padding:6px 12px;font-size:11px;font-weight:600;border:1px solid ${active?'var(--text)':'var(--border)'};border-radius:12px;background:${active?'var(--text)':'var(--surface)'};color:${active?'var(--surface)':'var(--text)'};cursor:pointer;white-space:nowrap;transition:all 0.1s;">${dot} ${name}</button>`;
-    }
-    html += `<button id="fork-instance-btn" title="分叉当前会话" style="padding:4px 10px;font-size:14px;font-weight:bold;border:1px solid var(--border);border-radius:12px;background:var(--surface);cursor:pointer;color:var(--text-muted);">⎇</button>`;
-    html += `<button id="new-instance-btn" style="padding:4px 10px;font-size:16px;font-weight:bold;border:1px solid var(--border);border-radius:12px;background:var(--surface);cursor:pointer;color:var(--text-muted);">+</button>`;
-    tabs.innerHTML = html;
+  function renderInstanceTabs() {}
 
-    for (const btn of tabs.querySelectorAll('.instance-tab')) {
-      btn.onclick = () => {
-        socket.emit('session:switch', { instanceId: btn.dataset.iid }, ack => {
-          if (!applyTargetAck(ack)) appendSystem(ack?.error || '实例切换失败', true);
-        });
-      };
-    }
-    document.getElementById('fork-instance-btn').onclick = forkCurrentSession;
-    document.getElementById('new-instance-btn').onclick = createNewSession;
+  function renderThreadTitle() {
+    const titleEl = $('thread-title');
+    if (!titleEl) return;
+    const thread = currentSessionId
+      ? appThreads.find(item => item.id === currentSessionId)
+      : null;
+    const name = String(thread?.title || thread?.preview || '').trim();
+    titleEl.textContent = name || '新会话';
   }
 
-  function createNewSession() {
-    socket.emit('session:new', { cwd: serverCwd }, ack => {
+  function goHome() {
+    closeDrawer();
+    currentViewingId = null;
+    rememberCurrentThread(null);
+    sessionStatus = null;
+    restoringThreadId = null;
+    activeRecovery = null;
+    clearMessages();
+    renderSessionMeta();
+    renderDrawerProjects();
+    applyComposerMode();
+  }
+
+  function createNewSession(cwd = serverCwd) {
+    if (cwd) applyWorkspace(cwd, { clearChat: false });
+    socket.emit('session:new', { cwd: cwd || serverCwd }, ack => {
       if (!applyTargetAck(ack)) {
         appendSystem(ack?.error || '新建会话失败', true);
         return;
       }
       clearMessages();
+      renderDrawerProjects();
     });
   }
 
+  // eslint-disable-next-line no-unused-vars -- drawer fork trigger is not in main chrome yet
   function forkCurrentSession() {
     socket.emit('session:fork', { instanceId: currentViewingId }, ack => {
       if (!ack?.ok) {
@@ -1301,8 +1576,20 @@ import {
     });
   }
 
+  function paintHeaderChanges(git) {
+    const el = $('header-changes');
+    if (!el) return;
+    const label = formatWorkspaceChangeBadge(git);
+    el.textContent = label;
+    el.hidden = !label;
+  }
+
   function updateStatusDetail(payload) {
-    if (!payload) { statusDetail.textContent = ''; return; }
+    if (!payload) {
+      statusDetail.textContent = '';
+      paintHeaderChanges(null);
+      return;
+    }
     const parts = [];
     if (payload.project) parts.push(`📁 ${escHtml(payload.project)}`);
     if (payload.sandbox) parts.push(`🛡 ${escHtml(payload.sandbox)}`);
@@ -1329,6 +1616,7 @@ import {
       parts.push(`q:${payload.queueLength}`);
     }
     statusDetail.textContent = parts.join(' · ');
+    paintHeaderChanges(payload.git);
   }
 
   function handleThreadEvent(payload) {
@@ -1345,6 +1633,10 @@ import {
     const currentRevision = appThreads.find(thread => thread.id === payload.threadId)?.statusRevision || 0;
     const stale = incomingRevision > 0 && currentRevision > incomingRevision;
     appThreads = applyThreadStatus(appThreads, payload);
+    for (const [cwd, threads] of sessionsByCwd) {
+      sessionsByCwd.set(cwd, applyThreadStatus(threads, payload));
+    }
+    if (serverCwd && sessionsByCwd.has(serverCwd)) appThreads = sessionsByCwd.get(serverCwd);
     instanceList = instanceList.map(instance => instance.sessionId === payload.threadId
       ? { ...instance, busy: presentation.active, state: presentation.kind }
       : instance);
@@ -1406,6 +1698,7 @@ import {
     sessionMetaEl.textContent = `${path || 'no workspace'} · ${sandbox} · ${policy} · q:${queue} · ${sid} · ${codex}`;
     const state = sessionStatus?.state || (socket.connected ? 'idle' : 'offline');
     stateLabel.textContent = state.replace('_', ' ');
+    renderThreadTitle();
     renderConnectionState();
   }
 
@@ -1427,52 +1720,48 @@ import {
     scrollBottom();
   }
 
-  function renderSessionList() {
-    sessionListEl.innerHTML = '';
-    const allItems = appThreads.filter(s => s.id);
-
-    if (allItems.length === 0) {
-      sessionListEl.innerHTML = '<div style="padding:16px;color:var(--text-muted);font-size:13px;font-weight:500;text-align:center;">暂无会话</div>';
-      return;
-    }
-    for (const s of allItems) {
-      const el = document.createElement('div');
-      el.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
-      const date = new Date(s.lastUsedAt || s.createdAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-      const tag = s.model ? ` · ${escHtml(s.model)}` : '';
-      const srcTag = ' · native';
-      const status = threadStatusPresentation(s.status);
-      const actions = `<div class="native-row-actions">
+  function createSessionRow(s) {
+    const el = document.createElement('div');
+    el.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
+    const date = new Date(s.lastUsedAt || s.createdAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const tag = s.model ? ` · ${escHtml(s.model)}` : '';
+    const status = threadStatusPresentation(s.status);
+    const actions = `<div class="native-row-actions">
           <button class="native-mini-btn" data-action="rename">Rename</button>
           <button class="native-mini-btn" data-action="${s.archived ? 'unarchive' : 'archive'}">${s.archived ? 'Unarchive' : 'Archive'}</button>
           <button class="native-mini-btn native-danger" data-action="delete">Delete</button>
         </div>`;
-      el.innerHTML = `<div class="session-title"><span class="thread-status-dot ${status.kind}" title="${escHtml(status.label)}"></span><span class="session-title-copy">${escHtml(s.title || '未命名')}</span></div><div class="session-date">${date}${tag}${srcTag} · ${escHtml(status.label)}</div>${actions}`;
-      el.onclick = () => {
-        socket.emit('thread:select', { threadId: s.id, cwd: s.cwd, title: s.title }, ack => {
-          if (!ack?.ok) {
-            appendSystem(ack?.error || 'Thread select failed', true);
-            return;
-          }
-          applyTargetAck(ack);
-          clearMessages();
-          loadNativeThreadHistory(s);
-        });
-        closeDrawer();
+    el.innerHTML = `<div class="session-title"><span class="thread-status-dot ${status.kind}" title="${escHtml(status.label)}"></span><span class="session-title-copy">${escHtml(s.title || '未命名')}</span></div><div class="session-date">${date}${tag} · ${escHtml(status.label)}</div>${actions}`;
+    el.onclick = () => {
+      socket.emit('thread:select', { threadId: s.id, cwd: s.cwd, title: s.title }, ack => {
+        if (!ack?.ok) {
+          appendSystem(ack?.error || 'Thread select failed', true);
+          return;
+        }
+        applyTargetAck(ack);
+        clearMessages();
+        loadNativeThreadHistory(s);
+        renderDrawerProjects();
+      });
+      closeDrawer();
+    };
+    for (const btn of el.querySelectorAll('[data-action]')) {
+      btn.onclick = event => {
+        event.stopPropagation();
+        handleNativeThreadAction(s, btn.dataset.action);
       };
-      for (const btn of el.querySelectorAll('[data-action]')) {
-        btn.onclick = event => {
-          event.stopPropagation();
-          handleNativeThreadAction(s, btn.dataset.action);
-        };
-      }
-      sessionListEl.appendChild(el);
     }
+    return el;
   }
 
-  function handleNativeThreadAction(thread, action) {
+  function renderSessionList() {
+    renderDrawerProjects();
+    if (Date.now() - drawerOpenedAt < 1500) resetDrawerScroll();
+  }
+
+  async function handleNativeThreadAction(thread, action) {
     if (action === 'rename') {
-      const name = prompt('Thread name', thread.title || '');
+      const name = await confirmDialog.prompt({ title: '重命名会话', body: '输入新的会话名称', initial: thread.title || '' });
       if (!name) return;
       socket.emit('thread:rename', { threadId: thread.id, name, cwd: thread.cwd }, ack => {
         if (!ack?.ok) return appendSystem(ack?.error || 'Rename failed', true);
@@ -1480,7 +1769,11 @@ import {
       });
       return;
     }
-    if (action === 'delete' && !confirm('Delete this thread?')) return;
+    if (action === 'delete' && !await confirmDialog.confirm({
+      title: '删除会话',
+      body: '删除后可从 Codex 历史中消失，且不能从本页撤销。',
+      danger: true,
+    })) return;
     if (action === 'unarchive') {
       socket.emit('thread:unarchive', { threadId: thread.id, cwd: thread.cwd }, ack => {
         if (!ack?.ok) return appendSystem(ack?.error || 'Unarchive failed', true);
@@ -1523,19 +1816,30 @@ import {
     }, 250);
   }
 
-  function refreshNativeThreads(showPanel = false) {
-    const requestedCwd = serverCwd;
-    const requestGeneration = ++threadListGeneration;
-    socket.emit('thread:list', { cwd: requestedCwd, archived: showArchivedThreads }, ack => {
-      if (requestGeneration !== threadListGeneration || requestedCwd !== serverCwd) return;
+  function refreshThreadsForCwd(cwd, { showPanel = false } = {}) {
+    if (!cwd) return;
+    socket.emit('thread:list', { cwd, archived: showArchivedThreads }, ack => {
       if (!ack?.ok) {
-        appendSystem(ack?.error || 'Thread list failed', true);
+        if (cwd === serverCwd) appendSystem(ack?.error || 'Thread list failed', true);
         return;
       }
-      appThreads = mergeThreadList(appThreads, ack.threads || []);
-      if (showPanel) renderNativeThreadList();
+      const next = mergeThreadList(sessionsByCwd.get(cwd) || [], ack.threads || []);
+      sessionsByCwd.set(cwd, next);
+      if (cwd === serverCwd) appThreads = next;
       renderSessionList();
+      if (cwd === serverCwd) {
+        if (showPanel) renderNativeThreadList();
+        renderThreadTitle();
+      }
     });
+  }
+
+  function refreshNativeThreads(showPanel = false) {
+    if (serverCwd) expandedDirs.add(serverCwd);
+    const targets = expandedDirs.size ? [...expandedDirs] : (serverCwd ? [serverCwd] : []);
+    for (const cwd of targets) {
+      refreshThreadsForCwd(cwd, { showPanel: showPanel && cwd === serverCwd });
+    }
   }
 
   function renderNativeThreadList() {
@@ -1559,12 +1863,12 @@ import {
     });
   }
 
-  function rollbackThread() {
+  async function rollbackThread() {
     if (!currentSessionId) {
       appendSystem('No active thread to rollback', true);
       return;
     }
-    const raw = prompt('Rollback turns', '1');
+    const raw = await confirmDialog.prompt({ title: '回退会话', body: '回退多少轮？', initial: '1' });
     if (raw === null) return;
     const numTurns = Math.max(1, Number.parseInt(raw, 10) || 1);
     socket.emit('thread:rollback', { threadId: currentSessionId, numTurns, cwd: serverCwd }, ack => {
@@ -1589,12 +1893,7 @@ import {
       renderNativePanel('Models', `<div class="native-list-row"><div class="native-row-meta">namespaceTools:${Boolean(caps.namespaceTools)} · image:${Boolean(caps.imageGeneration)} · web:${Boolean(caps.webSearch)}</div></div>${modelRows}`);
       nativePanel.querySelectorAll('[data-model-id]').forEach(btn => {
         btn.onclick = () => {
-          selectedModel = btn.dataset.modelId;
-          localStorage.setItem('codex_selected_model', selectedModel);
-          $('model-input').value = selectedModel;
-          inputEl.value = `/model ${selectedModel}`;
-          updateFloatingBadges();
-          sendMessage();
+          applyComposerModel(btn.dataset.modelId);
         };
       });
     });
@@ -1693,9 +1992,11 @@ import {
       </div>`).join('') || '<div class="native-list-row">No importable config</div>';
       renderNativePanel('Import', rows);
       nativePanel.querySelectorAll('[data-import-index]').forEach(btn => {
-        btn.onclick = () => {
+        btn.onclick = async () => {
           const item = items[Number(btn.dataset.importIndex)];
-          if (!item || !confirm('Import this config?')) return;
+          if (!item) return;
+          const accepted = await confirmDialog.confirm({ title: '导入配置', body: item.description || 'Import this config?' });
+          if (!accepted) return;
           socket.emit('externalAgentConfig:import', { migrationItems: [item], cwd: serverCwd }, importAck => {
             if (!importAck?.ok) return appendSystem(importAck?.error || 'Import failed', true);
             appendSystem(`Import started: ${importAck.importId || ''}`, false);
@@ -2075,12 +2376,44 @@ import {
     }
     appendSystem(`📋 ${title || '历史会话'}（${msgs.length} 条消息）`, false);
     for (const m of msgs.slice(-30)) {
+      if (m.kind === 'command') {
+        appendRaw(renderCommandCard(commandCard(m)), 'codex');
+        continue;
+      }
+      if (m.kind === 'file_change') {
+        handleFileChange({ files: m.files || [] });
+        continue;
+      }
+      if (m.kind === 'mcp') {
+        const toolUseId = `history-mcp-${messagesEl.children.length}`;
+        handleMcpUse({ ...m, toolUseId });
+        handleMcpResult({ ...m, toolUseId });
+        continue;
+      }
+      if (m.kind === 'search') {
+        handleSearch(m);
+        continue;
+      }
+      if (m.kind === 'plan') {
+        handlePlan({ plan: m.plan || [] });
+        continue;
+      }
+      if (m.kind === 'reasoning') {
+        appendReasoning({ text: m.text, channel: m.channel || 'summary' });
+        appendReasoning.card = null;
+        appendReasoning.sections = null;
+        continue;
+      }
+      if (m.kind === 'raw') {
+        handleRawItem({ item: m.item });
+        continue;
+      }
       if (m.role === 'user') {
         appendHistoryUserBubble(m.content);
       } else {
         const el = document.createElement('div');
         el.className = 'msg codex';
-        el.innerHTML = `<div class="bubble" style="white-space:pre-wrap;font-size:13px;">${escHtml(m.content.slice(0, 500))}${m.content.length > 500 ? ' ...' : ''}</div>`;
+        el.innerHTML = `<div class="bubble md">${renderMarkdown(m.content || '')}</div>`;
         messagesEl.appendChild(el);
       }
     }
@@ -2184,7 +2517,12 @@ import {
       retryButton.type = 'button';
       retryButton.textContent = '确认后重试';
       retryButton.onclick = async () => {
-        if (!confirm('无法确认上一请求是否已执行；再次发送可能重复执行工具或修改。确定重试吗？')) return;
+        const accepted = await confirmDialog.confirm({
+          title: '确认后重试',
+          body: '无法确认上一请求是否已执行；再次发送可能重复执行工具或修改。',
+          danger: true,
+        });
+        if (!accepted) return;
         try {
           const target = await ensureViewTarget();
           const replacement = await messageOutbox.retryAfterConfirmation(clientRequestId, { target });
@@ -2225,11 +2563,26 @@ import {
     return true;
   }
 
+  function renderCommandCard(model) {
+    const card = document.createElement('div');
+    card.className = 'tool-card command-card';
+    if (model.ok === true) card.dataset.ok = 'true';
+    else if (model.ok === false) card.dataset.ok = 'false';
+    const command = model.command || 'streaming output';
+    const exit = model.exitCode == null
+      ? ''
+      : `<div class="tool-exit ${model.ok ? 'tool-ok' : 'tool-err'}">exit: ${escHtml(String(model.exitCode))}</div>`;
+    card.innerHTML = `<div class="tool-name">${escHtml(model.title)}</div>`
+      + `<details${model.running ? ' open' : ''}><summary class="tool-cmd">${escHtml(command)}</summary></details>`
+      + `<div class="tool-output live-output${model.ok === false ? ' tool-err' : model.ok === true ? ' tool-ok' : ''}">${model.output ? renderAnsi(model.output) : ''}</div>`
+      + exit;
+    return card;
+  }
+
   function handleToolUse(payload) {
     finalizeStream();
-    const card = document.createElement('div');
-    card.className = 'tool-card';
-    card.innerHTML = `<div class="tool-name">⚙️ ShellCall</div><div class="tool-cmd">${escHtml(payload.inputSummary || '')}</div>`;
+    const model = commandCard({ command: payload.inputSummary || '', running: true });
+    const card = renderCommandCard(model);
     appendRaw(card, 'codex');
     pendingToolCards[payload.toolUseId] = card;
     scrollBottom();
@@ -2238,9 +2591,8 @@ import {
   function ensureToolOutputCard(toolUseId) {
     let card = pendingToolCards[toolUseId];
     if (!card) {
-      card = document.createElement('div');
-      card.className = 'tool-card';
-      card.innerHTML = `<div class="tool-name">⚙️ ShellCall</div><div class="tool-cmd">streaming output</div>`;
+      const model = commandCard({ command: 'streaming output', running: true });
+      card = renderCommandCard(model);
       appendRaw(card, 'codex');
       pendingToolCards[toolUseId] = card;
     }
@@ -2263,19 +2615,38 @@ import {
 
   function handleToolResult(payload) {
     const card = pendingToolCards[payload.toolUseId];
-    const statusLine = `status: ${payload.status || 'completed'} · exit: ${payload.exitCode ?? (payload.ok ? 0 : 'unknown')}\n`;
-    const resultText = statusLine + (payload.outputSummary || (payload.ok ? '(完成)' : '(出错)'));
+    const existingCommand = card?.querySelector('.tool-cmd')?.textContent || '';
+    const model = commandCard({
+      command: existingCommand,
+      output: payload.outputSummary || (payload.ok ? '(完成)' : '(出错)'),
+      exitCode: payload.exitCode ?? (payload.ok ? 0 : null),
+      status: payload.status || 'completed',
+    });
+    const statusLine = `status: ${model.status} · exit: ${model.exitCode ?? 'unknown'}\n`;
+    const resultText = statusLine + model.output;
     if (card) {
+      card.classList.add('command-card');
+      if (model.ok === true) card.dataset.ok = 'true';
+      else if (model.ok === false) card.dataset.ok = 'false';
       let out = card.querySelector('.live-output');
       if (!out) {
         out = document.createElement('div');
         card.appendChild(out);
       }
-      out.className = 'tool-output live-output ' + (payload.ok ? 'tool-ok' : 'tool-err');
-      const resultHtml = renderAnsi(resultText);
+      out.className = 'tool-output live-output ' + (model.ok ? 'tool-ok' : 'tool-err');
+      const resultHtml = renderAnsi(model.output);
       if (out.innerText.trim()) out.innerHTML += '<br>' + resultHtml;
       else out.innerHTML = resultHtml;
-      card.appendChild(out);
+      let exit = card.querySelector('.tool-exit');
+      if (!exit && model.exitCode != null) {
+        exit = document.createElement('div');
+        exit.className = 'tool-exit ' + (model.ok ? 'tool-ok' : 'tool-err');
+        exit.textContent = `exit: ${model.exitCode}`;
+        card.appendChild(exit);
+      } else if (exit && model.exitCode != null) {
+        exit.className = 'tool-exit ' + (model.ok ? 'tool-ok' : 'tool-err');
+        exit.textContent = `exit: ${model.exitCode}`;
+      }
       delete pendingToolCards[payload.toolUseId];
     }
     rememberOutput(resultText);
@@ -2469,12 +2840,16 @@ import {
 
   function handleFileChange(payload) {
     finalizeStream();
-    const files = payload.files || [];
-    if (!files.length) return;
+    const model = fileChangeCard({ files: payload.files || [] });
+    if (!model.files.length) return;
     const card = document.createElement('div');
-    card.className = 'tool-card';
-    card.innerHTML = `<div class="tool-name">📝 文件变更</div>`
-      + files.map(f => `<div class="tool-cmd">${escHtml(kindLabel(f.kind))}: ${escHtml(f.path)}</div>`).join('');
+    card.className = 'tool-card file-change-card';
+    card.innerHTML = `<div class="tool-name">${escHtml(model.title)}</div>`
+      + model.files.map(file => {
+        const line = `${file.kindLabel}: ${file.path}`;
+        if (!file.expandable) return `<div class="tool-cmd">${escHtml(line)}</div>`;
+        return `<details><summary class="tool-cmd">${escHtml(line)}</summary><pre class="tool-output">${escHtml(file.diff)}</pre></details>`;
+      }).join('');
     appendRaw(card, 'codex');
     scrollBottom();
   }
@@ -2611,22 +2986,46 @@ import {
   }
 
   // Streaming text
+  function paintStreamMarkdown(force) {
+    if (!streamingEl) return;
+    if (!force) {
+      if (streamMdTimer) return;
+      streamMdTimer = setTimeout(() => {
+        streamMdTimer = null;
+        if (streamingEl) streamingEl.innerHTML = renderMarkdown(streamText);
+        scrollBottom();
+      }, STREAM_MD_INTERVAL_MS);
+      return;
+    }
+    if (streamMdTimer) {
+      clearTimeout(streamMdTimer);
+      streamMdTimer = null;
+    }
+    streamingEl.innerHTML = renderMarkdown(streamText);
+  }
+
   function appendTextDelta(text) {
     if (!streamingEl) {
       setBusy(true);
+      hideTyping();
       streamText = '';
       const bubble = document.createElement('div');
-      bubble.className = 'bubble';
+      bubble.className = 'bubble md';
       streamingEl = bubble;
       appendRaw(bubble, 'codex');
     }
     streamText += text;
-    streamingEl.textContent = streamText;
+    paintStreamMarkdown(false);
     rememberOutput(streamText);
     scrollBottom();
   }
 
   function finalizeStream() {
+    if (streamingEl && streamText) paintStreamMarkdown(true);
+    if (streamMdTimer) {
+      clearTimeout(streamMdTimer);
+      streamMdTimer = null;
+    }
     streamingEl = null;
     streamText = '';
     appendReasoning.card = null;
@@ -2742,13 +3141,53 @@ import {
   }
 
   // Connection UI states
+  function composerHasContent() {
+    return Boolean(inputEl.value.trim() || currentAttachments.length || currentInputParts.length);
+  }
+
+  function applyComposerMode() {
+    if (!sendBtn) return;
+    const state = resolveComposerPrimaryMode({
+      turnRunning: busy,
+      hasContent: composerHasContent(),
+      interruptPending,
+    });
+    sendBtn.dataset.mode = state.mode;
+    sendBtn.disabled = !state.enabled;
+    sendBtn.hidden = !state.visible;
+    const sendWrap = $('send-btn-container');
+    if (sendWrap) sendWrap.hidden = !state.visible;
+    sendBtn.title = state.mode === 'stop'
+      ? (state.enabled ? '中断' : '正在停止')
+      : '发送';
+    sendBtn.textContent = state.mode === 'stop' ? '■' : '↑';
+    sendBtn.setAttribute('aria-label', sendBtn.title);
+    const followUpBtn = $('followup-btn');
+    if (followUpBtn) followUpBtn.hidden = !state.followUpVisible;
+  }
+
+  function interruptCurrentTurn() {
+    if (interruptPending) return;
+    interruptPending = true;
+    applyComposerMode();
+    socket.emit('user:interrupt', withTarget({
+      turnId: sessionStatus?.turnId || undefined,
+    }, viewTarget()), ack => {
+      if (ack?.ok) return;
+      interruptPending = false;
+      applyComposerMode();
+      appendSystem(ack?.error || '中断失败', true);
+    });
+  }
+
   function setBusy(b) {
     busy = b;
+    if (!b) interruptPending = false;
     renderConnectionState();
     const spinner = $('mini-status-spinner');
     if (spinner) spinner.style.display = b ? 'inline-block' : 'none';
-    if (b) interruptBtn.classList.add('show');
-    else interruptBtn.classList.remove('show');
+    if (!b) hideTyping();
+    applyComposerMode();
   }
 
   function renderConnectionState() {
@@ -2757,6 +3196,56 @@ import {
     const connected = isTransportConnected();
     statusDot.className = connected ? `connected ${dotState}` : '';
     if (stateLabel) stateLabel.textContent = connected ? state.replace('_', ' ') : 'offline';
+    paintConnectionBanner();
+  }
+
+  let rttTimer = null;
+  let rttInFlight = false;
+
+  function paintRtt(ms) {
+    const el = $('conn-rtt');
+    if (!el) return;
+    const view = formatRttChip(ms);
+    if (!view.visible) {
+      el.hidden = true;
+      el.textContent = '';
+      el.removeAttribute('data-tone');
+      return;
+    }
+    el.hidden = false;
+    el.textContent = view.label;
+    el.dataset.tone = view.tone;
+  }
+
+  function measureRtt() {
+    if (!socket.connected || rttInFlight) return;
+    rttInFlight = true;
+    const startedAt = performance.now();
+    socket.timeout(3000).emit('conn:ping', {}, error => {
+      rttInFlight = false;
+      if (error || !socket.connected) return;
+      paintRtt(performance.now() - startedAt);
+    });
+  }
+
+  function stopRttMonitor() {
+    if (rttTimer) clearInterval(rttTimer);
+    rttTimer = null;
+    rttInFlight = false;
+  }
+
+  function startRttMonitor() {
+    stopRttMonitor();
+    measureRtt();
+    rttTimer = setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
+      measureRtt();
+    }, 5000);
+  }
+
+  function clearRtt() {
+    stopRttMonitor();
+    paintRtt(NaN);
   }
 
   function scrollBottom() {
@@ -2802,9 +3291,11 @@ import {
     return html;
   }
 
-  // Send
-  sendBtn.onclick = sendMessage;
-  if (accountLoginBtn) accountLoginBtn.onclick = startChatgptDeviceLogin;
+  sendBtn.onclick = () => {
+    if (sendBtn.dataset.mode === 'stop') interruptCurrentTurn();
+    else sendMessage();
+  };
+  $('followup-btn').onclick = sendMessage;
   $('native-thread-refresh').onclick = () => refreshNativeThreads(true);
   $('native-compact-btn').onclick = startCompact;
   $('native-rollback-btn').onclick = rollbackThread;
@@ -2832,14 +3323,19 @@ import {
   if (copyLatestBtn) copyLatestBtn.onclick = copyLatestOutput;
   if (retryLastBtn) retryLastBtn.onclick = retryLastFailed;
   inputEl.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    if (e.key !== 'Enter' || e.shiftKey) return;
+    e.preventDefault();
+    if (composerHasContent()) sendMessage();
+    else if (sendBtn.dataset.mode === 'stop') interruptCurrentTurn();
   });
   inputEl.addEventListener('input', () => {
     inputEl.style.height = 'auto';
     inputEl.style.height = Math.min(inputEl.scrollHeight, 140) + 'px';
+    applyComposerMode();
   });
 
   async function sendMessage() {
+    if (interruptPending) return;
     const text = inputEl.value.trim();
     const hasAttachments = currentAttachments.length > 0;
     const hasParts = currentInputParts.length > 0;
@@ -2861,7 +3357,8 @@ import {
     const parts = hasParts
       ? currentInputParts.map(part => ({ ...part }))
       : undefined;
-    const request = createMessageRequest({ text, attachments, parts, target });
+    const turn = currentTurnSettings();
+    const request = createMessageRequest({ text, attachments, parts, target, turn });
     try {
       if (!await outboxReady) throw new Error('IndexedDB outbox unavailable');
       await messageOutbox.enqueue(request);
@@ -2878,6 +3375,7 @@ import {
     }
     if (hasParts) currentInputParts = [];
     renderAttachTray();
+    applyComposerMode();
     appendOfflineBubble(messageWirePayload(request));
     drainMessageOutbox({
       shouldSend: outboxRequestMatchesView,
@@ -2942,14 +3440,6 @@ import {
     sendMessage();
   }
 
-  interruptBtn.onclick = () => {
-    socket.emit('user:interrupt', withTarget({
-      turnId: sessionStatus?.turnId || undefined,
-    }, viewTarget()), ack => {
-      if (!ack?.ok) appendSystem(ack?.error || '中断失败', true);
-    });
-  };
-
   // ---- Web Push ----
   const pushBtn = document.getElementById('push-subscribe-btn');
   async function initPush() {
@@ -2998,6 +3488,20 @@ import {
   // ---- 附件 ----
   attachBtn.onclick = () => fileInput.click();
 
+  inputEl.addEventListener('paste', async event => {
+    const item = pickPastedImage(event.clipboardData);
+    if (!item?.getAsFile) return;
+    const file = item.getAsFile();
+    if (!file) return;
+    event.preventDefault();
+    currentAttachments = currentAttachments.concat(await readFileAsAttachment(file));
+    renderAttachTray();
+  });
+
+  $('attach-preview-modal')?.addEventListener('click', () => {
+    $('attach-preview-modal').hidden = true;
+  });
+
   fileInput.onchange = async () => {
     const files = [...fileInput.files];
     if (!files.length) return;
@@ -3036,6 +3540,7 @@ import {
   function renderAttachTray() {
     if (currentAttachments.length === 0 && currentInputParts.length === 0) {
       attachTray.hidden = true;
+      applyComposerMode();
       return;
     }
     attachTray.hidden = false;
@@ -3048,9 +3553,18 @@ import {
       chip.innerHTML = `<span class="attach-chip-name">${escHtml(a.name)}</span>`
         + `<span class="attach-chip-size">${formatBytes(approxBytes(a))}</span>`
         + `<button class="attach-chip-remove" data-idx="${i}">✕</button>`;
-      chip.querySelector('.attach-chip-remove').onclick = () => {
+      chip.querySelector('.attach-chip-remove').onclick = event => {
+        event.stopPropagation();
         currentAttachments.splice(i, 1);
         renderAttachTray();
+      };
+      chip.onclick = () => {
+        const preview = attachmentPreview(a);
+        if (preview.kind !== 'image') return;
+        const modal = $('attach-preview-modal');
+        const img = $('attach-preview-img');
+        if (img) img.src = preview.src;
+        if (modal) modal.hidden = false;
       };
       attachTray.appendChild(chip);
     }
@@ -3067,13 +3581,25 @@ import {
       };
       attachTray.appendChild(chip);
     }
+    applyComposerMode();
   }
 
   // Session drawer
+  function resetDrawerScroll() {
+    const body = $('drawer-body');
+    if (body) body.scrollTop = 0;
+    const active = document.querySelector('#drawer-projects .drawer-project-block.active');
+    if (active && body && active.offsetTop > 48) body.scrollTop = active.offsetTop - 8;
+  }
+
+  let drawerOpenedAt = 0;
   $('menu-btn').onclick = () => {
+    drawerOpenedAt = Date.now();
+    expandedDirs = loadExpandedDirs(localStorage, serverCwd);
     refreshNativeThreads();
     drawer.classList.add('open');
     drawerOverlay.classList.add('open');
+    resetDrawerScroll();
   };
 
   function closeDrawer() {
@@ -3082,10 +3608,24 @@ import {
   }
   drawerOverlay.onclick = closeDrawer;
 
-  // Header copy details toggle (ultra-clean ChatGPT mobile experience)
-  $('header-copy').onclick = () => {
-    $('header-copy').classList.toggle('show-details');
+  $('header-context').onclick = () => {
+    workspacePanel.open();
   };
+  $('header-home').onclick = goHome;
+  $('header-new').onclick = () => {
+    createNewSession();
+    closeDrawer();
+  };
+  $('confirm-modal')?.addEventListener('click', event => {
+    if (event.target === $('confirm-modal')) confirmDialog.close();
+  });
+  messagesEl.addEventListener('click', event => {
+    const copyBtn = event.target.closest('.code-copy-btn');
+    if (!copyBtn) return;
+    const code = copyBtn.closest('.code-block-wrap')?.querySelector('code')?.textContent || '';
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(code);
+    else fallbackCopyText(code);
+  });
 
   $('new-session-btn').onclick = () => {
     createNewSession();
@@ -3097,6 +3637,11 @@ import {
     createNewSession();
     closeDrawer();
   };
+
+  applyComposerMode();
+  renderDrawerProject();
+  renderDrawerProjects();
+  setConnectionPhase('connecting');
 
   // Helper for push VAPID key
   function urlBase64ToUint8Array(base64String) {

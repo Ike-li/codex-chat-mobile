@@ -36,15 +36,17 @@ async function expectMobileLayout(page, size) {
   const headerBox = await visibleBox(header, `header at ${size.width}x${size.height}`);
   const messagesBox = await visibleBox(messages, `messages at ${size.width}x${size.height}`);
   const composerBox = await visibleBox(composer, `composer at ${size.width}x${size.height}`);
-  const sendBox = await visibleBox(sendButton, `send button at ${size.width}x${size.height}`);
   const attachBox = await visibleBox(attachButton, `attach button at ${size.width}x${size.height}`);
+  const sendVisible = await sendButton.isVisible();
+  const actionBoxes = [['attach button', attachBox]];
+  if (sendVisible) actionBoxes.push(['send button', await visibleBox(sendButton, `send button at ${size.width}x${size.height}`)]);
 
   expect(headerBox.y, 'header should start inside viewport').toBeGreaterThanOrEqual(0);
   expect(headerBox.y + headerBox.height, 'header should not overlap messages').toBeLessThanOrEqual(messagesBox.y + 1);
   expect(messagesBox.y + messagesBox.height, 'messages should not overlap composer').toBeLessThanOrEqual(composerBox.y + 1);
   expect(composerBox.y + composerBox.height, 'composer should stay inside viewport').toBeLessThanOrEqual(size.height + 1);
 
-  for (const [name, box] of [['send button', sendBox], ['attach button', attachBox]]) {
+  for (const [name, box] of actionBoxes) {
     expect(box.x, `${name} should not be clipped on the left`).toBeGreaterThanOrEqual(0);
     expect(box.y, `${name} should not be clipped at the top`).toBeGreaterThanOrEqual(0);
     expect(box.x + box.width, `${name} should stay inside viewport width`).toBeLessThanOrEqual(size.width + 1);
@@ -59,7 +61,7 @@ test.describe('P1 文件与移动布局', () => {
     await expect(page.locator('#state-label')).not.toHaveText('offline', { timeout: 10000 });
     await expect(page.locator('#msg-input')).toBeVisible();
     await expect(page.locator('#attach-btn')).toBeVisible();
-    await expect(page.locator('#send-btn')).toBeVisible();
+    await expect(page.locator('#send-btn')).toBeHidden();
     await expect(page.locator('#header')).toBeVisible();
     await expect(page.locator('#messages')).toBeAttached();
     await expect(page.locator('#input-area')).toBeVisible();

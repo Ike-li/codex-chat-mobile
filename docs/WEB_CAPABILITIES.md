@@ -8,7 +8,7 @@ Web 端是本机 Codex app-server 的移动控制面，不是另一个独立聊�
 
 默认核心能力包括：
 
-- 流式对话、thinking/reasoning、命令、工具、MCP、搜索、diff 和计划卡片；
+- 流式对话（助手 GFM Markdown）、thinking/reasoning、命令、工具、MCP、搜索、diff 和计划卡片；
 - 命令、文件修改、权限和用户问题的移动审批；
 - 原生 thread 历史、续接、重命名、归档、删除、压缩、回退和分叉；
 - 多工作区、多 runtime 标签和多设备视图隔离；
@@ -47,14 +47,11 @@ Admin、Labs 和远程图片默认关闭，需要服务端显式启用。
 
 主界面会显示：
 
-- 当前 thread 标题和活动状态点；
-- 当前工作目录；
-- sandbox 和审批策略；
-- runtime 队列长度；
-- thread ID；
-- token/context 使用情况；
-- 当前模型、reasoning、速度、权限和会话模式；
-- 活跃 runtime 标签；
+- 顶栏会话按钮和连接状态点；
+- 测到后显示的手机到主机延迟芯片；
+- 中间工作区胶囊（项目名，以及 git 未提交改动数）；
+- 回空会话和新建会话按钮；
+- 当前模型、审批/沙箱、思考强度（输入区摘要胶囊）；
 - 消息区和底部输入区。
 
 `thread/status/changed` 会更新 running、needs-you、error、not-loaded 等状态。未在当前页面加载的 thread 也能通过 host-scope 状态更新显示活动情况。
@@ -77,13 +74,14 @@ Admin、Labs 和远程图片默认关闭，需要服务端显式启用。
 
 ### 可以点击什么
 
-- 发送按钮：提交当前文本和结构化输入；
-- 停止按钮：精确中断当前目标 turn；
-- Chat / Plan：切换会话模式；
-- 模型选择：选择服务端可用模型；
-- reasoning：低、中、高、超高；
-- speed：标准或快速；
-- 权限：请求批准、风险操作批准、完全访问或使用 `config.toml`。
+- 主按钮：空闲且有内容时发送；turn 进行中变成停止，精确中断当前目标 turn；进行中再输入时旁边出现第二颗发送钮，把内容 `steer` 进当前 turn 或排进该 runtime FIFO；停止会丢掉未执行的队列；
+- Chat / Plan：会话设置 sheet 里的模式入口；选中后仍发送 `/chat` 或 `/plan`；
+- 模型选择：读取本机 `model/list`，对应 CLI `-m/--model`；
+- 思考强度：使用该模型的 `supportedReasoningEfforts`（`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`），对应 `model_reasoning_effort`；
+- 服务档位：仅当模型返回 `serviceTiers` 时显示；
+- 权限：审批策略对应 CLI `-a/--ask-for-approval`（`untrusted` / `on-request` / `never`，另含协议值 `on-failure`）；沙箱对应 `-s/--sandbox`（`read-only` / `workspace-write` / `danger-full-access`）。也可一键对应 `--dangerously-bypass-approvals-and-sandbox`。
+
+这些选择只更新下一条 `user:message` 的 `turn` 覆盖项，不会把 `/model` 或 `/reasoning` 写进对话。没有在页面上选过的项不会发送，因此会继续沿用本机 `config.toml` / 环境变量。
 
 模型最终是否可用，以本机 app-server 返回的模型列表和账号权限为准，而不是只看页面上的标签。
 
@@ -98,14 +96,14 @@ Admin、Labs 和远程图片默认关闭，需要服务端显式启用。
 - `request_id_conflict`：相同 ID 被用于不同内容或目标；
 - 其他带 `errorCode`、`error` 和 `retryable` 的明确失败。
 
-turn 运行期间继续输入时，消息会按 app-server 能力 steer 当前 turn，或进入该 runtime 的 FIFO 队列，不影响其他 thread。
+turn 运行期间再发送时，有活跃 turn id 则 `steer` 当前 turn（页面出现用户气泡和「已向当前运行任务追加指令」），否则进入该 runtime 的 FIFO 队列并标 Queued；不影响其他 thread。停止当前 turn 会清空未执行队列。
 
 ## 页面能渲染的返回内容
 
 消息区支持：
 
 - 用户消息和排队状态；
-- 助手正文增量；
+- 助手正文增量（GFM Markdown，代码块可复制并在可用时高亮）；
 - summary/full reasoning；
 - 命令开始、实时 stdout/stderr、exit code 和终态；
 - 动态工具调用与结果；
@@ -139,7 +137,7 @@ runtime 输出按 instance、thread、turn 和 item 路由，只发送到正在�
 
 结构化输入还支持：
 
-- 当前 runtime cwd 内的 workspace mention；
+- 当前 runtime cwd 内的 workspace mention（输入 `@` 搜索，或从顶栏工作区 sheet 点「引用」）；
 - `skills/list` 返回的已启用 skill；
 - 显式启用后的 HTTPS `imageUrl`。
 
@@ -171,6 +169,8 @@ Codex 请求执行命令、修改文件、提升权限或向用户提问时，�
 系统不会自动批准或拒绝 app-server server request。未处理的请求会继续让对应 turn 等待。
 
 ## 可靠投递与断线恢复
+
+打开历史或 gap 重建时，`thread/read` snapshot 会还原用户/助手文本，以及命令、文件变更、MCP、搜索、计划和未知 raw 卡片，而不只是最近 30 条纯文本。
 
 页面刷新、网络断开或 ACK 丢失时：
 
@@ -222,9 +222,9 @@ receipt ledger 是 gateway 进程内状态，因此项目不保证 gateway 重�
 
 ## 工作区、模型和权限
 
-工作区只能在 `.env` 配置的 `WORK_DIR` 和 `WORK_DIRS` allowlist 中切换，不能从页面任意跳到其他目录。
+工作区只能在 `.env` 配置的 `WORK_DIR` 和 `WORK_DIRS` allowlist 中切换，不能从页面任意跳到其他目录。`WORK_DIRS` 可以是逗号分隔的目录，也可以是一个 JSON 数组文件（例如 `workdirs.json`）。
 
-模型与 reasoning 选择会作为目标 runtime 的 turn 配置使用。权限选择控制 sandbox/approval 行为，并且只作用于目标 runtime。实际支持范围取决于本机 Codex 版本、账号、模型权限和 `config.toml`。
+模型、思考强度、审批策略和沙箱会作为目标 runtime 的 `turn/start` 覆盖项（`model`、`effort`、`approvalPolicy`、`sandboxPolicy`、`serviceTier`）。它们只作用于目标 runtime。实际支持范围取决于本机 Codex 版本、账号、`model/list` 和 `config.toml`。
 
 ## 原生控制面板
 
@@ -242,7 +242,7 @@ receipt ledger 是 gateway 进程内状态，因此项目不保证 gateway 重�
 | Skills | 查看已启用 Skills，并加入下一条消息 | skill entries |
 | Import | 检测并导入 AGENTS/CLAUDE 配置 | migration items 和 importId |
 
-顶部“登录”还可以启动 ChatGPT device-code 登录，显示 verification URL 和 user code，并允许取消登录。
+Web 不提供 ChatGPT / Codex 账号登录。凭证只在本机 CLI 配置，页面只中转会话。
 
 ## PWA 与 Web Push
 

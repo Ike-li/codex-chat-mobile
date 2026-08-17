@@ -45,6 +45,20 @@ test('item/completed(agentMessage): 不重复发正文（已由 delta 给出）'
   assert.equal(byType(events, 'text_delta').length, 0);
 });
 
+test('item userMessage from app-server is not shown as a raw card', () => {
+  const { session, events } = makeSession();
+  const item = {
+    type: 'userMessage',
+    id: 'u1',
+    clientId: 'req-1',
+    content: [{ type: 'text', text: 'Reply with just the word PONG.', text_elements: [] }],
+  };
+  session.handleNotification('item/started', { item });
+  session.handleNotification('item/completed', { item: { ...item, status: 'completed' } });
+  assert.equal(byType(events, 'raw_item').length, 0);
+  assert.equal(byType(events, 'user_message').length, 0);
+});
+
 test('item/started(commandExecution): → tool_use', () => {
   const { session, events } = makeSession();
   session.handleNotification('item/started', { item: { type: 'commandExecution', id: 'c1', command: "ls -a", aggregatedOutput: '', exitCode: null, status: 'in_progress' } });
@@ -71,6 +85,27 @@ test('turn/completed: → result 且 busy 置为 false', () => {
   session.handleNotification('turn/completed', { turn: { id: 't1', status: 'completed' } });
   assert.ok(byType(events, 'result')[0]);
   assert.equal(session.busy, false);
+});
+
+test('abort during thread/start prevents the pending turn/start', async () => {
+  const { session, events } = makeSession();
+  const methods = [];
+  let releaseReady;
+  const readyGate = new Promise(resolve => { releaseReady = resolve; });
+  session.ensureReady = async () => readyGate;
+  session.request = async method => {
+    methods.push(method);
+    return { turn: { id: 't-late', status: 'inProgress' } };
+  };
+
+  const sending = session.startTurn('keep listing primes');
+  await session.abort();
+  releaseReady();
+  assert.equal(await sending, false);
+  assert.ok(!methods.includes('turn/start'));
+  assert.equal(session.busy, false);
+  assert.equal(session.currentTurnId, null);
+  assert.ok(byType(events, 'system').some(event => /中断/.test(event.payload.message)));
 });
 
 test('turn completed before turn/start continuation does not resurrect its turn id or submitted status', async () => {
@@ -126,6 +161,39 @@ test('dispatchUserMessage returns a submitted outcome and maps clientRequestId t
     },
   });
   assert.equal(byType(events, 'user_message')[0].payload.clientRequestId, 'req-submit');
+});
+
+test('dispatchUserMessage forwards CLI model, effort, approval and sandbox onto turn/start', async () => {
+  const { session } = makeSession();
+  session.sessionId = 'thr-cli-settings';
+  session.ensureReady = async () => {};
+  let request;
+  session.request = async (method, params) => {
+    request = { method, params };
+    return { turn: { id: 'turn-cli-settings', status: 'inProgress' } };
+  };
+
+  const outcome = await session.dispatchUserMessage({
+    text: 'use these settings',
+    clientRequestId: 'req-cli-settings',
+    turn: {
+      model: 'gpt-5.6-sol',
+      effort: 'max',
+      approvalPolicy: 'untrusted',
+      sandbox: 'read-only',
+      serviceTier: 'fast',
+    },
+  });
+
+  assert.equal(outcome.accepted, true);
+  assert.equal(request.method, 'turn/start');
+  assert.equal(request.params.model, 'gpt-5.6-sol');
+  assert.equal(request.params.effort, 'max');
+  assert.equal(request.params.approvalPolicy, 'untrusted');
+  assert.equal(request.params.serviceTier, 'fast');
+  assert.deepEqual(request.params.sandboxPolicy, { type: 'readOnly', networkAccess: false });
+  assert.equal(session.approvalPolicy, 'untrusted');
+  assert.equal(session.sandbox, 'read-only');
 });
 
 test('dispatchUserMessage accepts an attachment-only mention without injecting a path into text', async () => {

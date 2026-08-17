@@ -19,7 +19,7 @@
 - 本地 Node.js 服务：Express 5 + Socket.IO。
 - Codex 桥接：每个 Node 网关进程通过 stdio 长驻运行一个共享 `codex app-server`；多个原生 thread 精确复用该进程。受支持的部署是一台主机只运行一个网关服务。
 - 前端：`public/index.html` 提供移动端 SPA/PWA 的 HTML/CSS shell，`public/js/app.js` 是外部应用模块，并复用 `public/js/` 下的可靠投递与恢复模块。
-- 核心能力：流式对话、thinking/工具/diff 卡片、审批与提问、结构化附件、app-server 原生历史、多工作区、多 thread 标签、可靠 ACK/outbox、gap 重建、needs-you 精确深链、result/error 通知、设备绑定 Web Push 和 PWA。IndexedDB 持久化 outbox，服务端内存 receipt ledger 在单次网关生命周期内去重；消失的 provisional instance 只会为从未尝试的请求恢复或安全重绑，已尝试且无法核对的请求必须经重复副作用警告确认，并使用新 ID 重试。
+- 核心能力：流式对话、thinking/工具/diff 卡片、审批与提问、结构化附件、`@` 文件引用、顶栏只读工作区（文件/Git 改动）、连接横幅、确认 sheet、app-server 原生历史（含工具/变更卡重建）、多工作区、多 thread 标签、可靠 ACK/outbox、gap 重建、needs-you 精确深链、result/error 通知、设备绑定 Web Push 和 PWA。IndexedDB 持久化 outbox，服务端内存 receipt ledger 在单次网关生命周期内去重；消失的 provisional instance 只会为从未尝试的请求恢复或安全重绑，已尝试且无法核对的请求必须经重复副作用警告确认，并使用新 ID 重试。
 - 事实源：只使用 `thread/list`、`thread/read`、`thread/resume`、`thread/status/changed`；不再维护 `sessions.json` 元数据副本或 JSONL history fallback。
 - 安全默认值：空 `AUTH_TOKEN` 只允许 loopback；远程 HTTP 默认拒绝；远程 Socket 可进入 pending，但在 HTTPS、精确 Origin、HttpOnly session 和设备批准全部满足前不能操作；设备 deny 会撤销 session/Push 并断线，外部 trust-file 撤销则保留已连接的 loopback socket；本地状态 owner-only 落盘；远程图片、Admin/Labs 默认关闭。
 
@@ -42,6 +42,7 @@ HOST=127.0.0.1
 AUTH_TOKEN=
 WORK_DIR=/absolute/path/to/workspace
 WORK_DIRS=/other/project,/third/project
+# 或 WORK_DIRS=workdirs.json  （JSON 数组，每项是绝对路径）
 CODEX_BIN=/absolute/path/to/codex
 CODEX_APPROVAL_POLICY=on-request
 CODEX_SANDBOX=workspace-write
@@ -60,7 +61,7 @@ CODEX_P3_EXPERIMENTAL=0
 | `HOST` | `127.0.0.1` | 绑定地址；同机 HTTPS 反代通常保持 loopback |
 | `AUTH_TOKEN` | 空 | session bootstrap 密钥；非 loopback 监听时至少 32 字符 |
 | `WORK_DIR` | — | 主 Codex 工作区 |
-| `WORK_DIRS` | 空 | 逗号分隔的额外工作区白名单 |
+| `WORK_DIRS` | 空 | 逗号分隔的额外工作区，或 `workdirs.json` 这类路径数组文件 |
 | `CODEX_BIN` | `codex` | Codex CLI 二进制路径 |
 | `CODEX_DATA_DIR` | `./data` | 设备、Push 和审计状态目录 |
 | `CODEX_APPROVAL_POLICY` | `on-request` | `untrusted` \| `on-failure` \| `on-request` \| `granular` \| `never` |

@@ -47,10 +47,10 @@ CODEX_ALLOW_INSECURE_REMOTE=0
 - 消息先以稳定 `clientRequestId` 写入 IndexedDB outbox；
 - 网关 ACK 返回 `queued` 时 outbox 继续保留，等待后续 receipt；只有 `submitted` / `steered` 等已交给 app-server 的确认状态才移除对应项；
 - 助手正文、thinking/reasoning、命令/工具输出和 diff 按目标 thread 流式出现；
-- 顶部状态栏显示 cwd、sandbox、审批策略、队列、thread 和 context 用量；
+- 顶栏显示工作区名、连接点和测到的往返延迟；模型/权限/思考在输入区胶囊；
 - ACK 丢失或页面刷新后先以同一 `clientRequestId` 做只读 reconciliation；服务端 receipt ledger 在当前进程和保留期内去重，有稳定 thread 时还能用 `thread/read` 核对。服务重启不会恢复 ledger，因此不能把它描述成跨重启 exactly-once，也不能盲发结果未知的请求；只有警告确认后的人工重试才创建带 provenance 的新 id。
 
-turn 进行中可用停止按钮精确中断该 turn。继续输入会按 app-server 能力 steer 当前 turn 或进入该 runtime 的队列，不影响其他标签。
+turn 进行中主按钮变为停止，可精确中断该 turn。输入框仍可打字；有草稿时旁边出现第二颗发送钮，把这句话追加进当前 turn 或排到下一轮。停止会清掉还没执行的排队输入。
 
 文件附件不会把绝对路径拼到提示词：已验证图片发送为 `localImage`，普通文件发送为 `mention`。显式 mention 必须在当前 workspace 内；skill 必须来自 enabled `skills/list`；远程图片默认关闭。
 
@@ -69,7 +69,7 @@ turn 进行中可用停止按钮精确中断该 turn。继续输入会按 app-se
 
 - **历史抽屉**：只通过 app-server `thread/list` 和 `thread/read` 浏览；`thread/resume` 续接。Codex App 创建的 thread 可在 Web 看到，Web 创建的 thread 也由 Codex App 看到。
 - **唯一事实源**：标题、cwd、时间、turn 和活动状态不再复制到 `sessions.json`，也没有 JSONL history fallback；本地只保存当前 thread 指针、UI 偏好和 IndexedDB outbox，当前版本不提供草稿持久化。
-- **多工作区**：只能在 `.env` 的 `WORK_DIR` + `WORK_DIRS` allowlist 中切换。
+- **多工作区**：只能在 `.env` 的 `WORK_DIR` + `WORK_DIRS` allowlist 中切换。`WORK_DIRS` 可以写成逗号分隔路径，或指向 `workdirs.json` 这类 JSON 数组文件。
 - **多实例标签**：多个 `ThreadRuntime` 共享一个 app-server 进程，但由 registry 和每 socket 视图精确隔离；两个设备可同时查看不同 thread，不串文本、工具、审批或状态。
 - **断线恢复**：普通短断线按 `seq/epoch` 补增量；buffer gap 或服务端 epoch 改变时自动用 `thread/read` snapshot 重建。
 

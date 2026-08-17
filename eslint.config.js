@@ -12,6 +12,7 @@ export default [
       'test-results/**',
       'playwright-report/**',
       'data/**',
+      'public/vendor/**',
       '_shot.mjs',
     ],
   },

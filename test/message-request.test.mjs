@@ -45,3 +45,25 @@ test('message requests persist structured input parts in the retry payload', () 
     { kind: 'skill', name: 'release', path: '/tmp/work/.agents/skills/release/SKILL.md' },
   ]);
 });
+
+test('message requests persist CLI turn overrides in the retry payload', () => {
+  const request = createMessageRequest({
+    text: 'use selected model',
+    target: { threadId: 'thr-turn' },
+    turn: {
+      model: 'gpt-5.6-sol',
+      effort: 'max',
+      approvalPolicy: 'untrusted',
+      sandbox: 'read-only',
+      serviceTier: 'fast',
+    },
+  }, { createId: () => 'req-turn', now: () => 9 });
+
+  assert.deepEqual(messageWirePayload(request).turn, {
+    model: 'gpt-5.6-sol',
+    effort: 'max',
+    approvalPolicy: 'untrusted',
+    sandbox: 'read-only',
+    serviceTier: 'fast',
+  });
+});

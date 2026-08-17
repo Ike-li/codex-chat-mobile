@@ -6,6 +6,7 @@ import { createInterface } from 'node:readline';
 const rl = createInterface({ input: process.stdin });
 let threadId = 'mock_thread_001';
 let turnCount = 0;
+let activeTurnId = null;
 const pendingApprovals = new Map(); // id → { resolve }
 const threadHistory = new Map();
 
@@ -32,9 +33,41 @@ async function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
+async function simulateSlowTurn(input, targetThreadId = threadId) {
+  turnCount++;
+  const turnId = `turn_${turnCount}`;
+  activeTurnId = turnId;
+  notify('turn/started', {
+    threadId: targetThreadId,
+    turn: { id: turnId, status: 'inProgress' },
+  });
+  await sleep(6000);
+  notify('item/agentMessage/delta', {
+    threadId: targetThreadId, turnId, itemId: `msg_${turnCount}`, delta: 'SLOW_TURN_OK',
+  });
+  notify('item/completed', {
+    threadId: targetThreadId, turnId,
+    item: { type: 'agentMessage', id: `msg_${turnCount}`, text: 'SLOW_TURN_OK' },
+  });
+  notify('turn/completed', {
+    threadId: targetThreadId, turn: { id: turnId, status: 'completed' },
+  });
+  activeTurnId = null;
+  threadHistory.set(targetThreadId, {
+    input,
+    responseText: 'SLOW_TURN_OK',
+    turnId,
+    items: [
+      { type: 'userMessage', content: [{ type: 'text', text: input, text_elements: [] }] },
+      { type: 'agentMessage', text: 'SLOW_TURN_OK' },
+    ],
+  });
+}
+
 async function simulateTurn(input, targetThreadId = threadId) {
   turnCount++;
   const turnId = `turn_${turnCount}`;
+  activeTurnId = turnId;
 
   if (input.includes('PRE_ACK_STREAM')) {
     notify('turn/started', {
@@ -48,6 +81,8 @@ async function simulateTurn(input, targetThreadId = threadId) {
     ? 'REAL_BROWSER_OK'
     : input.includes('PRE_ACK_STREAM')
       ? 'PRE_ACK_STREAM_OK'
+    : input.includes('MARKDOWN_FIXTURE')
+      ? 'Here is **bold** and `code`.\n\n- item one\n- item two'
     : input.includes('/status')
       ? '当前没有活跃目标或正在执行的任务。'
       : `Mock response to: ${input}`;
@@ -70,7 +105,16 @@ async function simulateTurn(input, targetThreadId = threadId) {
   notify('turn/completed', {
     threadId: targetThreadId, turn: { id: turnId, status: 'completed' }
   });
-  threadHistory.set(targetThreadId, { input, responseText, turnId });
+  if (activeTurnId === turnId) activeTurnId = null;
+  threadHistory.set(targetThreadId, {
+    input,
+    responseText,
+    turnId,
+    items: [
+      { type: 'userMessage', content: [{ type: 'text', text: input, text_elements: [] }] },
+      { type: 'agentMessage', id: `msg_${turnCount}`, text: responseText },
+    ],
+  });
 }
 
 async function simulateApproval(command, targetThreadId = threadId) {
@@ -138,6 +182,43 @@ async function simulateApproval(command, targetThreadId = threadId) {
   });
 }
 
+async function simulateFileChange(input, targetThreadId = threadId) {
+  turnCount++;
+  const turnId = `turn_${turnCount}`;
+  notify('item/completed', {
+    threadId: targetThreadId, turnId,
+    item: {
+      type: 'fileChange',
+      id: `file_${turnId}`,
+      status: 'completed',
+      changes: [
+        { path: 'src/example.js', kind: { type: 'add' }, diff: '+export const ok = true\n' },
+        { path: 'src/readme.md', kind: { type: 'modify' }, diff: '-old\n+new\n' },
+      ],
+    },
+  });
+  notify('turn/completed', {
+    threadId: targetThreadId, turn: { id: turnId, status: 'completed' }
+  });
+  threadHistory.set(targetThreadId, {
+    input,
+    responseText: '',
+    turnId,
+    items: [
+      { type: 'userMessage', content: [{ type: 'text', text: input, text_elements: [] }] },
+      {
+        type: 'fileChange',
+        id: `file_${turnId}`,
+        status: 'completed',
+        changes: [
+          { path: 'src/example.js', kind: { type: 'add' }, diff: '+export const ok = true\n' },
+          { path: 'src/readme.md', kind: { type: 'modify' }, diff: '-old\n+new\n' },
+        ],
+      },
+    ],
+  });
+}
+
 rl.on('line', async (line) => {
   let msg;
   try { msg = JSON.parse(line); } catch { return; }
@@ -188,7 +269,7 @@ rl.on('line', async (line) => {
             status: { type: 'idle' },
             turns: saved ? [{
               id: saved.turnId,
-              items: [
+              items: saved.items || [
                 { type: 'userMessage', content: [{ type: 'text', text: saved.input, text_elements: [] }] },
                 { type: 'agentMessage', text: saved.responseText }
               ]
@@ -237,6 +318,10 @@ rl.on('line', async (line) => {
         // Simulate async turn processing
         if (input.includes('PRE_ACK_STREAM')) {
           break;
+        } else if (input.includes('SLOW_TURN')) {
+          simulateSlowTurn(input, targetThreadId).catch(() => {});
+        } else if (input.includes('FILE_CHANGE_FIXTURE')) {
+          simulateFileChange(input, targetThreadId).catch(() => {});
         } else if (input.includes('approve') || input.includes('echo')) {
           simulateApproval(input, targetThreadId).catch(() => {});
         } else {
@@ -245,10 +330,112 @@ rl.on('line', async (line) => {
         break;
       }
 
+      case 'turn/steer': {
+        const inputs = Array.isArray(msg.params?.input) ? msg.params.input : [];
+        const input = summarizeInputs(inputs);
+        const turnId = msg.params?.expectedTurnId || activeTurnId || `turn_${turnCount}`;
+        respond(msg.id, {
+          turn: { id: turnId, status: 'inProgress' },
+        });
+        notify('item/agentMessage/delta', {
+          threadId: msg.params?.threadId || threadId,
+          turnId,
+          itemId: `steer_${turnCount}`,
+          delta: ` [steer:${input}]`,
+        });
+        break;
+      }
+
       case 'turn/interrupt':
+        activeTurnId = null;
         respond(msg.id, { ok: true });
         notify('turn/completed', {
           threadId, turn: { id: `turn_${turnCount}`, status: 'interrupted' }
+        });
+        break;
+
+      case 'model/list':
+        respond(msg.id, {
+          data: [
+            {
+              id: 'gpt-5.6-sol',
+              model: 'gpt-5.6-sol',
+              displayName: 'GPT-5.6',
+              hidden: false,
+              isDefault: true,
+              defaultReasoningEffort: 'high',
+              supportedReasoningEfforts: [
+                { reasoningEffort: 'low', description: 'Faster' },
+                { reasoningEffort: 'medium', description: 'Balanced' },
+                { reasoningEffort: 'high', description: 'Deeper' },
+                { reasoningEffort: 'xhigh', description: 'Extra high' },
+                { reasoningEffort: 'max', description: 'Maximum' },
+              ],
+              serviceTiers: [
+                { id: 'standard', name: 'Standard', description: 'Default speed' },
+                { id: 'fast', name: 'Fast', description: 'Higher usage' },
+              ],
+              defaultServiceTier: 'standard',
+              inputModalities: ['text'],
+            },
+            {
+              id: 'gpt-5.5',
+              model: 'gpt-5.5',
+              displayName: 'GPT-5.5',
+              hidden: false,
+              isDefault: false,
+              defaultReasoningEffort: 'medium',
+              supportedReasoningEfforts: [
+                { reasoningEffort: 'low', description: 'Faster' },
+                { reasoningEffort: 'medium', description: 'Balanced' },
+                { reasoningEffort: 'high', description: 'Deeper' },
+                { reasoningEffort: 'xhigh', description: 'Extra high' },
+              ],
+              serviceTiers: [],
+              defaultServiceTier: null,
+              inputModalities: ['text'],
+            },
+            {
+              id: 'gpt-5.4',
+              model: 'gpt-5.4',
+              displayName: 'GPT-5.4',
+              hidden: false,
+              isDefault: false,
+              defaultReasoningEffort: 'medium',
+              supportedReasoningEfforts: [
+                { reasoningEffort: 'low', description: 'Faster' },
+                { reasoningEffort: 'medium', description: 'Balanced' },
+                { reasoningEffort: 'high', description: 'Deeper' },
+              ],
+              serviceTiers: [],
+              defaultServiceTier: null,
+              inputModalities: ['text'],
+            },
+            {
+              id: 'gpt-5.4-mini',
+              model: 'gpt-5.4-mini',
+              displayName: 'GPT-5.4-Mini',
+              hidden: false,
+              isDefault: false,
+              defaultReasoningEffort: 'low',
+              supportedReasoningEfforts: [
+                { reasoningEffort: 'low', description: 'Faster' },
+                { reasoningEffort: 'medium', description: 'Balanced' },
+              ],
+              serviceTiers: [],
+              defaultServiceTier: null,
+              inputModalities: ['text'],
+            },
+          ],
+          nextCursor: null,
+        });
+        break;
+
+      case 'modelProvider/capabilities/read':
+        respond(msg.id, {
+          namespaceTools: true,
+          imageGeneration: false,
+          webSearch: true,
         });
         break;
 

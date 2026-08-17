@@ -61,39 +61,28 @@ test.describe('Multi Instance Tabs', () => {
     await sendMessage(page, firstMessage);
     await expectCurrentExchange(page, firstMessage, firstUserIndex, firstCodexIndex);
 
-    // 3. Confirm `#new-instance-btn` is visible, then click it.
-    const newInstanceButton = page.locator('#new-instance-btn');
-    await expect(newInstanceButton).toBeVisible({ timeout: 10000 });
-    await newInstanceButton.click();
+    // 3. Open the drawer and create a new session there. Main chrome must not show instance tabs.
+    await page.locator('#menu-btn').click();
+    const newSessionButton = page.locator('#new-session-btn');
+    await expect(newSessionButton).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('#drawer-tools')).toBeHidden();
+    await expect(page.locator('#drawer-project')).toBeVisible();
+    await expect(page.locator('#drawer-projects')).toBeVisible();
+    await expect(page.locator('#drawer-projects .drawer-project-item').first()).toBeVisible();
+    await expect(page.locator('#drawer-projects .dir-subtree.expanded .session-item').first()).toBeVisible();
+    await newSessionButton.click();
+    await expect(page.locator('#instance-tabs')).toHaveCount(0);
+    await expect(page.locator('#thread-title')).toHaveText('新会话');
 
-    // 4. Wait for `#instance-tabs` to be visible, confirm `.instance-tab` count is at least 1, and confirm `#new-instance-btn` remains visible.
-    const instanceTabs = page.locator('#instance-tabs');
-    await expect(instanceTabs).toBeVisible({ timeout: 10000 });
-    const tabButtons = instanceTabs.locator('.instance-tab');
-    await expect.poll(async () => tabButtons.count(), {
-      message: 'instance tabs should stay rendered after creating a new instance',
-      timeout: 10000,
-    }).toBeGreaterThanOrEqual(1);
-    await expect(newInstanceButton).toBeVisible();
-
-    // 5. Send the second normal message and wait for the corresponding mock response.
+    // 4. Send the second normal message and wait for the corresponding mock response.
     const secondUserMessages = page.locator('.msg.user').filter({ hasText: secondMessage });
     const secondCodexMessages = page.locator('.msg.codex').filter({ hasText: `Mock response to: ${secondMessage}` });
     const secondUserIndex = await secondUserMessages.count();
     const secondCodexIndex = await secondCodexMessages.count();
     await sendMessage(page, secondMessage);
     await expectCurrentExchange(page, secondMessage, secondUserIndex, secondCodexIndex);
-
-    // 6. If `.instance-tab` exists, click the first tab, then confirm there is no pageerror/TypeError and tabs remain stable.
-    if (await tabButtons.count()) {
-      await tabButtons.first().click();
-    }
-    await expect(instanceTabs).toBeVisible();
-    await expect.poll(async () => tabButtons.count(), {
-      message: 'instance tabs should remain stable after tab switching',
-      timeout: 10000,
-    }).toBeGreaterThanOrEqual(1);
-    await expect(newInstanceButton).toBeVisible();
+    await expect(page.locator('.msg.user').filter({ hasText: firstMessage })).toHaveCount(0);
+    await expect(page.locator('#instance-tabs')).toHaveCount(0);
     expectNoForbiddenRuntimeErrors(runtimeErrors);
   });
 });

@@ -35,9 +35,10 @@ test.describe('P0 浏览器运行时', () => {
     const sendButton = page.locator('#send-btn');
     await expect(input).toBeVisible();
     await expect(page.locator('#attach-btn')).toBeVisible();
-    await expect(sendButton).toBeVisible();
+    await expect(sendButton).toBeHidden();
     await input.fill('REAL_BROWSER_OK');
     await expect(input).toHaveValue('REAL_BROWSER_OK');
+    await expect(sendButton).toBeVisible();
     await expect(sendButton).toBeEnabled();
     await sendButton.click();
     await expect(page.locator('.msg.user').filter({ hasText: 'REAL_BROWSER_OK' }).last()).toBeVisible();

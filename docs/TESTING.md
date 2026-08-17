@@ -43,7 +43,7 @@ npm run test:e2e
 | 案例 3 | 产生失败 + 重试恢复（同 id 只读核对 / fresh-id 确认重试）+ backpressure + 长日志移动体验 | `agent-appserver.js`、`message-receipt-ledger.js`、`public/index.html`、`public/js/app.js` | 协议错误/结果未知测试、retry/copy UI 契约、移动视口 E2E |
 | 案例 4 | 文件上传 + 结构化附件输入（替代路径字符串“附件注入”）+ transport/business 双层上限 + 0700/0600 安全落盘 | `uploads.js`、`file-security.js`、`user-inputs.js`、`input-parts.js` | user-inputs/input-parts/file-security 单测、>1 MiB wire 集成、附件 E2E |
 | 案例 5 | 状态栏 + `thread/status/changed` + git/token/context 状态 | `statusline.js`、`agent-appserver.js` | statusline、thread_status 与 public UI 测试 |
-| 案例 6 | 历史浏览 + app-server thread 唯一事实源 + Codex App/Web 双向续接 | `app-server-host.js`、`thread-runtime.js`、`server.js` 的 `thread:*` | thread source-of-truth、native thread、跨端 history/resume 集成测试 |
+| 案例 6 | 历史浏览 + 工具/变更卡重建 + app-server thread 唯一事实源 + Codex App/Web 双向续接 | `thread-history.js`、`app-server-host.js`、`thread-runtime.js`、`server.js` 的 `thread:*` | thread-history 单测、native thread 集成、workspace-and-composer E2E |
 | 案例 7 | 多工作目录 + 实例切换 + 双设备/双 thread 零串流 + 共享单进程 | `app-server-host.js`、`thread-registry.js`、`thread-runtime.js`、`public/js/view-routing.js` | shared-host spawn/initialize、stale target、route/workdir、多实例 E2E |
 | 案例 8 | Web Push + DNS/address pinning + bounded response + needs-you 脱敏深链 + device revoke | `server.js`、`push-sender.js`、`network-address.js`、`needs-you-registry.js`、`public/js/sw.js` | Push DNS/mixed-IP/timeout/body-cap 单测、authenticated persist/prune、service worker 和 needs-you E2E |
 | 案例 9 | 模型切换 + 权限档切换 + Admin/Labs default-off | `agent-appserver.js`、`server.js` feature manifest、`public/index.html`、`public/js/app.js` | model/permission UI、feature flag、Admin TTL/limit 测试 |
@@ -60,7 +60,7 @@ npm run test:e2e
 - TC-5：审批批准只决议一次，并显示真实命令退出码。
 - TC-6：审批拒绝不执行请求；另一个设备上的同一 need 同步撤销。
 - TC-7：文件/图片显示附件元数据，并分别以 `mention` / `localImage` 发送，不向 text 拼路径。
-- TC-8：状态栏显示 cwd、sandbox、approval policy、queue、thread 和 context；`thread/status/changed` 能跨设备更新忙闲状态。
+- TC-8：顶栏显示工作区名、连接点和往返延迟；git 改动数出现在工作区胶囊；`thread/status/changed` 能跨设备更新忙闲状态。
 - TC-9：历史抽屉使用 `thread/list/read` 浏览，并能双向续接 Codex App 与 Web 创建的 thread。
 - TC-10：多工作区切换只接受 `WORK_DIR` / `WORK_DIRS` allowlist。
 - TC-11：两个设备分别查看两个活跃 thread 时，文本、工具、审批和状态均不串流。

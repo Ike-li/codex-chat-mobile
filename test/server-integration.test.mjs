@@ -3416,6 +3416,19 @@ test('server exposes P1 native app-server controls over Socket.IO', async () => 
       assert.equal(file.ok, true);
       assert.equal(Buffer.from(file.dataBase64, 'base64').toString('utf8'), 'hello from fake file');
 
+      writeFileSync(join(fixture.workDir, 'src-app.js'), 'export const ok = true\n');
+      const search = await emitWithAck(socket, 'files:search', { cwd: fixture.workDir, query: 'src-app' });
+      assert.equal(search.ok, true);
+      assert.ok(search.paths.includes('src-app.js'));
+
+      const ping = await emitWithAck(socket, 'conn:ping', {});
+      assert.equal(ping.ok, true);
+      assert.equal(typeof ping.t, 'number');
+
+      const git = await emitWithAck(socket, 'git:status', { cwd: fixture.workDir });
+      assert.equal(git.ok, false);
+      assert.equal(git.errorCode, 'not_git');
+
       const account = await emitWithAck(socket, 'account:read', {});
       assert.equal(account.ok, true);
       assert.equal(account.account.account.type, 'chatgpt');
@@ -3515,6 +3528,54 @@ test('server reads and resumes native app-server threads without local session m
       );
       assert.ok(turnStart, 'follow-up should be sent to the selected native thread');
       assert.equal(turnStart.params.threadId, 'thr_fake');
+    } finally {
+      socket.disconnect();
+    }
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('user:message forwards CLI turn overrides onto turn/start', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ccm-turn-overrides-'));
+  const rpcLog = join(root, 'rpc.jsonl');
+  const codexBin = createFakeCodexBin(root);
+  const fixture = await startIsolatedServer({ codexBin, rpcLog });
+  try {
+    const socket = await connectSocket(fixture.url, fixture.authToken, 'device-turn-overrides');
+    try {
+      await waitForAgentEvent(socket, 'init');
+      const selected = await emitWithAck(socket, 'thread:select', {
+        threadId: 'thr_cli_settings',
+        cwd: fixture.workDir,
+        title: 'CLI settings',
+      });
+      const ack = await emitWithAck(socket, 'user:message', {
+        text: 'use cli settings',
+        clientRequestId: 'req-cli-settings',
+        instanceId: selected.instanceId,
+        threadId: 'thr_cli_settings',
+        turn: {
+          model: 'gpt-5.6-sol',
+          effort: 'max',
+          approvalPolicy: 'untrusted',
+          sandbox: 'read-only',
+          serviceTier: 'fast',
+        },
+      });
+      assert.equal(ack.ok, true);
+      const calls = readFileSync(rpcLog, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      const turnStart = calls.find(call =>
+        call.method === 'turn/start'
+        && call.params?.input?.[0]?.text === 'use cli settings'
+      );
+      assert.ok(turnStart, 'CLI settings should ride along with turn/start');
+      assert.equal(turnStart.params.model, 'gpt-5.6-sol');
+      assert.equal(turnStart.params.effort, 'max');
+      assert.equal(turnStart.params.approvalPolicy, 'untrusted');
+      assert.equal(turnStart.params.serviceTier, 'fast');
+      assert.deepEqual(turnStart.params.sandboxPolicy, { type: 'readOnly', networkAccess: false });
     } finally {
       socket.disconnect();
     }

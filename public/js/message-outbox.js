@@ -175,6 +175,7 @@ export function createMessageOutbox({
             attachments: request.payload?.attachments,
             parts: request.payload?.parts,
             target,
+            turn: request.payload?.turn,
           }, { createId, now }),
           retryOfClientRequestId: request.clientRequestId,
           userConfirmedRetryAt: Number.isFinite(options.confirmedAt)
@@ -204,6 +205,7 @@ export function createMessageOutbox({
             attachments: request.payload?.attachments,
             parts: request.payload?.parts,
             target,
+            turn: request.payload?.turn,
           }, {
             createId: () => request.clientRequestId,
             now: () => request.createdAt,

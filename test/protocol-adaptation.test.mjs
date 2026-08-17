@@ -365,11 +365,12 @@ test('R1.3 abort timeout still resets local turn state and warns the client', as
   assert.equal(session.inputQueue.length, 0);
   assert.equal(session.currentTurnId, null);
 
-  const warning = byType(events, 'system').at(-1);
+  const systems = byType(events, 'system');
+  const warning = systems.find(event => event.payload.isError === true);
   assert.ok(warning, 'interrupt timeout should emit a system warning');
-  assert.equal(warning.payload.isError, true);
   assert.match(warning.payload.message, /turn\/interrupt/);
   assert.match(warning.payload.message, /timed out/);
+  assert.ok(systems.some(event => event.payload.message === '已中断'));
   assert.equal(byType(events, 'queue_cleared').at(-1).payload.dropped, 1);
 });
 

@@ -3,13 +3,16 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <meta name="theme-color" content="#ffffff">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#121212">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Codex">
   <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
   <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/icons/icon.svg">
+  <link rel="stylesheet" href="/vendor/github-light.min.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="/vendor/github-dark.min.css" media="(prefers-color-scheme: dark)">
   <title>Codex Chat</title>
   
   <style>
@@ -36,6 +39,34 @@
       --radius-lg: 32px;
       --app-height: 100dvh;
       --keyboard-inset: 0px;
+      --banner-info: #e8f4ff;
+      --banner-warn: #fff4e0;
+      --banner-success: #e8f7ef;
+      --diff-add: rgba(16,163,127,0.12);
+      --diff-del: rgba(223,28,28,0.1);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #121212;
+        --bg-gradient: linear-gradient(180deg, #161616 0%, #101010 100%);
+        --surface: #1c1c1c;
+        --border: #2e2e2e;
+        --border-light: #262626;
+        --text: #f2f2f2;
+        --text-muted: #9a9a9a;
+        --accent: #f2f2f2;
+        --user-bg: #2a2a2a;
+        --user-text: #f2f2f2;
+        --tool-bg: #1c1c1c;
+        --tool-border: #2e2e2e;
+        --system: #9a9a9a;
+        --banner-info: #163044;
+        --banner-warn: #3a2c14;
+        --banner-success: #163226;
+        --diff-add: rgba(16,163,127,0.2);
+        --diff-del: rgba(223,28,28,0.18);
+      }
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -76,92 +107,136 @@
 
     /* Header */
     #header {
-      background: rgba(255, 255, 255, 0.85);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-      padding: 10px 14px;
+      background: var(--surface);
+      padding: 8px 12px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 8px;
+      gap: 6px;
       flex-shrink: 0;
       z-index: 10;
     }
 
-    #menu-btn {
+    .header-left, .header-right {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .header-icon-btn {
+      position: relative;
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 50%;
+      border-radius: 12px;
       width: 36px;
       height: 36px;
       flex-shrink: 0;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 16px;
       cursor: pointer;
-      color: var(--text);
-      box-shadow: 0 1px 2px rgba(0,0,0,0.02);
-      transition: background 0.15s, transform 0.1s;
+      color: var(--text-muted);
+      box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+      padding: 0;
     }
-    #menu-btn:active {
-      background: var(--border-light);
+    .header-icon-btn svg { width: 18px; height: 18px; }
+    .header-icon-btn:active {
+      background: var(--bg);
       transform: scale(0.95);
     }
 
-    #header-copy {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
+    #conn-rtt {
+      display: inline-flex;
       align-items: center;
-      text-align: center;
-      min-width: 0;
-      overflow: hidden;
-      cursor: pointer;
-      user-select: none;
-      border-radius: 8px;
-      padding: 4px;
-      transition: background 0.15s;
+      min-height: 22px;
+      padding: 0 8px;
+      border-radius: 999px;
+      background: var(--bg);
+      border: 1px solid var(--border-light);
+      color: var(--text-muted);
+      font-size: 10px;
+      font-weight: 500;
+      white-space: nowrap;
     }
-    #header-copy:hover {
-      background: rgba(0, 0, 0, 0.02);
-    }
-    #header-copy:active {
-      background: rgba(0, 0, 0, 0.04);
+    #conn-rtt[hidden] { display: none !important; }
+    #conn-rtt[data-tone="warn"] { color: #9a5f22; }
+    #conn-rtt[data-tone="bad"] { color: var(--error); }
+    @media (prefers-color-scheme: dark) {
+      #conn-rtt[data-tone="warn"] { color: #e0b05a; }
     }
 
-    #header-title {
-      font-size: 15px;
-      font-weight: 600;
-      color: var(--text);
+    .header-center {
+      flex: 1;
+      min-width: 0;
       display: flex;
-      flex-wrap: nowrap;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #header-context {
+      appearance: none;
+      flex: 0 1 auto;
+      min-width: 0;
+      max-width: 100%;
+      display: inline-flex;
       align-items: center;
       justify-content: center;
       gap: 6px;
-      min-width: 0;
-      width: 100%;
-      white-space: nowrap;
-    }
-
-    #state-label {
-      font-size: 10px;
-      line-height: 1;
-      font-weight: 700;
-      color: var(--text-muted);
-      background: var(--bg);
-      border: 1px solid var(--border);
+      min-height: 32px;
+      padding: 0 12px;
       border-radius: 999px;
-      padding: 3px 6px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      white-space: nowrap;
-      /* 长状态(如 AWAITING APPROVAL)自己省略,而非挤裁标题文字 */
-      max-width: 84px;
+      background: var(--bg);
+      border: 1px solid var(--border-light);
+      color: var(--text);
+      font: inherit;
+      cursor: pointer;
+      overflow: hidden;
+    }
+    #header-context svg { width: 14px; height: 14px; flex-shrink: 0; color: var(--accent-light); }
+    #header-project {
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
-      flex-shrink: 1;
+      white-space: nowrap;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    #header-changes {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 16px;
+      height: 16px;
+      padding: 0 4px;
+      border-radius: 999px;
+      background: var(--text);
+      color: var(--surface);
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+    #header-changes[hidden] { display: none !important; }
+    .header-pill-chevron {
+      color: var(--text-muted);
+      font-size: 12px;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+
+    .sr-only,
+    #state-label,
+    #thread-title {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
     }
 
     #session-meta {
@@ -195,25 +270,16 @@
       word-break: break-all;
     }
 
-    #header-copy.show-details #session-meta {
-      display: block;
-    }
-    #header-copy.show-details #status-detail {
-      display: block;
-    }
-
-    .header-right {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
     #status-dot {
+      position: absolute;
+      right: -2px;
+      bottom: -2px;
       width: 10px;
       height: 10px;
       border-radius: 50%;
+      border: 2px solid var(--surface);
       background: #ccc;
-      box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);
+      box-shadow: none;
       transition: background 0.3s;
     }
     #status-dot.connected { background: var(--accent-light); box-shadow: 0 0 6px rgba(16,163,127,0.4); }
@@ -232,16 +298,7 @@
       gap: 6px;
     }
     #workdir-container {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      padding: 4px 10px;
-      font-size: 11px;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      cursor: pointer;
-      box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+      display: none;
     }
     #workdir-select {
       border: none;
@@ -276,6 +333,9 @@
       position: fixed;
       top: 0; left: 0; bottom: 0;
       width: min(300px, 85vw);
+      height: 100%;
+      max-height: var(--app-height);
+      overflow: hidden;
       background: var(--surface);
       border-right: 1px solid var(--border-light);
       z-index: 101;
@@ -332,10 +392,74 @@
       transform: scale(0.96);
     }
 
-    #session-list {
+    #drawer-body {
       flex: 1;
+      min-height: 0;
       overflow-y: auto;
-      padding: 12px 8px 80px; /* spacing for FAB at bottom */
+      padding-bottom: 80px;
+    }
+    #drawer-projects {
+      padding: 8px 8px 4px;
+    }
+    .drawer-project-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 6px 2px 4px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text);
+    }
+    .drawer-project-item.active { color: var(--accent-light); }
+    .drawer-project-item .project-icon { opacity: 0.7; font-size: 13px; }
+    .dir-toggle {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      border: none;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+      padding: 8px 4px;
+    }
+    .dir-toggle:active { opacity: 0.7; }
+    .dir-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dir-arrow {
+      display: inline-block;
+      width: 12px;
+      font-size: 9px;
+      transition: transform 0.15s;
+    }
+    .dir-arrow.rotated { transform: rotate(90deg); }
+    .dir-new {
+      flex-shrink: 0;
+      width: 28px;
+      height: 28px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .dir-new:active { transform: scale(0.94); }
+    .dir-subtree { display: none; padding: 0 4px 8px 16px; }
+    .dir-subtree.expanded { display: block; }
+    .session-empty {
+      padding: 8px 12px;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+    .drawer-project-block { margin-bottom: 2px; }
+    .drawer-project-block.active .drawer-project-item { background: var(--bg); }
+    #session-list {
+      padding: 0 4px 8px 18px;
     }
 
     .session-item {
@@ -375,6 +499,14 @@
     .thread-status-dot.error { background: var(--error); }
     .thread-status-dot.not-loaded { background: transparent; border: 1px solid #a6a6a6; }
 
+    .session-project-label {
+      margin: 10px 8px 6px;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-muted);
+      letter-spacing: 0.3px;
+    }
+    .session-project-label:first-child { margin-top: 2px; }
     .session-date {
       font-size: 10px;
       color: var(--text-muted);
@@ -517,6 +649,28 @@
       border-bottom-left-radius: 4px;
       padding: 10px 4px; /* inline padding only */
     }
+    .codex .bubble.md {
+      white-space: normal;
+    }
+    .codex .bubble.md p { margin: 0 0 0.65em; }
+    .codex .bubble.md p:last-child { margin-bottom: 0; }
+    .codex .bubble.md ul,
+    .codex .bubble.md ol { margin: 0 0 0.65em; padding-left: 1.3em; }
+    .codex .bubble.md pre {
+      margin: 0.4em 0 0.75em;
+      padding: 10px 12px;
+      overflow: auto;
+      border-radius: 8px;
+      background: #1e1e1e;
+      color: #f1f1f1;
+      font-size: 12px;
+    }
+    .codex .bubble.md code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.88em;
+    }
+    .codex .bubble.md pre code { font-size: 12px; }
+    .codex .bubble.md a { color: var(--accent-light); }
     .system-msg .bubble {
       background: transparent;
       color: var(--system);
@@ -620,6 +774,14 @@
     }
     .tool-ok { color: #87e0a2; }
     .tool-err { color: #ff8888; }
+    .command-card[data-ok="true"] { border-color: #9ad8b2; }
+    .command-card[data-ok="false"] { border-color: #f0b4b4; }
+    .tool-exit {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .file-change-card details summary.tool-cmd { cursor: pointer; }
     .live-output {
       max-height: 180px;
       color: #f1f1f1;
@@ -812,17 +974,17 @@
     #msg-input-container {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 26px;
-      padding: 12px 14px 10px;
+      border-radius: 22px;
+      padding: 10px 10px 8px;
       display: flex;
       flex-direction: column;
-      gap: 10px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.03);
+      gap: 6px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.04);
       transition: border-color 0.15s, box-shadow 0.15s;
     }
     #msg-input-container:focus-within {
-      border-color: var(--text-muted);
-      box-shadow: 0 4px 24px rgba(0,0,0,0.06);
+      border-color: var(--border);
+      box-shadow: 0 4px 20px rgba(0,0,0,0.06);
     }
 
     #msg-input {
@@ -832,9 +994,9 @@
       color: var(--text);
       outline: none;
       resize: none;
-      font-size: 15px;
-      line-height: 1.5;
-      padding: 0;
+      font-size: 16px;
+      line-height: 1.45;
+      padding: 4px 6px 2px;
       max-height: 120px;
       font-family: inherit;
     }
@@ -842,74 +1004,101 @@
     .input-controls-row {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      border-top: 1px solid var(--border-light);
-      padding-top: 8px;
+      gap: 4px;
+      min-width: 0;
     }
 
-    .controls-left, .controls-right {
+    .composer-chips {
+      flex: 1;
+      min-width: 0;
+      overflow-x: auto;
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
+    }
+    .composer-chips::-webkit-scrollbar { display: none; }
+
+    #composer-defaults {
+      appearance: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      max-width: min(100%, 68vw);
+      height: 36px;
+      padding: 0 0.75rem;
+      border-radius: 999px;
+      background: var(--bg);
+      border: 1px solid var(--border-light);
+      color: var(--text-muted);
+      font: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    #composer-defaults:hover,
+    #composer-defaults:focus-visible {
+      color: var(--text);
+      outline: none;
+    }
+    .pill-part {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+    }
+    #model-trigger-text { max-width: min(9.5rem, 42vw); }
+    #perm-trigger-text { max-width: min(5.5rem, 22vw); }
+    #effort-trigger-text { max-width: min(3.75rem, 14vw); }
+    .composer-sep {
+      color: var(--text-muted);
+      opacity: 0.45;
+      flex-shrink: 0;
+      pointer-events: none;
+      user-select: none;
+    }
+
+    .composer-actions {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 0;
+      flex-shrink: 0;
     }
 
     #attach-btn {
       background: transparent;
       border: none;
-      width: 28px;
-      height: 28px;
+      width: 40px;
+      height: 40px;
       display: flex;
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      font-size: 20px;
       color: var(--text-muted);
-      transition: color 0.15s, transform 0.1s;
+      transition: color 0.15s, transform 0.1s, background 0.15s;
       box-shadow: none;
       flex-shrink: 0;
+      border-radius: 12px;
+      padding: 0;
     }
+    #attach-btn svg { width: 22px; height: 22px; }
     #attach-btn:hover {
       color: var(--text);
+      background: var(--bg);
     }
     #attach-btn:active {
       transform: scale(0.92);
     }
 
-    /* Interactive trigger pills inside the input bar */
-    .inline-trigger-pill {
-      background: var(--bg);
-      border: 1px solid var(--border-light);
-      border-radius: 14px;
-      padding: 4px 10px;
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--text-muted);
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      cursor: pointer;
-      user-select: none;
-      transition: background 0.15s, border-color 0.15s, color 0.15s;
-    }
-    .inline-trigger-pill:hover {
-      background: var(--border-light);
-      color: var(--text);
-    }
-    .inline-trigger-pill:active {
-      transform: scale(0.97);
-    }
-
-
-
     #send-btn-container {
-      width: 32px;
-      height: 32px;
+      width: 40px;
+      height: 40px;
       position: relative;
       flex-shrink: 0;
     }
+    #send-btn-container[hidden] { display: none !important; }
 
-    #send-btn, #interrupt-btn {
+    #send-btn {
       position: absolute;
       inset: 0;
       border: none;
@@ -920,12 +1109,13 @@
       cursor: pointer;
       transition: background 0.15s, transform 0.1s, opacity 0.15s;
       box-shadow: none;
-    }
-
-    #send-btn {
       background: var(--text);
       color: var(--surface);
       font-size: 14px;
+    }
+    #send-btn[hidden] { display: none !important; }
+    #send-btn[data-mode="stop"] {
+      font-size: 10px;
     }
     #send-btn:disabled {
       background: var(--border-light);
@@ -933,15 +1123,26 @@
       opacity: 0.5;
       cursor: not-allowed;
     }
-    #interrupt-btn {
-      background: #000000;
-      color: #ffffff;
-      font-size: 10px;
-      display: none;
+    #followup-btn {
+      width: 40px;
+      height: 40px;
+      border: none;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      flex-shrink: 0;
+      background: var(--text);
+      color: var(--surface);
+      font-size: 14px;
     }
-    #interrupt-btn.show { display: flex; }
+    #followup-btn[hidden] { display: none !important; }
+    #followup-btn:active {
+      transform: scale(0.93);
+    }
 
-    #send-btn:active:not(:disabled), #interrupt-btn:active {
+    #send-btn:active:not(:disabled) {
       transform: scale(0.93);
     }
 
@@ -1011,6 +1212,21 @@
       color: var(--text-muted);
       font-size: 14px;
       padding: 4px;
+    }
+    .popover-section-label {
+      padding: 10px 16px 4px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .popover-section-label + .popover-list {
+      padding-top: 2px;
+    }
+    .popover-section-label.bordered {
+      border-top: 1px solid var(--border-light);
+      margin-top: 4px;
     }
 
     .popover-list {
@@ -1172,50 +1388,6 @@
     }
     .deny-btn:active { background: #fdf0f0; }
 
-    #account-login-panel {
-      background: #f6fbf8;
-      border-bottom: 1px solid #d9efe5;
-      padding: 10px 16px;
-      font-size: 12px;
-      color: var(--text);
-    }
-    #account-login-panel[hidden] { display: none; }
-    .account-login-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-    }
-    .account-login-main {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      min-width: 0;
-    }
-    .account-login-code {
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 16px;
-      font-weight: 700;
-      letter-spacing: 1px;
-    }
-    .account-login-url {
-      color: var(--accent-light);
-      font-weight: 600;
-      overflow-wrap: anywhere;
-    }
-    #account-login-btn {
-      border: 1px solid var(--border);
-      background: var(--surface);
-      color: var(--text);
-      border-radius: 999px;
-      padding: 5px 11px;
-      font-size: 12px;
-      font-weight: 600;
-      white-space: nowrap;
-      flex-shrink: 0;
-      cursor: pointer;
-      box-shadow: 0 1px 2px rgba(0,0,0,0.02);
-    }
 
     /* 工具面板(位于抽屉内):11 个 native 控制按钮以换行网格排列 */
     #drawer-tools {
@@ -1311,17 +1483,13 @@
       margin-bottom: 8px;
     }
 
-    /* Instance Tabs */
-    #instance-tabs {
-      display: none;
-      flex-shrink: 0;
-      overflow-x: auto;
-      background: rgba(255,255,255,0.8);
-      backdrop-filter: blur(8px);
-      padding: 4px 12px;
-      gap: 4px;
+    #thread-title {
+      flex: 1 1 auto;
+      min-width: 4em;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
-    #instance-tabs::-webkit-scrollbar { display: none; }
 
     /* Auth Screens */
     #auth-gate, #device-auth {
@@ -1386,6 +1554,206 @@
       margin: 16px 0;
       word-break: break-all;
     }
+
+    #conn-banner {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+      padding: 6px 14px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    #conn-banner[hidden] { display: none !important; }
+    #conn-banner[data-tone="info"] { background: var(--banner-info); color: var(--text); }
+    #conn-banner[data-tone="warn"] { background: var(--banner-warn); color: #6e4c00; }
+    #conn-banner[data-tone="success"] { background: var(--banner-success); color: #0d6b45; }
+    #conn-banner-retry {
+      margin-left: auto;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font: inherit;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    .sheet-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      background: rgba(0,0,0,0.4);
+      display: flex;
+      align-items: flex-end;
+    }
+    .sheet-overlay[hidden] { display: none !important; }
+    .sheet-card {
+      width: 100%;
+      max-height: 85vh;
+      background: var(--surface);
+      border-top-left-radius: 20px;
+      border-top-right-radius: 20px;
+      padding: 14px 16px calc(16px + env(safe-area-inset-bottom));
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 -8px 32px rgba(0,0,0,0.16);
+    }
+    .sheet-handle {
+      width: 36px;
+      height: 4px;
+      border-radius: 999px;
+      background: var(--border);
+      margin: 0 auto 10px;
+    }
+    .sheet-title { font-weight: 700; margin-bottom: 6px; }
+    #session-settings-body {
+      max-height: calc(85vh - 72px);
+      overflow: auto;
+      min-height: 0;
+    }
+    .sheet-body { font-size: 13px; color: var(--text-muted); white-space: pre-wrap; margin-bottom: 12px; }
+    .sheet-actions { display: flex; gap: 8px; }
+    .sheet-actions button {
+      flex: 1;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      border-radius: 12px;
+      padding: 10px;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    #confirm-ok { background: var(--accent); color: #fff; border-color: var(--accent); }
+    #confirm-ok[data-danger="true"] { background: var(--error); border-color: var(--error); }
+    #confirm-input {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+      font: inherit;
+      margin-bottom: 12px;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    #workspace-modal .sheet-card { height: 85vh; }
+    .workspace-tabs { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+    .workspace-tab {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      border-radius: 10px;
+      padding: 6px 10px;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .workspace-tab.active { background: var(--bg); }
+    .workspace-tools { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; }
+    .workspace-body { flex: 1; overflow: auto; min-height: 0; }
+    .workspace-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--border-light);
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .workspace-row-action, .workspace-mention-btn {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      border-radius: 8px;
+      padding: 4px 8px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .workspace-empty { padding: 16px; color: var(--text-muted); font-size: 12px; }
+    .workspace-preview, .diff-line {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 0;
+      padding: 2px 8px;
+    }
+    .diff-add { background: var(--diff-add); }
+    .diff-del { background: var(--diff-del); }
+    .diff-hunk { color: var(--text-muted); }
+    .workspace-section {
+      padding: 8px;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-muted);
+      background: var(--bg);
+    }
+
+    #at-mention-popup {
+      display: none;
+      position: absolute;
+      left: 14px;
+      right: 14px;
+      bottom: calc(88px + var(--keyboard-inset) + env(safe-area-inset-bottom));
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      max-height: 220px;
+      overflow: auto;
+      z-index: 25;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+    }
+    #at-mention-popup.show { display: block; }
+    .at-mention-item {
+      padding: 10px 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .at-mention-item:active { background: var(--bg); }
+
+    #attach-preview-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      background: rgba(0,0,0,0.8);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    #attach-preview-modal[hidden] { display: none !important; }
+    #attach-preview-img { max-width: 100%; max-height: 85vh; object-fit: contain; border-radius: 8px; }
+
+    .code-block-wrap { position: relative; }
+    .code-block-wrap > pre { padding-top: 2rem; }
+    .code-copy-btn {
+      position: absolute;
+      top: 0.35rem;
+      right: 0.35rem;
+      min-width: 32px;
+      min-height: 32px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text-muted);
+      border-radius: 6px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    #push-subscribe-btn {
+      width: 100%;
+      border: 0;
+      border-top: 1px solid var(--border-light);
+      background: var(--surface);
+      padding: 12px 16px;
+      text-align: left;
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    #push-subscribe-btn[hidden] { display: none !important; }
   </style>
 </head>
 <body>
@@ -1415,11 +1783,14 @@
   <div id="drawer-header">
     <div id="drawer-title-group">
       <span class="drawer-logo">Codex</span>
-      <span class="drawer-search-pill">会话</span>
+      <span id="drawer-project" class="drawer-search-pill">项目</span>
     </div>
     <button id="new-session-btn">+ 新会话</button>
   </div>
-  <div id="drawer-tools">
+  <div id="drawer-body">
+    <div id="drawer-projects"></div>
+  </div>
+  <div id="drawer-tools" hidden>
     <div class="drawer-section-label">🛠 工具面板</div>
     <div id="native-controls">
       <button id="native-thread-refresh" class="native-control-btn" title="刷新原生会话">Threads</button>
@@ -1435,62 +1806,80 @@
       <button id="native-admin-btn" class="native-control-btn native-danger" title="Admin 管理" hidden>Admin</button>
     </div>
   </div>
-  <div id="session-list"></div>
   <!-- Floating FAB inside drawer -->
   <button id="drawer-fab-new" class="drawer-fab">
     <span class="fab-icon">📝</span>
     <span class="fab-text">新会话</span>
   </button>
+  <button id="push-subscribe-btn" type="button" hidden>开启推送通知</button>
 </div>
 
 <!-- Header -->
 <div id="header">
-  <button id="menu-btn">☰</button>
-  
-  <div id="header-copy">
-    <div id="header-title" style="display: flex; align-items: center; justify-content: center; gap: 6px;">
-      Codex Chat
-      <span id="state-label">offline</span>
-      <div id="mode-trigger" class="inline-trigger-pill" style="padding: 2px 8px; border-radius: 10px; font-size: 10px; margin-left: 4px; display: inline-flex; align-items: center; gap: 3px;">
-        <span id="mode-trigger-text">💬 对话模式</span>
-        <span>⌵</span>
-      </div>
-    </div>
-    <div id="session-meta">connecting...</div>
-    <div id="status-detail" style="display:none;font-size:11px;color:var(--text-muted);line-height:1.4;margin-top:2px;"></div>
+  <div class="header-left">
+    <button type="button" id="menu-btn" class="header-icon-btn" title="会话与项目" aria-label="打开会话列表">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.2" stroke="currentColor" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M4.75 5.75A1.75 1.75 0 016.5 4h11A1.75 1.75 0 0119.25 5.75v12.5A1.75 1.75 0 0117.5 20h-11a1.75 1.75 0 01-1.75-1.75V5.75z" />
+        <path stroke-linecap="round" stroke-linejoin="round" d="M9 4v16M12.5 8h3.75M12.5 12h3.75M12.5 16h2.5" />
+      </svg>
+      <div id="status-dot" title="连接状态"></div>
+    </button>
+    <span id="conn-rtt" hidden title="手机到主机的往返延迟" aria-live="polite"></span>
   </div>
 
+  <div class="header-center">
+    <button type="button" id="header-context" title="浏览工作区文件和改动">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z" />
+      </svg>
+      <span id="header-project">项目</span>
+      <span id="header-changes" hidden></span>
+      <span class="header-pill-chevron" aria-hidden="true">›</span>
+    </button>
+  </div>
+  <span id="thread-title">新会话</span>
+  <span id="state-label">offline</span>
+  <div id="session-meta">connecting...</div>
+  <div id="status-detail"></div>
+
   <div class="header-right">
-    <div id="workdir-container" style="display:none;">
-      <span>📁</span>
+    <div id="workdir-container" hidden>
       <select id="workdir-select"></select>
     </div>
-    <button id="account-login-btn" title="ChatGPT 登录">登录</button>
-    <div id="status-dot"></div>
+    <button type="button" id="header-home" class="header-icon-btn" title="回空会话" aria-label="回空会话">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.2" stroke="currentColor" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12 12 2.25 21.75 12M4.5 10.5v9.75a.75.75 0 00.75.75h4.5v-6h4.5v6h4.5a.75.75 0 00.75-.75V10.5" />
+      </svg>
+    </button>
+    <button type="button" id="header-new" class="header-icon-btn" title="创建新会话" aria-label="创建新会话">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.2" stroke="currentColor" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+      </svg>
+    </button>
   </div>
 
   <!-- Legacy fields hidden but preserved for original JS synchronization -->
   <input type="text" id="model-input" placeholder="model" style="display:none;">
   <select id="perm-select" style="display:none;">
-    <option value="">perm</option>
+    <option value="untrusted">untrusted</option>
+    <option value="on-failure">on-failure</option>
     <option value="on-request">on-request</option>
-    <option value="unlessTrusted">unlessTrusted</option>
     <option value="never">never</option>
-    <option value="custom">custom</option>
   </select>
 </div>
 
-<!-- Instance tabs -->
-<div id="instance-tabs"></div>
+<div id="conn-banner" hidden role="status" data-testid="conn-banner">
+  <span id="conn-banner-spinner" hidden aria-hidden="true">⚙</span>
+  <span id="conn-banner-text"></span>
+  <span id="conn-banner-detail"></span>
+  <button type="button" id="conn-banner-retry" hidden>立即重试</button>
+</div>
 
 <!-- Pending devices panel -->
 <div id="pending-panel"></div>
 
 <!-- Cross-thread approvals and questions -->
 <div id="needs-you-panel" hidden aria-live="polite"></div>
-
-<!-- ChatGPT device-code login panel -->
-<div id="account-login-panel" hidden></div>
 
 <!-- Native app-server data panel (controls live in the drawer's 工具面板 section) -->
 <div id="native-panel" hidden></div>
@@ -1521,6 +1910,8 @@
     </div>
   </div>
 </div>
+
+<div id="at-mention-popup" hidden></div>
 
 <!-- Slash Autocomplete Popup -->
 <div id="slash-popup" class="slash-popup">
@@ -1583,186 +1974,121 @@
   <div id="msg-input-container">
     <textarea id="msg-input" placeholder="接下来我们该写什么代码？" rows="1"></textarea>
     <div class="input-controls-row">
-      <div class="controls-left">
-        <button id="attach-btn" title="附件">+</button>
-        <div id="perm-trigger" class="inline-trigger-pill">
-          <span id="perm-trigger-text">🛡️ 完全访问</span>
-          <span>⌵</span>
-        </div>
+      <div id="composer-chips" class="composer-chips">
+        <button type="button" id="composer-defaults" data-testid="composer-defaults" title="会话设置">
+          <span id="model-trigger-text" class="pill-part">模型</span>
+          <span class="composer-sep" aria-hidden="true">·</span>
+          <span id="perm-trigger-text" class="pill-part">权限</span>
+          <span id="effort-trigger" hidden>
+            <span class="composer-sep" aria-hidden="true">·</span>
+            <span id="effort-trigger-text" class="pill-part"></span>
+          </span>
+        </button>
       </div>
-      <div class="controls-right">
+      <div class="composer-actions">
         <div id="mini-status-spinner" class="mini-spinner" style="display: none;"></div>
-        <div id="model-trigger" class="inline-trigger-pill">
-          <span id="model-trigger-text">5.5 超高</span>
-          <span>⌵</span>
+        <button id="attach-btn" type="button" title="附件" aria-label="添加附件">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+          </svg>
+        </button>
+        <button id="followup-btn" type="button" title="追加到当前任务或排队" aria-label="发送下一条" hidden>↑</button>
+        <div id="send-btn-container" hidden>
+          <button id="send-btn" data-mode="send" title="发送" aria-label="发送" hidden disabled>↑</button>
         </div>
-        <div id="send-btn-container">
-          <button id="send-btn" title="发送">↑</button>
-          <button id="interrupt-btn" title="中断">■</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="session-settings" class="sheet-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="session-settings-title">
+  <div class="sheet-card">
+    <div class="sheet-handle"></div>
+    <div class="workspace-tabs">
+      <div id="session-settings-title" class="sheet-title" style="margin:0;">会话设置</div>
+      <button type="button" id="session-settings-close" class="native-mini-btn" style="margin-left:auto">关闭</button>
+    </div>
+    <div id="session-settings-body" class="workspace-body" style="padding-bottom:8px;">
+      <div class="popover-section-label">会话模式</div>
+      <div class="popover-list" id="mode-list">
+        <div class="popover-item selected" data-value="/chat">
+          <span class="popover-item-icon">💬</span>
+          <div class="popover-item-details">
+            <span class="popover-item-title">对话模式 (Chat)</span>
+            <span class="popover-item-desc">常规双向问答与代码编写交互</span>
+          </div>
+          <span class="popover-item-check">✓</span>
+        </div>
+        <div class="popover-item" data-value="/plan">
+          <span class="popover-item-icon">📋</span>
+          <div class="popover-item-details">
+            <span class="popover-item-title">计划模式 (Plan)</span>
+            <span class="popover-item-desc">生成并逐步执行复杂的开发任务</span>
+          </div>
+          <span class="popover-item-check">✓</span>
         </div>
       </div>
+      <div class="popover-section-label bordered">审批策略 (-a / --ask-for-approval)</div>
+      <div class="popover-list" id="approval-list"></div>
+      <div class="popover-section-label bordered">沙箱 (-s / --sandbox)</div>
+      <div class="popover-list" id="sandbox-list"></div>
+      <div class="popover-list" id="bypass-list"></div>
+      <div class="popover-section-label bordered">模型 (-m / --model)</div>
+      <div class="popover-list model-list" id="model-list"></div>
+      <div class="popover-section-label bordered">思考强度 (model_reasoning_effort)</div>
+      <div class="popover-list reasoning-list" id="reasoning-list"></div>
+      <div class="popover-section-label bordered" id="speed-section-label">服务档位</div>
+      <div class="popover-list speed-list" id="speed-list"></div>
     </div>
   </div>
-</div>
-
-<!-- Mode Popover -->
-<div id="mode-popover" class="premium-popover popover-top">
-  <div class="popover-header">
-    <span>选择会话模式</span>
-    <span class="popover-close" onclick="document.getElementById('mode-popover').classList.remove('show')">✕</span>
-  </div>
-  <div class="popover-list">
-    <div class="popover-item selected" data-value="/chat">
-      <span class="popover-item-icon">💬</span>
-      <div class="popover-item-details">
-        <span class="popover-item-title">对话模式 (Chat)</span>
-        <span class="popover-item-desc">常规双向问答与代码编写交互</span>
-      </div>
-      <span class="popover-item-check">✓</span>
-    </div>
-    <div class="popover-item" data-value="/plan">
-      <span class="popover-item-icon">📋</span>
-      <div class="popover-item-details">
-        <span class="popover-item-title">计划模式 (Plan)</span>
-        <span class="popover-item-desc">生成并逐步执行复杂的开发任务</span>
-      </div>
-      <span class="popover-item-check">✓</span>
-    </div>
-  </div>
-</div>
-
-<!-- Permission Popover -->
-<div id="perm-popover" class="premium-popover">
-  <div class="popover-header">
-    <span>应如何批准 Codex 操作？</span>
-    <a href="#" style="color: #666; font-size: 12px; text-decoration: underline; margin-left: auto; font-weight: normal;" onclick="event.stopPropagation(); alert('通过权限设置，您可以控制 Codex 在执行修改文件或访问网络等敏感操作时的审批策略。')">了解更多</a>
-  </div>
-  <div class="popover-list">
-    <div class="popover-item" data-value="on-request">
-      <span class="popover-item-icon">🖐️</span>
-      <div class="popover-item-details">
-        <span class="popover-item-title">请求批准</span>
-        <span class="popover-item-desc">编辑外部文件和使用互联网时始终询问</span>
-      </div>
-      <span class="popover-item-check">✓</span>
-    </div>
-    <div class="popover-item" data-value="unlessTrusted">
-      <span class="popover-item-icon">🛡️</span>
-      <div class="popover-item-details">
-        <span class="popover-item-title">替我审批</span>
-        <span class="popover-item-desc">仅对检测到的风险操作请求批准</span>
-      </div>
-      <span class="popover-item-check">✓</span>
-    </div>
-    <div class="popover-item" data-value="never">
-      <span class="popover-item-icon">⚠️</span>
-      <div class="popover-item-details">
-        <span class="popover-item-title">完全访问权限</span>
-        <span class="popover-item-desc">可不受限制地访问互联网和您电脑上的任何文件</span>
-      </div>
-      <span class="popover-item-check">✓</span>
-    </div>
-    <div class="popover-item" data-value="custom">
-      <span class="popover-item-icon">⚙️</span>
-      <div class="popover-item-details">
-        <span class="popover-item-title">自定义 (config.toml)</span>
-        <span class="popover-item-desc">使用 config.toml 中定义的权限</span>
-      </div>
-      <span class="popover-item-check">✓</span>
-    </div>
-  </div>
-</div>
-
-<!-- Model & Reasoning Popover -->
-<!-- Model & Reasoning Popover -->
-<div id="model-popover" class="premium-popover" style="max-height: 420px; overflow-y: auto;">
-  <div class="popover-header">
-    <span>切换模型与思考配置</span>
-    <span class="popover-close" onclick="document.getElementById('model-popover').classList.remove('show')">✕</span>
-  </div>
-  
-  <div style="padding: 10px 16px 4px; font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px;">选择模型 (Model)</div>
-  <div class="popover-list model-list">
-    <div class="popover-item" data-model="gpt-5.5">
-      <span class="popover-item-icon">🤖</span>
-      <div class="popover-item-details">
-        <span class="popover-item-title">GPT-5.5</span>
-      </div>
-      <span class="popover-item-check">✓</span>
-    </div>
-    <div class="popover-item" data-model="gpt-5.4">
-      <span class="popover-item-icon">🤖</span>
-      <div class="popover-item-details">
-        <span class="popover-item-title">GPT-5.4</span>
-      </div>
-      <span class="popover-item-check">✓</span>
-    </div>
-    <div class="popover-item" data-model="gpt-5.4-mini">
-      <span class="popover-item-icon">⚡</span>
-      <div class="popover-item-details">
-        <span class="popover-item-title">GPT-5.4-Mini</span>
-      </div>
-      <span class="popover-item-check">✓</span>
-    </div>
-  </div>
-
-  <div style="padding: 8px 16px 4px; border-top: 1px solid var(--border-light); font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 6px;">思考强度 (Reasoning)</div>
-  <div class="popover-list reasoning-list">
-    <div class="popover-item" data-reasoning="低">
-      <span class="popover-item-icon">🟢</span>
-      <div class="popover-item-details">
-        <span class="popover-item-title">低 (Low)</span>
-      </div>
-      <span class="popover-item-check">✓</span>
-    </div>
-    <div class="popover-item" data-reasoning="中">
-      <span class="popover-item-icon">🟡</span>
-      <div class="popover-item-details">
-        <span class="popover-item-title">中 (Medium)</span>
-      </div>
-      <span class="popover-item-check">✓</span>
-    </div>
-    <div class="popover-item" data-reasoning="高">
-      <span class="popover-item-icon">🟠</span>
-      <div class="popover-item-details">
-        <span class="popover-item-title">高 (High)</span>
-      </div>
-      <span class="popover-item-check">✓</span>
-    </div>
-    <div class="popover-item" data-reasoning="超高">
-      <span class="popover-item-icon">🔴</span>
-      <div class="popover-item-details">
-        <span class="popover-item-title">超高 (Ultra)</span>
-      </div>
-      <span class="popover-item-check">✓</span>
-    </div>
-  </div>
-
-  <div style="padding: 8px 16px 4px; border-top: 1px solid var(--border-light); font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 6px;">运行速度 (Speed)</div>
-  <div class="popover-list speed-list">
-    <div class="popover-item" data-speed="标准">
-      <span class="popover-item-icon">⚪</span>
-      <div class="popover-item-details">
-        <span class="popover-item-title">标准 (Standard)</span>
-        <span class="popover-item-desc">默认速度</span>
-      </div>
-      <span class="popover-item-check">✓</span>
-    </div>
-    <div class="popover-item" data-speed="快速">
-      <span class="popover-item-icon">⚡</span>
-      <div class="popover-item-details">
-        <span class="popover-item-title">快速 (Fast)</span>
-        <span class="popover-item-desc">1.5x speed, increased usage</span>
-      </div>
-      <span class="popover-item-check">✓</span>
-    </div>
-  </div>
-</div>
 </div>
 
 <!-- Hidden file input -->
 <input type="file" id="file-input" multiple hidden>
 
+<div id="confirm-modal" class="sheet-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+  <div class="sheet-card">
+    <div class="sheet-handle"></div>
+    <div id="confirm-title" class="sheet-title"></div>
+    <div id="confirm-body" class="sheet-body"></div>
+    <div id="confirm-input-wrap" hidden>
+      <input id="confirm-input" type="text" autocomplete="off">
+    </div>
+    <div class="sheet-actions">
+      <button type="button" id="confirm-cancel">取消</button>
+      <button type="button" id="confirm-ok">确定</button>
+    </div>
+  </div>
+</div>
+
+<div id="workspace-modal" class="sheet-overlay" hidden role="dialog" aria-modal="true" aria-label="工作区">
+  <div class="sheet-card">
+    <div class="sheet-handle"></div>
+    <div class="workspace-tabs">
+      <button type="button" id="workspace-tab-files" class="workspace-tab active">文件</button>
+      <button type="button" id="workspace-tab-changes" class="workspace-tab">改动</button>
+      <button type="button" id="workspace-close" class="native-mini-btn" style="margin-left:auto">关闭</button>
+    </div>
+    <div id="workspace-files-tools" class="workspace-tools">
+      <button type="button" id="file-browse-back" class="native-mini-btn" hidden>←</button>
+      <div id="file-browse-path" class="workspace-empty" style="padding:0;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></div>
+    </div>
+    <div id="workspace-git-tools" class="workspace-tools" hidden>
+      <div id="git-changes-branch" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;"></div>
+      <button type="button" id="git-changes-refresh" class="native-mini-btn">刷新</button>
+    </div>
+    <div id="file-browse-body" class="workspace-body"></div>
+    <div id="git-changes-body" class="workspace-body" hidden></div>
+  </div>
+</div>
+
+<div id="attach-preview-modal" hidden role="dialog" aria-modal="true" aria-label="附件预览">
+  <img id="attach-preview-img" alt="附件预览">
+</div>
+
+<script src="/vendor/marked.min.js"></script>
+<script src="/vendor/purify.min.js"></script>
+<script src="/vendor/highlight.min.js"></script>
 <script src="/socket.io/socket.io.js"></script>
 <script type="module" src="/js/app.js"></script>
 </body>

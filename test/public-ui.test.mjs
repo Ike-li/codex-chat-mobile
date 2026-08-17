@@ -8,6 +8,8 @@ const allContent = html + '\n' + appJs;
 
 test('HTML loads the application from an external module and contains no inline scripts', () => {
   assert.match(html, /<script\s+type="module"\s+src="\/js\/app\.js"><\/script>/);
+  assert.match(html, /<script\s+src="\/vendor\/marked\.min\.js"><\/script>/);
+  assert.match(html, /<script\s+src="\/vendor\/purify\.min\.js"><\/script>/);
   const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
   assert.ok(scripts.length > 0);
   for (const [, attributes, body] of scripts) {
@@ -19,10 +21,17 @@ test('HTML loads the application from an external module and contains no inline 
 test('mobile shell exposes session state and quick terminal controls', () => {
   assert.match(allContent, /id="session-meta"/);
   assert.match(allContent, /id="send-btn"/);
-  assert.match(allContent, /id="interrupt-btn"/);
+  assert.match(allContent, /id="send-btn"/);
+  assert.match(allContent, /id="followup-btn"/);
+  assert.match(allContent, /resolveComposerPrimaryMode/);
+  assert.match(allContent, /data-mode/);
+  assert.doesNotMatch(html, /id="interrupt-btn"/);
   assert.match(allContent, /id="attach-btn"/);
-  assert.match(allContent, /id="model-trigger"/);
-  assert.match(allContent, /id="perm-trigger"/);
+  assert.match(allContent, /id="composer-defaults"/);
+  assert.match(allContent, /id="session-settings"/);
+  assert.match(appJs, /followUpVisible/);
+  assert.match(appJs, /\$\('followup-btn'\)\.onclick = sendMessage/);
+  assert.doesNotMatch(appJs, /async function sendMessage\(\) \{\s*if \(busy\) return;/);
 });
 
 test('client handles queued input, reconnect catch-up, status, and ANSI output', () => {
@@ -34,6 +43,8 @@ test('client handles queued input, reconnect catch-up, status, and ANSI output',
   assert.match(allContent, /function renderAnsi/);
   assert.match(allContent, /function retryLastFailed/);
   assert.match(allContent, /function copyLatestOutput/);
+  assert.match(allContent, /function setBusy\(b\)/);
+  assert.match(allContent, /if \(!b\) hideTyping\(\)/);
   assert.match(allContent, /aria-live="polite"/);
 });
 
@@ -42,7 +53,7 @@ test('client applies app-server thread status to thread and instance activity', 
   assert.match(allContent, /function handleThreadStatus\(payload\)/);
   assert.match(allContent, /from '\/js\/thread-status\.js'/);
   assert.match(allContent, /applyThreadStatus\(appThreads, payload\)/);
-  assert.match(allContent, /mergeThreadList\(appThreads, ack\.threads/);
+  assert.match(allContent, /mergeThreadList\(sessionsByCwd\.get\(cwd\) \|\| \[\], ack\.threads/);
   assert.match(allContent, /threadStatusPresentation\(/);
   assert.match(allContent, /instance\.sessionId === payload\.threadId/);
   assert.match(allContent, /statusRevision/);
@@ -119,6 +130,15 @@ test('client binds push subscriptions with the current auth and device credentia
   assert.match(allContent, /if \(!subscribeResponse\.ok\)/);
 });
 
+test('command and file-change cards use structured card models', () => {
+  assert.match(appJs, /from '\/js\/tool-cards\.js'/);
+  assert.match(appJs, /commandCard\(/);
+  assert.match(appJs, /fileChangeCard\(/);
+  assert.match(appJs, /tool-card command-card/);
+  assert.match(appJs, /file-change-card/);
+  assert.match(appJs, /tool-exit/);
+});
+
 test('client renders rich approval, user input, and raw item cards', () => {
   assert.match(allContent, /case 'user_input_request'/);
   assert.match(allContent, /case 'raw_item'/);
@@ -148,16 +168,15 @@ test('client keeps unknown needs visible but never renders them as actionable', 
   assert.match(allContent, /need\.state !== 'pending'/);
 });
 
-test('client renders ChatGPT device-code login envelopes', () => {
-  assert.match(allContent, /id="account-login-btn"/);
-  assert.match(allContent, /id="account-login-panel"/);
+test('web UI does not expose ChatGPT account login', () => {
+  assert.doesNotMatch(html, /id="account-login-btn"/);
+  assert.doesNotMatch(html, /id="account-login-panel"/);
+  assert.doesNotMatch(html, />登录</);
+  assert.doesNotMatch(allContent, /function startChatgptDeviceLogin/);
+  assert.doesNotMatch(allContent, /socket\.emit\('account:loginStart'/);
+  assert.doesNotMatch(allContent, /socket\.emit\('account:loginCancel'/);
   assert.match(allContent, /case 'account_login'/);
   assert.match(allContent, /case 'account_updated'/);
-  assert.match(allContent, /function startChatgptDeviceLogin/);
-  assert.match(allContent, /function handleAccountLogin/);
-  assert.match(allContent, /function handleAccountUpdated/);
-  assert.match(allContent, /socket\.emit\('account:loginStart'/);
-  assert.match(allContent, /socket\.emit\('account:loginCancel'/);
 });
 
 test('client renders summary and full reasoning streams separately', () => {
@@ -169,8 +188,74 @@ test('client renders summary and full reasoning streams separately', () => {
   assert.match(allContent, /payload\.channel/);
 });
 
-test('client exposes session fork control', () => {
-  assert.match(allContent, /fork-instance-btn/);
+test('main chrome hides live instance tabs and keeps new session in the drawer', () => {
+  assert.match(html, /id="new-session-btn"/);
+  assert.match(html, /id="drawer-fab-new"/);
+  assert.match(allContent, /function createNewSession/);
+  assert.doesNotMatch(html, /id="instance-tabs"/);
+  assert.doesNotMatch(allContent, /id="new-instance-btn"/);
+  assert.doesNotMatch(allContent, /id="fork-instance-btn"/);
+});
+
+test('drawer hides the tools panel and labels conversations by project', () => {
+  assert.match(html, /id="drawer-tools"[^>]*\bhidden\b/);
+  assert.match(html, /id="drawer-project"/);
+  assert.match(appJs, /from '\/js\/project-label\.js'/);
+  assert.match(appJs, /function renderDrawerProject/);
+  assert.doesNotMatch(appJs, / · native/);
+});
+
+test('opening the drawer pins projects at the top and does not start at the bottom', () => {
+  assert.match(html, /#drawer \{[^}]*overflow:\s*hidden/);
+  assert.match(html, /#drawer-body \{[^}]*min-height:\s*0/);
+  assert.match(appJs, /function resetDrawerScroll/);
+  const start = appJs.indexOf("$('menu-btn').onclick");
+  const end = appJs.indexOf('function closeDrawer', start);
+  assert.match(appJs.slice(start, end), /resetDrawerScroll\(\)/);
+});
+
+test('drawer lists every allowlisted workspace so the user can switch projects', () => {
+  assert.match(html, /id="drawer-projects"/);
+  assert.match(html, /id="drawer-body"/);
+  assert.match(appJs, /function renderDrawerProjects/);
+  assert.match(appJs, /function toggleDirExpand/);
+  assert.match(appJs, /from '\/js\/drawer-dirs\.js'/);
+  assert.match(appJs, /dir-toggle/);
+  assert.match(appJs, /dir-new/);
+  assert.match(appJs, /dir-subtree/);
+  assert.match(appJs, /createNewSession\(btn\.dataset\.newCwd\)/);
+  assert.match(appJs, /toggleDirExpand\(btn\.dataset\.cwd\)/);
+});
+
+test('header chrome uses a workspace pill, RTT chip and home/new actions', () => {
+  assert.match(html, /id="thread-title"/);
+  assert.match(html, /id="header-project"/);
+  assert.match(html, /id="header-context"/);
+  assert.match(html, /id="header-changes"/);
+  assert.match(html, /id="conn-rtt"/);
+  assert.match(html, /id="header-home"/);
+  assert.match(html, /id="header-new"/);
+  assert.match(html, /id="status-dot"/);
+  assert.match(html, /id="menu-btn"/);
+  assert.doesNotMatch(html, /id="header-copy"/);
+  assert.doesNotMatch(html, /id="btnConsole"/);
+  assert.match(allContent, /function renderThreadTitle/);
+  assert.match(allContent, /新会话/);
+  const headerHtml = html.slice(html.indexOf('<div id="header">'), html.indexOf('id="input-area"'));
+  const inputHtml = html.slice(html.indexOf('id="input-area"'));
+  assert.match(inputHtml, /id="composer-defaults"/);
+  assert.doesNotMatch(headerHtml, /id="composer-defaults"/);
+  assert.match(html, /id="mode-list"/);
+  assert.match(appJs, /from '\/js\/header-chrome\.js'/);
+  assert.match(appJs, /conn:ping/);
+  assert.match(appJs, /formatRttChip/);
+  assert.match(appJs, /formatWorkspaceChangeBadge/);
+  assert.match(appJs, /\$\('header-home'\)\.onclick/);
+  assert.match(appJs, /\$\('header-new'\)\.onclick/);
+  assert.match(appJs, /\$\('header-context'\)\.onclick/);
+});
+
+test('client keeps session fork available without a main-chrome tab strip', () => {
   assert.match(allContent, /function forkCurrentSession/);
   assert.match(allContent, /socket\.emit\('session:fork'/);
 });
@@ -238,13 +323,41 @@ test('client exposes P1 native app-server controls and readonly status panels', 
   assert.match(allContent, /\$\('native-files-btn'\)\.onclick = \(\) => openFileBrowser\(serverCwd\)/);
 });
 
+test('mobile shell exposes connection banner, workspace sheet, confirm sheet and @ mention search', () => {
+  const workspaceJs = readFileSync(new URL('../public/js/workspace-panel.js', import.meta.url), 'utf8');
+  assert.match(html, /id="conn-banner"/);
+  assert.match(html, /id="workspace-modal"/);
+  assert.match(html, /id="confirm-modal"/);
+  assert.match(html, /id="at-mention-popup"/);
+  assert.match(html, /id="attach-preview-modal"/);
+  assert.match(html, /id="push-subscribe-btn"/);
+  assert.match(html, /id="header-project"/);
+  assert.match(html, /highlight\.min\.js/);
+  assert.match(appJs, /from '\/js\/connection-banner\.js'/);
+  assert.match(appJs, /from '\/js\/workspace-panel\.js'/);
+  assert.match(appJs, /from '\/js\/confirm-dialog\.js'/);
+  assert.match(appJs, /files:search/);
+  assert.match(workspaceJs, /git:status/);
+  assert.match(appJs, /pickPastedImage/);
+  assert.match(appJs, /m\.kind === 'command'/);
+});
+
+test('assistant bubbles render sanitized markdown instead of escaped plaintext', () => {
+  assert.match(appJs, /from '\/js\/markdown\.js'/);
+  assert.match(appJs, /function paintStreamMarkdown/);
+  assert.match(appJs, /streamingEl\.innerHTML = renderMarkdown\(streamText\)/);
+  assert.match(appJs, /renderMarkdown\(m\.content \|\| ''\)/);
+  assert.doesNotMatch(appJs, /escHtml\(m\.content\.slice\(0, 500\)\)/);
+  assert.doesNotMatch(appJs, /streamingEl\.textContent = streamText/);
+});
+
 test('client uses app-server threads as the only session drawer and history source', () => {
   assert.match(allContent, /socket\.emit\('thread:history'/);
   assert.match(allContent, /function loadNativeThreadHistory/);
   assert.match(allContent, /renderHistoryMessages/);
   assert.match(allContent, /thread:select', \{ threadId: s\.id, cwd: s\.cwd, title: s\.title \}/);
   assert.match(allContent, /loadNativeThreadHistory\(s\)/);
-  assert.match(allContent, /const allItems = appThreads\.filter/);
+  assert.match(allContent, /sessionsByCwd\.get\(cwd\)/);
   assert.match(allContent, /if \(socket\.connected\) refreshNativeThreads\(\)/);
   assert.doesNotMatch(allContent, /\bcodexSessions\b/);
   assert.doesNotMatch(allContent, /socket\.emit\('session:history'/);
@@ -351,8 +464,29 @@ test('client sends selected files and skills as durable structured input parts',
   assert.match(allContent, /function addInputPart\(part\)/);
   assert.match(allContent, /addInputPart\(\{ kind: 'mention'/);
   assert.match(allContent, /addInputPart\(\{ kind: 'skill'/);
-  assert.match(allContent, /createMessageRequest\(\{ text, attachments, parts, target \}\)/);
+  assert.match(allContent, /createMessageRequest\(\{ text, attachments, parts, target, turn \}\)/);
   assert.doesNotMatch(allContent, /const mention = `@\$\{path\}`/);
+});
+
+test('composer settings expose CLI model, reasoning, approval and sandbox without slash messages', () => {
+  assert.match(appJs, /from '\/js\/cli-settings\.js'/);
+  assert.match(html, /data-testid="composer-defaults"/);
+  assert.match(html, /id="session-settings"/);
+  assert.match(appJs, /formatComposerPermission/);
+  assert.match(appJs, /openSessionSettings/);
+  assert.match(html, /id="approval-list"/);
+  assert.match(html, /id="sandbox-list"/);
+  assert.match(html, /id="model-list"/);
+  assert.match(html, /id="reasoning-list"/);
+  assert.match(allContent, /function loadComposerModels/);
+  assert.match(allContent, /function renderCliSettingsPopovers/);
+  assert.match(allContent, /data-approval/);
+  assert.match(allContent, /data-sandbox/);
+  assert.doesNotMatch(appJs, /inputEl\.value = '\/model '/);
+  assert.doesNotMatch(appJs, /inputEl\.value = '\/reasoning '/);
+  assert.doesNotMatch(appJs, /inputEl\.value = '\/approval-policy '/);
+  assert.doesNotMatch(html, /data-value="unlessTrusted"/);
+  assert.doesNotMatch(html, /data-reasoning="超高"/);
 });
 
 test('client exposes P2 admin controls behind unlock and per-action confirmation', () => {

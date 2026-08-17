@@ -19,8 +19,8 @@
 | 命令与工具 | 默认，受权限约束 | Codex 发起 | 卡片、实时输出、exit code | 原生 thread |
 | MCP/Search | 条件于配置/模型 | Codex 发起 | MCP/Search 卡片 | 原生 thread |
 | File change/Diff/Plan | 默认，取决于任务 | 消息区或 slash 命令 | 结构化卡片 | 原生 thread |
-| 中断 | 默认 | `■` | ACK + turn 终态 | 不持久化为浏览器状态 |
-| Steer/队列 | 条件于活跃 turn | 运行中继续发送 | steered/queued receipt | runtime 进程内队列 |
+| 中断 | 默认 | 主按钮 `■` | ACK + turn 终态 | 不持久化为浏览器状态 |
+| Steer/队列 | 默认 | 进行中再输入后点第二颗 `↑` | steered 或 queued 气泡 | runtime 进程内队列 |
 
 ## 历史、恢复与多设备
 
@@ -29,7 +29,7 @@
 | Thread 列表/历史/续接 | 默认 | Threads/历史抽屉 | thread/list/read/resume | Codex 原生 |
 | Rename/Archive/Delete | 默认 | thread 操作菜单 | ACK + thread event | Codex 原生 |
 | Compact/Rollback/Fork | 默认，取决于协议 | 抽屉/标签 | ACK + 更新 thread | Codex 原生 |
-| 多 runtime 标签 | 默认 | 顶部标签 | scoped init/events | gateway 进程内 |
+| 多 runtime 视图 | 默认 | 抽屉新会话 / 历史 thread | scoped init/events | gateway 进程内 |
 | 多设备视图隔离 | 默认 | 各设备独立操作 | 目标 room 事件 | 每 Socket 视图 |
 | 短断线 catch-up | 默认 | 自动 | seq/epoch 增量 | runtime 有界 buffer |
 | Gap snapshot 重建 | 默认 | 自动 | thread/read snapshot | Codex 原生 |
@@ -43,9 +43,14 @@
 |---|---|---|---|---|
 | 文本 | 默认 | 输入框 | user message + ACK | outbox/原生 thread |
 | 文件附件 | 默认 | `+` | mention/localImage | owner-only 临时文件 |
-| Workspace mention | 默认 | 结构化输入 | mention | 必须在 runtime cwd 内 |
+| Workspace mention | 默认 | `@` 搜索或工作区 sheet | mention | 必须在 runtime cwd 内 |
+| 工作区文件浏览 | 默认只读 | 顶栏项目名 | `fs:readDirectory` / `fs:readFile` | 不写盘 |
+| Git 改动 | 默认只读 | 工作区 sheet「改动」 | `git:status` / `git:diff` | 非 git 仓明确失败 |
+| 连接横幅 | 默认 | 自动 | 延迟出现的可读状态 | 浏览器进程内 |
+| 连接延迟芯片 | 默认 | 顶栏 | `conn:ping` ACK 往返 | 浏览器进程内 |
+| 确认/输入 sheet | 默认 | 删除、重命名、回退、重试 | 替代原生 confirm/prompt | 不持久化 |
 | Skill | 条件于 enabled skills | Skills | skill input | 发送前重新校验 |
-| 模型/reasoning/权限 | 条件于账号/模型 | 输入区弹层 | runtime 配置/ACK | 当前 runtime |
+| 模型/思考强度/审批/沙箱 | 条件于账号/模型 | 输入区弹层 | `turn/start` 覆盖项 | 当前 runtime |
 | Files/Account/MCP/Skills | 默认只读，取决于 app-server | 抽屉 | 原生数据面板 | 不复制为第二事实源 |
 | 外部配置 Import | 条件于检测结果 | Import | importId/状态事件 | app-server 管理 |
 | PWA | 条件于安全上下文 | 浏览器安装 | standalone 页面 | 浏览器安装状态 |
@@ -58,7 +63,7 @@
 | Remote image URL | 关闭 | `CODEX_ALLOW_REMOTE_IMAGES=1` | 仅公网 HTTPS，DNS pin/SSRF 校验 |
 | Labs | 关闭 | `CODEX_P3_EXPERIMENTAL=1` | 实验 API，进程 ID 精确归属 |
 | Admin | 关闭 | `CODEX_ADMIN_ENABLED=1` + unlock + 每动作确认 | TTL、限流、owner-only 审计 |
-| ChatGPT device login | 条件 | app-server/账号支持 | device code 生命周期 |
+| ChatGPT device login | Web 不提供 | 本机 `codex` 登录或 config.toml | 网页不启动 device-code |
 | 跨 gateway exactly-once | 不提供 | — | ledger 不持久化；未知写不盲发 |
 | 草稿持久化 | 不提供 | — | 未发送文本刷新可能丢失 |
 | Needs-you 跨 gateway 恢复 | 不提供 | — | registry 是进程内状态 |

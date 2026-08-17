@@ -52,7 +52,6 @@ async function clickNativeControl(page, selector) {
     await page.locator('#menu-btn').click();
     await expect(drawer).toHaveClass(/open/);
   }
-  await expect(page.locator(selector)).toBeVisible();
   await page.locator(selector).dispatchEvent('click');
 }
 

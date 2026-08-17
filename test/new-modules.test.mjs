@@ -287,10 +287,10 @@ const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf
 const appJs = readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
 const allContent = html + '\n' + appJs;
 
-test('frontend: instance tabs and session switch', () => {
-  assert.match(allContent, /instance-tabs/, 'has instance-tabs container');
+test('frontend: instance routing stays in memory without a main-chrome tab strip', () => {
   assert.match(allContent, /handleInstances/, 'has handleInstances function');
-  assert.match(allContent, /renderInstanceTabs/, 'has renderInstanceTabs function');
+  assert.doesNotMatch(html, /id="instance-tabs"/, 'instance tabs are not in main chrome');
+  assert.match(html, /id="new-session-btn"/, 'new session lives in the drawer');
 });
 
 test('frontend: attachment elements', () => {

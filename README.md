@@ -17,7 +17,9 @@ A mobile control plane for your local [Codex CLI](https://github.com/openai/code
 ## Features
 
 - Streaming conversations with the full agent event feed: text deltas, reasoning, command output
-- Tool and command cards with exit codes, file-change summaries, and a visible raw-envelope fallback for unknown event types
+- Tool and command cards with exit codes, file-change summaries, and a visible raw-envelope fallback for unknown event types; history snapshots rebuild those cards, not only text
+- A read-only workspace sheet from the project name: browse files, inspect git changes, and `@`-mention workspace paths without concatenating them into the prompt
+- A delayed connection banner, confirm/prompt sheets, pasted-image attachments, and syntax-highlighted code copy buttons
 - Approval cards — approve or deny exec/patch requests from your phone, mirroring Codex CLI approval policies
 - Slash commands with suggestions (`/status`, `/diff`, `/review`, `/permissions`, …)
 - Structured inputs: validated owner-only uploads become `localImage` or `mention` parts; enabled skills are supported, while guarded HTTPS images require the default-off `CODEX_ALLOW_REMOTE_IMAGES=1`
@@ -64,7 +66,7 @@ Open `http://127.0.0.1:3001` on the same machine. Phone access is fail-closed un
 | `HOST` | `127.0.0.1` | Bind address; keep loopback behind a same-host HTTPS proxy |
 | `AUTH_TOKEN` | empty | Bootstrap secret; non-loopback binds require at least 32 characters |
 | `WORK_DIR` | — | Primary Codex workspace |
-| `WORK_DIRS` | empty | Comma-separated allowlist of extra workspaces |
+| `WORK_DIRS` | empty | Extra workspaces: comma-separated dirs, or a JSON array file such as `workdirs.json` |
 | `CODEX_BIN` | `codex` | Path to the Codex CLI binary |
 | `CODEX_DATA_DIR` | `./data` | Device, Push, and audit state root |
 | `CODEX_APPROVAL_POLICY` | `on-request` | `untrusted` \| `on-failure` \| `on-request` \| `granular` \| `never` |

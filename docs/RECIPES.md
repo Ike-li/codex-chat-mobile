@@ -7,7 +7,7 @@
 前提：当前工作区已进入 `WORK_DIR`/`WORK_DIRS` allowlist。
 
 1. 新建 thread；
-2. 权限选择“请求批准”或只读 sandbox；
+2. 权限选择 `on-request` 或沙箱 `read-only`；
 3. 输入：`只读分析项目结构、主要入口、测试方式和风险，不要修改文件。`；
 4. 点击发送。
 
@@ -41,11 +41,11 @@
 
 ## 在运行中补充要求或中断
 
-补充要求：在 turn 仍 running 时直接发送，例如：`先不要改认证模块，只处理 UI。`。app-server 支持时会 steer，否则进入当前 runtime 队列。
+一轮一条：turn 仍 running 时主按钮只做停止，输入框里的草稿会留着，不会发出第二条消息。
 
-中断：点击 `■`。中断只针对当前 instance/thread/turn，不影响其他标签。
+中断：点击主按钮上的 `■`。中断只针对当前 instance/thread/turn。
 
-预期：状态从 running 转为 interrupt/result/error；队列状态同步更新。
+预期：状态从 running 转为 interrupt/result/error；主按钮回到发送。
 
 失败处理：如果返回 `stale_target`，先刷新当前 thread 状态，不要对旧 turn ID 重试。
 
@@ -74,7 +74,7 @@ PNG 经内容验证后发送为 `localImage`，其他文件发送为 `mention`�
 
 使用 skill：打开 Skills，选择服务端返回的 enabled skill，然后发送任务。服务端会在发送前再次校验 skill。
 
-使用 workspace mention：只选择当前 runtime cwd 内的真实路径。越界路径会被拒绝。
+使用 workspace mention：在输入框输入 `@` 搜索当前 runtime cwd 内的文件，或从顶栏项目名打开工作区 sheet 点「引用」。越界路径会被拒绝。
 
 失败处理：附件类型错误、base64 错误、大小超限和路径越界都会返回明确 ACK，不应进入未知执行状态。
 
