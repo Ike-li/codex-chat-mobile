@@ -76,4 +76,28 @@ test.describe('顶部导航紧凑度', () => {
     await expect(page.locator('#drawer-projects')).toBeInViewport();
     await expect.poll(async () => page.locator('#drawer-body').evaluate(el => el.scrollTop)).toBe(0);
   });
+
+  test('连接状态条在宽屏上收进阅读栏', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await connect(page);
+
+    await page.locator('#conn-banner').evaluate(el => {
+      el.hidden = false;
+      el.dataset.tone = 'warn';
+      const text = el.querySelector('#conn-banner-text');
+      if (text) text.textContent = '连接断开，自动重连中…';
+    });
+
+    const banner = page.locator('#conn-banner');
+    await expect(banner).toBeVisible();
+    const bannerBox = await banner.boundingBox();
+    const columnBox = await page.locator('#input-area').boundingBox();
+    expect(bannerBox, '连接条应有布局盒').toBeTruthy();
+    expect(columnBox, '输入区应有布局盒').toBeTruthy();
+    expect(bannerBox.width, '宽屏上不应拉满整窗').toBeLessThanOrEqual(720);
+    expect(
+      Math.abs(bannerBox.x - columnBox.x),
+      `连接条应与输入区左对齐(Δx=${Math.round(Math.abs(bannerBox.x - columnBox.x))})`,
+    ).toBeLessThanOrEqual(8);
+  });
 });

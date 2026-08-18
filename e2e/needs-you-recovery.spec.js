@@ -54,3 +54,27 @@ test('a needs-you deep link opens the exact pending approval', async ({ page, br
     await freshContext.close();
   }
 });
+
+test('needs-you 条在宽屏上收进阅读栏', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/');
+  await expect(page.locator('#state-label')).not.toHaveText('offline', { timeout: 10000 });
+
+  await page.locator('#msg-input').fill('approve needs-you column');
+  await page.locator('#send-btn').click();
+  const needsPanel = page.locator('#needs-you-panel');
+  await expect(needsPanel).toBeVisible({ timeout: 10000 });
+
+  const panelBox = await needsPanel.boundingBox();
+  const columnBox = await page.locator('#input-area').boundingBox();
+  expect(panelBox, 'needs-you 条应有布局盒').toBeTruthy();
+  expect(columnBox, '输入区应有布局盒').toBeTruthy();
+  expect(panelBox.width, '宽屏上不应拉满整窗').toBeLessThanOrEqual(720);
+  expect(
+    Math.abs(panelBox.x - columnBox.x),
+    `needs-you 条应与输入区左对齐(Δx=${Math.round(Math.abs(panelBox.x - columnBox.x))})`,
+  ).toBeLessThanOrEqual(8);
+
+  await page.locator('.tool-card').filter({ hasText: '需要审批' }).last().locator('.approve-btn[data-d="accept"]').click();
+  await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });
+});

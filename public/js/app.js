@@ -979,7 +979,7 @@ import {
   // Empty state Suggestion cards
   document.querySelectorAll('.suggestion-card').forEach(card => {
     card.onclick = () => {
-      inputEl.value = card.dataset.cmd;
+      inputEl.value = card.dataset.prompt || card.dataset.cmd || '';
       sendMessage();
     };
   });
@@ -1403,6 +1403,11 @@ import {
     if (headerProject) {
       headerProject.textContent = name;
       headerProject.title = serverCwd || '';
+    }
+    const emptyProject = $('empty-project');
+    if (emptyProject) {
+      emptyProject.textContent = name ? `在 ${name}` : '';
+      emptyProject.hidden = !name;
     }
     const headerContext = $('header-context');
     if (headerContext) {
@@ -2400,8 +2405,7 @@ import {
       }
       if (m.kind === 'reasoning') {
         appendReasoning({ text: m.text, channel: m.channel || 'summary' });
-        appendReasoning.card = null;
-        appendReasoning.sections = null;
+        sealReasoning();
         continue;
       }
       if (m.kind === 'raw') {
@@ -2885,7 +2889,7 @@ import {
     if (!appendReasoning.card) {
       const card = document.createElement('div');
       card.className = 'tool-card reasoning-card';
-      card.innerHTML = '<div class="tool-name">思考过程</div>';
+      card.innerHTML = '<details class="reasoning-fold" open><summary class="reasoning-toggle"><span class="reasoning-closed">思考</span><span class="reasoning-open">思考过程</span></summary><div class="reasoning-stack"></div></details>';
       appendRaw(card, 'codex');
       appendReasoning.card = card;
       appendReasoning.sections = {};
@@ -2905,9 +2909,9 @@ import {
     wrap.className = key === 'full'
       ? 'reasoning-section reasoning-full'
       : 'reasoning-section reasoning-summary';
-    wrap.innerHTML = `<div class="tool-name" style="font-size:11px;opacity:.7;">${key === 'full' ? 'Full reasoning' : 'Summary'}</div><pre class="tool-output" style="white-space:pre-wrap;opacity:.72;background:transparent;color:var(--text-muted);"></pre>`;
-    appendReasoning.card.appendChild(wrap);
-    const out = wrap.querySelector('pre');
+    wrap.innerHTML = `${key === 'full' ? '<div class="reasoning-channel">完整推理</div>' : ''}<pre class="reasoning-body"></pre>`;
+    appendReasoning.card.querySelector('.reasoning-stack')?.appendChild(wrap);
+    const out = wrap.querySelector('.reasoning-body');
     appendReasoning.sections[key] = out;
     return out;
   }
@@ -3028,6 +3032,12 @@ import {
     }
     streamingEl = null;
     streamText = '';
+    sealReasoning();
+  }
+
+  function sealReasoning() {
+    const fold = appendReasoning.card?.querySelector('.reasoning-fold');
+    if (fold) fold.open = false;
     appendReasoning.card = null;
     appendReasoning.sections = null;
   }

@@ -7,7 +7,7 @@
 ```text
 ┌ 顶部状态区：会话钮+延迟 / 工作区胶囊 / 首页与新会话 ┐
 ├ 连接横幅：断线或重连时的可读状态（非阻断）              ┤
-├ Needs-you：跨 thread 审批和提问聚合                    ┤
+├ Needs-you：与消息区同栏的跨 thread 审批/提问条          ┤
 ├ 消息区：用户、助手、reasoning、工具、diff、审批、结果         ┤
 ├ 输入区：附件 / 权限 / 模型 / 文本 / @ 引用 / 发送或中断        ┤
 └ 左侧抽屉：历史 thread、原生控制、工作区、Push、Admin/Labs 条件入口 ┘
@@ -25,7 +25,7 @@
 - `#header-home`：回空会话（清本地视图，不调用 `session:new`）；下一次发送再懒开 runtime。
 - `#header-new`：立刻 `session:new` 并清空消息区。
 - `#thread-title`：当前 thread 名（对辅助技术可见；没有绑定 thread 时为「新会话」）。
-- `#conn-banner`：连接超过阈值后显示「连接中 / 已断开 / 已重新连接」，可点立即重试。
+- `#conn-banner`：连接超过阈值后显示「连接中 / 已断开 / 已重新连接」，条子和消息区同一栏宽，可点立即重试。
 - 不提供 ChatGPT / Codex 账号登录入口；凭证只在本机配置。
 - 不提供 CLI 镜像 / 控制台按钮。
 
@@ -43,15 +43,15 @@
 
 | 卡片 | 内容 |
 |---|---|
-| 用户消息 | 文本、附件/skill 元数据和发送状态 |
-| 助手消息 | 流式 GFM Markdown（消毒后；历史同样渲染） |
-| Reasoning | summary 或 full reasoning |
-| 命令/工具 | 标题「命令」、可折起命令行、实时输出、结束时 exit code 与成败色 |
-| MCP/Search | 调用参数摘要和结果 |
-| File change/Diff | 文件列表、change kind 和 diff |
-| Plan | 当前 turn 的步骤计划 |
-| Approval | 批准或拒绝操作 |
-| User input | 选项或自由文本回答 |
+| 用户消息 | 右侧浅色胶囊：文本、附件/skill 元数据和发送状态 |
+| 助手消息 | 通栏 GFM Markdown（无气泡；历史同样渲染） |
+| Reasoning | 通栏可折叠思考（收起为「思考」，展开为「思考过程」；完整推理另标） |
+| 命令/工具 | 通栏卡片：标题「命令」、可折起命令行、实时输出、结束时 exit code 与成败色 |
+| MCP/Search | 通栏卡片：调用参数摘要和结果 |
+| File change/Diff | 通栏卡片：文件列表、change kind 和 diff |
+| Plan | 通栏卡片：当前 turn 的步骤计划 |
+| Approval | 通栏卡片：批准或拒绝操作 |
+| User input | 通栏卡片：选项或自由文本回答 |
 | Result/Error/System | turn 终态、错误和网关提示 |
 | Raw item | 未识别协议 item 的可见兜底 |
 

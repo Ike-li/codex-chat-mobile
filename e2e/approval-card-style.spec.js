@@ -27,6 +27,15 @@ test.describe('审批卡按钮视觉层级', () => {
     );
     expect(approveBg, '批准按钮应保持主操作绿').toBe('rgb(16, 163, 127)');
 
+    const cardBox = await card.boundingBox();
+    const messagesBox = await page.locator('#messages').boundingBox();
+    expect(cardBox, '审批卡应有布局盒').toBeTruthy();
+    expect(messagesBox, '消息区应有布局盒').toBeTruthy();
+    expect(
+      cardBox.width,
+      `审批卡应拉满阅读栏(实测 ${Math.round(cardBox.width)} / ${Math.round(messagesBox.width)})`,
+    ).toBeGreaterThan(messagesBox.width * 0.8);
+
     // 清理:响应审批并等待回到 idle,避免遗留未决状态污染共享 mock server 上的后续用例。
     await card.locator('.approve-btn[data-d="accept"]').click();
     await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });

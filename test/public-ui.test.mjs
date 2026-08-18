@@ -323,6 +323,54 @@ test('client exposes P1 native app-server controls and readonly status panels', 
   assert.match(allContent, /\$\('native-files-btn'\)\.onclick = \(\) => openFileBrowser\(serverCwd\)/);
 });
 
+test('empty landing is a question plus task cards, not a slash-command menu', () => {
+  const emptyHtml = html.slice(html.indexOf('id="empty-state"'), html.indexOf('id="at-mention-popup"'));
+  assert.match(emptyHtml, /id="empty-heading"/);
+  assert.match(emptyHtml, /我们来构建什么？/);
+  assert.match(emptyHtml, /id="empty-project"/);
+  assert.match(emptyHtml, /探索并理解代码/);
+  assert.match(emptyHtml, /data-prompt=/);
+  assert.doesNotMatch(emptyHtml, /empty-logo/);
+  assert.doesNotMatch(emptyHtml, /查看系统状态/);
+  assert.match(appJs, /dataset\.prompt/);
+  assert.match(appJs, /empty-project/);
+});
+
+test('chat transcript uses a user pill and a full-width assistant column', () => {
+  assert.match(html, /\.msg\.user\s*\{[^}]*align-self:\s*flex-end/s);
+  assert.match(html, /\.msg\.codex\s*\{[^}]*max-width:\s*100%/s);
+  assert.match(html, /\.user \.bubble\s*\{[^}]*border-radius:\s*18px/s);
+  assert.match(html, /#messages\s*\{[^}]*max-width:\s*720px/s);
+  assert.match(html, /#input-area\s*\{[^}]*max-width:\s*720px/s);
+  assert.doesNotMatch(html, /--user-bg:\s*#0d0d0d/);
+});
+
+test('tool and approval cards span the transcript column, not a 360px bubble', () => {
+  assert.match(html, /\.tool-card\s*\{[^}]*max-width:\s*100%/s);
+  assert.doesNotMatch(html, /\.tool-card\s*\{[^}]*max-width:\s*360px/s);
+  assert.match(html, /\.approval-btns\s*\{[^}]*display:\s*flex/s);
+  assert.match(html, /\.reasoning-card\s*\{[^}]*background:\s*transparent/s);
+  assert.doesNotMatch(html, /width: min\(340px/);
+});
+
+test('needs-you banner and reasoning sit in the transcript column', () => {
+  assert.match(html, /#needs-you-panel\s*\{[^}]*max-width:\s*720px/s);
+  assert.match(html, /#needs-you-panel\s*\{[^}]*border-radius:\s*14px/s);
+  assert.match(html, /\.reasoning-fold/);
+  assert.match(html, /\.reasoning-body/);
+  assert.match(appJs, /reasoning-fold/);
+  assert.match(appJs, /reasoning-body/);
+});
+
+test('connection chrome sits in the transcript column and collapsed reasoning is short', () => {
+  assert.match(html, /#conn-banner\s*\{[^}]*max-width:\s*720px/s);
+  assert.match(html, /#conn-banner\s*\{[^}]*border-radius:\s*14px/s);
+  assert.match(html, /#pending-panel\s*\{[^}]*max-width:\s*720px/s);
+  assert.match(html, /\.reasoning-fold\[open\] \.reasoning-closed/);
+  assert.match(appJs, /reasoning-closed/);
+  assert.match(appJs, /<span class="reasoning-closed">思考<\/span>/);
+});
+
 test('mobile shell exposes connection banner, workspace sheet, confirm sheet and @ mention search', () => {
   const workspaceJs = readFileSync(new URL('../public/js/workspace-panel.js', import.meta.url), 'utf8');
   assert.match(html, /id="conn-banner"/);
