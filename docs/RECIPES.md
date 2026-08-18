@@ -43,7 +43,7 @@
 
 一轮一条：turn 仍 running 时主按钮只做停止，输入框里的草稿会留着，不会发出第二条消息。
 
-中断：点击主按钮上的 `■`。中断只针对当前 instance/thread/turn。
+中断：点击主按钮上的停止图标。中断只针对当前 instance/thread/turn。
 
 预期：状态从 running 转为 interrupt/result/error；主按钮回到发送。
 

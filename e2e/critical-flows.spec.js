@@ -118,6 +118,97 @@ test.describe('关键用户旅程', () => {
     await expect(bubble.locator('li')).toHaveCount(2);
   });
 
+  test('流式阶段保持稳定文本，完成后再渲染 Markdown', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });
+
+    await page.locator('#msg-input').fill('STREAMING_MARKDOWN_FIXTURE');
+    await page.locator('#send-btn').click();
+
+    const bubble = page.locator('.msg.codex .bubble.md').last();
+    const turn = bubble.locator('..');
+    await expect(bubble).toHaveAttribute('data-streaming', 'true', { timeout: 10000 });
+    await expect(turn).toHaveAttribute('aria-busy', 'true');
+    await expect(bubble).toContainText('Here is', { timeout: 10000 });
+    await expect(bubble.locator('strong, code, li')).toHaveCount(0);
+
+    await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });
+    await expect(bubble).not.toHaveAttribute('data-streaming', 'true');
+    await expect(turn).not.toHaveAttribute('aria-busy', 'true');
+    await expect(bubble.locator('strong')).toHaveText('bold');
+    await expect(bubble.locator('code')).toHaveText('code');
+    await expect(bubble.locator('li')).toHaveCount(2);
+  });
+
+  test('用户上滑阅读时流式输出不抢回滚动位置', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 520 });
+    await page.goto('/');
+    await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });
+
+    await page.locator('#msg-input').fill('SCROLL_STREAM_FIXTURE');
+    await page.locator('#send-btn').click();
+
+    const bubble = page.locator('.msg.codex .bubble.md').last();
+    await expect(bubble).toContainText('line-030', { timeout: 10000 });
+    await page.locator('#messages').evaluate(element => {
+      element.scrollTop = 0;
+      element.dispatchEvent(new Event('scroll'));
+    });
+
+    await expect(page.locator('#jump-to-latest')).toBeVisible();
+    await expect(bubble).toContainText('line-050', { timeout: 10000 });
+    await expect.poll(() => page.locator('#messages').evaluate(element => element.scrollTop)).toBeLessThanOrEqual(2);
+
+    await page.locator('#jump-to-latest').click();
+    await expect.poll(() => page.locator('#messages').evaluate(element => (
+      element.scrollHeight - element.clientHeight - element.scrollTop
+    ))).toBeLessThanOrEqual(2);
+    await expect(page.locator('#jump-to-latest')).toBeHidden();
+    await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });
+  });
+
+  test('同一 turn 的正文和工具按事件顺序组合展示', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });
+
+    await page.locator('#msg-input').fill('TURN_GROUP_FIXTURE');
+    await page.locator('#send-btn').click();
+    await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });
+
+    const turns = page.locator('#messages > .assistant-turn');
+    await expect(turns).toHaveCount(1);
+    const turn = turns.first();
+    await expect(turn.locator(':scope > .bubble.md')).toHaveCount(2);
+    await expect(turn.locator(':scope > .bubble.md').first()).toContainText('Before the tool.');
+    await expect(turn.locator(':scope > .tool-card')).toContainText('printf grouped');
+    await expect(turn.locator(':scope > .bubble.md').last()).toContainText('After the tool.');
+    await expect(turn).not.toHaveAttribute('data-active', 'true');
+
+    const order = await turn.locator(':scope > *').evaluateAll(elements => elements.map(element => (
+      element.classList.contains('tool-card') ? 'tool' : 'text'
+    )));
+    expect(order).toEqual(['text', 'tool', 'text']);
+  });
+
+  test('reasoning 默认紧凑且尊重用户展开状态', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });
+
+    await page.locator('#msg-input').fill('REASONING_STREAM_FIXTURE');
+    await page.locator('#send-btn').click();
+
+    const fold = page.locator('.assistant-turn .reasoning-fold').last();
+    await expect(fold).toBeAttached({ timeout: 10000 });
+    await expect(fold).not.toHaveAttribute('open', '');
+    await expect(fold.locator('.reasoning-label')).toHaveText('思考中');
+
+    await fold.locator('.reasoning-toggle').click();
+    await expect(fold).toHaveAttribute('open', '');
+    await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });
+    await expect(fold).toHaveAttribute('open', '');
+    await expect(fold.locator('.reasoning-label')).toHaveText('思考过程');
+  });
+
   test('输入区域元素存在', async ({ page }) => {
     await page.goto('/');
 

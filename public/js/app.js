@@ -15,6 +15,7 @@ import { resolveComposerPrimaryMode } from '/js/composer-mode.js';
 import { projectLabel } from '/js/project-label.js';
 import { loadExpandedDirs, persistExpandedDirs, toggleExpandedDir } from '/js/drawer-dirs.js';
 import { renderMarkdown } from '/js/markdown.js';
+import { createTranscriptStream } from '/js/transcript-stream.js';
 import { commandCard, fileChangeCard } from '/js/tool-cards.js';
 import { resolveConnectionBanner } from '/js/connection-banner.js';
 import { formatRttChip, formatWorkspaceChangeBadge } from '/js/header-chrome.js';
@@ -44,8 +45,10 @@ import {
 (function() {
   const $ = id => document.getElementById(id);
   const messagesEl = $('messages');
+  const turnAnnouncer = $('turn-announcer');
   const inputEl = $('msg-input');
   const sendBtn = $('send-btn');
+  const jumpToLatestBtn = $('jump-to-latest');
   const attachBtn = $('attach-btn');
   const fileInput = $('file-input');
   const attachTray = $('attach-tray');
@@ -120,9 +123,33 @@ import {
   let busy = false;
   let interruptPending = false;
   let streamingEl = null;
-  let streamText = '';
-  let streamMdTimer = null;
-  const STREAM_MD_INTERVAL_MS = 80;
+  const TRANSCRIPT_FOLLOW_DISTANCE_PX = 80;
+  let followTranscript = true;
+  let activeAssistantTurnEl = null;
+  const transcriptStream = createTranscriptStream({
+    onStart() {
+      setBusy(true);
+      hideTyping();
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble md';
+      bubble.dataset.streaming = 'true';
+      streamingEl = bubble;
+      appendRaw(bubble, 'codex');
+      scrollBottom();
+    },
+    onText(text) {
+      if (!streamingEl) return;
+      streamingEl.textContent = text;
+      scrollBottom();
+    },
+    onFinish(text) {
+      if (!streamingEl) return;
+      streamingEl.innerHTML = renderMarkdown(text);
+      delete streamingEl.dataset.streaming;
+      streamingEl = null;
+      scrollBottom();
+    },
+  });
   let currentSessionId = null;
   let appThreads = [];
   let sessionsByCwd = new Map();
@@ -605,6 +632,10 @@ import {
     const isEmpty = messagesEl.children.length === 0;
     $('empty-state').style.display = isEmpty ? 'flex' : 'none';
     messagesEl.style.display = isEmpty ? 'none' : 'flex';
+    if (isEmpty) {
+      followTranscript = true;
+      jumpToLatestBtn.hidden = true;
+    }
   }
 
   const storedCliSettings = loadCliSettings(localStorage);
@@ -1031,6 +1062,7 @@ import {
         break;
       case 'user_message':
         finalizeStream();
+        finishAssistantTurn();
         appendUserBubble(ev.payload.text, ev.payload.attachments, ev.payload.parts, ev.payload.clientRequestId);
         break;
       case 'message_receipt':
@@ -1130,6 +1162,8 @@ import {
         break;
       case 'error':
         finalizeStream();
+        finishAssistantTurn();
+        announceTurnComplete('回复失败');
         appendError(ev.payload.message);
         if (activeTurnText) rememberFailure(activeTurnText);
         setBusy(false);
@@ -2375,6 +2409,7 @@ import {
   }
 
   function renderHistoryMessages(msgs, title) {
+    finishAssistantTurn();
     if (msgs.length === 0) {
       appendSystem('该会话无历史消息', false);
       return;
@@ -2415,17 +2450,19 @@ import {
       if (m.role === 'user') {
         appendHistoryUserBubble(m.content);
       } else {
-        const el = document.createElement('div');
-        el.className = 'msg codex';
-        el.innerHTML = `<div class="bubble md">${renderMarkdown(m.content || '')}</div>`;
-        messagesEl.appendChild(el);
+        const bubble = document.createElement('div');
+        bubble.className = 'bubble md';
+        bubble.innerHTML = renderMarkdown(m.content || '');
+        appendRaw(bubble, 'codex');
       }
     }
+    finishAssistantTurn();
     scrollBottom();
     checkEmptyState();
   }
 
   function appendHistoryUserBubble(text) {
+    finishAssistantTurn();
     const el = document.createElement('div');
     el.className = 'msg user';
     el.innerHTML = `<div class="bubble">${escHtml(text || '')}</div>`;
@@ -2659,6 +2696,8 @@ import {
 
   function handleResult(payload) {
     finalizeStream();
+    finishAssistantTurn();
+    announceTurnComplete(payload?.ok === false ? '回复失败' : '回复完成');
     setBusy(false);
     if (payload && payload.ok === false && activeTurnText) rememberFailure(activeTurnText);
     if (payload && payload.ok !== false) activeTurnText = '';
@@ -2889,7 +2928,8 @@ import {
     if (!appendReasoning.card) {
       const card = document.createElement('div');
       card.className = 'tool-card reasoning-card';
-      card.innerHTML = '<details class="reasoning-fold" open><summary class="reasoning-toggle"><span class="reasoning-closed">思考</span><span class="reasoning-open">思考过程</span></summary><div class="reasoning-stack"></div></details>';
+      card.dataset.streaming = 'true';
+      card.innerHTML = '<details class="reasoning-fold"><summary class="reasoning-toggle"><span class="reasoning-label">思考中</span></summary><div class="reasoning-stack"></div></details>';
       appendRaw(card, 'codex');
       appendReasoning.card = card;
       appendReasoning.sections = {};
@@ -2990,54 +3030,20 @@ import {
   }
 
   // Streaming text
-  function paintStreamMarkdown(force) {
-    if (!streamingEl) return;
-    if (!force) {
-      if (streamMdTimer) return;
-      streamMdTimer = setTimeout(() => {
-        streamMdTimer = null;
-        if (streamingEl) streamingEl.innerHTML = renderMarkdown(streamText);
-        scrollBottom();
-      }, STREAM_MD_INTERVAL_MS);
-      return;
-    }
-    if (streamMdTimer) {
-      clearTimeout(streamMdTimer);
-      streamMdTimer = null;
-    }
-    streamingEl.innerHTML = renderMarkdown(streamText);
-  }
-
   function appendTextDelta(text) {
-    if (!streamingEl) {
-      setBusy(true);
-      hideTyping();
-      streamText = '';
-      const bubble = document.createElement('div');
-      bubble.className = 'bubble md';
-      streamingEl = bubble;
-      appendRaw(bubble, 'codex');
-    }
-    streamText += text;
-    paintStreamMarkdown(false);
-    rememberOutput(streamText);
-    scrollBottom();
+    if (appendReasoning.card) sealReasoning();
+    rememberOutput(transcriptStream.append(text));
   }
 
   function finalizeStream() {
-    if (streamingEl && streamText) paintStreamMarkdown(true);
-    if (streamMdTimer) {
-      clearTimeout(streamMdTimer);
-      streamMdTimer = null;
-    }
-    streamingEl = null;
-    streamText = '';
+    transcriptStream.finish();
     sealReasoning();
   }
 
   function sealReasoning() {
-    const fold = appendReasoning.card?.querySelector('.reasoning-fold');
-    if (fold) fold.open = false;
+    const label = appendReasoning.card?.querySelector('.reasoning-label');
+    if (label) label.textContent = '思考过程';
+    if (appendReasoning.card) delete appendReasoning.card.dataset.streaming;
     appendReasoning.card = null;
     appendReasoning.sections = null;
   }
@@ -3096,7 +3102,38 @@ import {
     if (typingEl) { typingEl.remove(); typingEl = null; }
   }
 
+  function ensureAssistantTurn() {
+    if (activeAssistantTurnEl) return activeAssistantTurnEl;
+    const turn = document.createElement('div');
+    turn.className = 'msg codex assistant-turn';
+    turn.dataset.active = 'true';
+    turn.setAttribute('aria-busy', 'true');
+    messagesEl.appendChild(turn);
+    activeAssistantTurnEl = turn;
+    checkEmptyState();
+    return turn;
+  }
+
+  function finishAssistantTurn() {
+    if (!activeAssistantTurnEl) return;
+    delete activeAssistantTurnEl.dataset.active;
+    activeAssistantTurnEl.removeAttribute('aria-busy');
+    activeAssistantTurnEl = null;
+  }
+
+  function announceTurnComplete(message) {
+    turnAnnouncer.textContent = '';
+    requestAnimationFrame(() => {
+      turnAnnouncer.textContent = message;
+    });
+  }
+
   function appendRaw(el, role) {
+    if (role === 'codex') {
+      const turn = ensureAssistantTurn();
+      turn.appendChild(el);
+      return turn;
+    }
     const wrapper = document.createElement('div');
     wrapper.className = 'msg ' + role;
     wrapper.appendChild(el);
@@ -3138,14 +3175,17 @@ import {
   }
 
   function clearMessages() {
-    messagesEl.innerHTML = '';
     finalizeStream();
+    finishAssistantTurn();
+    messagesEl.innerHTML = '';
     pendingToolCards = {};
     pendingApprovalCards = {};
     queuedUserBubbles = [];
     offlineUserBubbles = [];
     renderedOutboxIds = new Set();
     latestOutputText = '';
+    followTranscript = true;
+    jumpToLatestBtn.hidden = true;
     setBusy(false);
     checkEmptyState();
   }
@@ -3170,7 +3210,6 @@ import {
     sendBtn.title = state.mode === 'stop'
       ? (state.enabled ? '中断' : '正在停止')
       : '发送';
-    sendBtn.textContent = state.mode === 'stop' ? '■' : '↑';
     sendBtn.setAttribute('aria-label', sendBtn.title);
     const followUpBtn = $('followup-btn');
     if (followUpBtn) followUpBtn.hidden = !state.followUpVisible;
@@ -3258,9 +3297,34 @@ import {
     paintRtt(NaN);
   }
 
-  function scrollBottom() {
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+  function transcriptDistanceFromBottom() {
+    return Math.max(0, messagesEl.scrollHeight - messagesEl.clientHeight - messagesEl.scrollTop);
   }
+
+  function paintJumpToLatest() {
+    const hasOverflow = messagesEl.scrollHeight > messagesEl.clientHeight + 1;
+    jumpToLatestBtn.hidden = followTranscript || !hasOverflow;
+  }
+
+  function scrollBottom(force = false) {
+    if (!force && !followTranscript) {
+      paintJumpToLatest();
+      return;
+    }
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    followTranscript = true;
+    paintJumpToLatest();
+  }
+
+  messagesEl.addEventListener('scroll', () => {
+    followTranscript = transcriptDistanceFromBottom() <= TRANSCRIPT_FOLLOW_DISTANCE_PX;
+    paintJumpToLatest();
+  });
+
+  jumpToLatestBtn.addEventListener('click', () => {
+    followTranscript = true;
+    scrollBottom(true);
+  });
 
   function escHtml(s) {
     return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');

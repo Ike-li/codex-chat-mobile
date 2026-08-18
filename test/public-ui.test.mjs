@@ -18,6 +18,18 @@ test('HTML loads the application from an external module and contains no inline 
   }
 });
 
+test('composer send controls use vector icons and keep them when switching mode', () => {
+  const composerHtml = html.slice(html.indexOf('id="input-area"'), html.indexOf('id="session-settings"'));
+  assert.match(composerHtml, /id="send-btn"[^>]*>[\s\S]*<svg class="icon-send"/);
+  assert.match(composerHtml, /id="send-btn"[\s\S]*<svg class="icon-stop"/);
+  assert.match(composerHtml, /id="followup-btn"[^>]*>[\s\S]*<svg class="icon-send"/);
+  assert.doesNotMatch(composerHtml, />\s*[↑■]\s*</);
+  assert.match(html, /#send-btn\[data-mode="stop"\][\s\S]*\.icon-send/);
+  assert.match(html, /#send-btn\[data-mode="stop"\][\s\S]*\.icon-stop/);
+  assert.doesNotMatch(appJs, /sendBtn\.textContent\s*=/);
+  assert.match(appJs, /sendBtn\.dataset\.mode = state\.mode/);
+});
+
 test('mobile shell exposes session state and quick terminal controls', () => {
   assert.match(allContent, /id="session-meta"/);
   assert.match(allContent, /id="send-btn"/);
@@ -77,7 +89,7 @@ test('client reconciles optimistic and queued message bubbles by clientRequestId
 test('copy buffer is restored from replayed Codex output events', () => {
   assert.match(allContent, /let latestOutputText = '';/);
   assert.match(allContent, /function rememberOutput\(text\)/);
-  assert.match(allContent, /rememberOutput\(streamText\)/);
+  assert.match(allContent, /rememberOutput\(transcriptStream\.append\(text\)\)/);
   assert.match(allContent, /rememberOutput\(msg\)/);
   assert.match(allContent, /const text = latestOutputText\.trim\(\)/);
   assert.match(allContent, /function fallbackCopyText\(text\)/);
@@ -331,6 +343,7 @@ test('empty landing is a question plus task cards, not a slash-command menu', ()
   assert.match(emptyHtml, /探索并理解代码/);
   assert.match(emptyHtml, /data-prompt=/);
   assert.doesNotMatch(emptyHtml, /empty-logo/);
+  assert.doesNotMatch(emptyHtml, /empty-mark/);
   assert.doesNotMatch(emptyHtml, /查看系统状态/);
   assert.match(appJs, /dataset\.prompt/);
   assert.match(appJs, /empty-project/);
@@ -366,9 +379,10 @@ test('connection chrome sits in the transcript column and collapsed reasoning is
   assert.match(html, /#conn-banner\s*\{[^}]*max-width:\s*720px/s);
   assert.match(html, /#conn-banner\s*\{[^}]*border-radius:\s*14px/s);
   assert.match(html, /#pending-panel\s*\{[^}]*max-width:\s*720px/s);
-  assert.match(html, /\.reasoning-fold\[open\] \.reasoning-closed/);
-  assert.match(appJs, /reasoning-closed/);
-  assert.match(appJs, /<span class="reasoning-closed">思考<\/span>/);
+  assert.match(html, /\.reasoning-card\[data-streaming="true"\] \.reasoning-label/);
+  assert.match(appJs, /reasoning-label/);
+  assert.match(appJs, /<span class="reasoning-label">思考中<\/span>/);
+  assert.doesNotMatch(appJs, /fold\.open = false/);
 });
 
 test('mobile shell exposes connection banner, workspace sheet, confirm sheet and @ mention search', () => {
@@ -390,13 +404,22 @@ test('mobile shell exposes connection banner, workspace sheet, confirm sheet and
   assert.match(appJs, /m\.kind === 'command'/);
 });
 
-test('assistant bubbles render sanitized markdown instead of escaped plaintext', () => {
+test('assistant bubbles stream stable text and render sanitized markdown when complete', () => {
   assert.match(appJs, /from '\/js\/markdown\.js'/);
-  assert.match(appJs, /function paintStreamMarkdown/);
-  assert.match(appJs, /streamingEl\.innerHTML = renderMarkdown\(streamText\)/);
+  assert.match(appJs, /from '\/js\/transcript-stream\.js'/);
+  assert.match(appJs, /createTranscriptStream/);
+  assert.match(appJs, /streamingEl\.textContent = text/);
+  assert.match(appJs, /streamingEl\.innerHTML = renderMarkdown\(text\)/);
+  assert.match(appJs, /delete streamingEl\.dataset\.streaming/);
   assert.match(appJs, /renderMarkdown\(m\.content \|\| ''\)/);
   assert.doesNotMatch(appJs, /escHtml\(m\.content\.slice\(0, 500\)\)/);
-  assert.doesNotMatch(appJs, /streamingEl\.textContent = streamText/);
+});
+
+test('streaming tokens stay out of the live region and turn completion is announced once', () => {
+  assert.match(html, /id="messages" aria-live="off"/);
+  assert.match(html, /id="turn-announcer"[^>]*aria-live="polite"[^>]*aria-atomic="true"/);
+  assert.match(appJs, /function announceTurnComplete/);
+  assert.match(appJs, /announceTurnComplete\(payload\?\.ok === false \? '回复失败' : '回复完成'\)/);
 });
 
 test('client uses app-server threads as the only session drawer and history source', () => {

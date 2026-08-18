@@ -77,7 +77,9 @@ async function simulateTurn(input, targetThreadId = threadId) {
   }
 
   // Simulate streaming response
-  const responseText = input.includes('REAL_BROWSER_OK')
+  const responseText = input.includes('SCROLL_STREAM_FIXTURE')
+    ? Array.from({ length: 90 }, (_, index) => `line-${String(index + 1).padStart(3, '0')} streaming transcript content`).join('\n')
+    : input.includes('REAL_BROWSER_OK')
     ? 'REAL_BROWSER_OK'
     : input.includes('PRE_ACK_STREAM')
       ? 'PRE_ACK_STREAM_OK'
@@ -86,13 +88,21 @@ async function simulateTurn(input, targetThreadId = threadId) {
     : input.includes('/status')
       ? '当前没有活跃目标或正在执行的任务。'
       : `Mock response to: ${input}`;
+  const streamDelayMs = input.includes('STREAMING_MARKDOWN_FIXTURE')
+    ? 40
+    : input.includes('SCROLL_STREAM_FIXTURE')
+      ? 35
+      : 10;
+  const streamChunks = input.includes('SCROLL_STREAM_FIXTURE')
+    ? responseText.split('\n').map((line, index, lines) => index < lines.length - 1 ? `${line}\n` : line)
+    : [...responseText];
 
   // Stream text delta
-  for (const char of responseText) {
+  for (const char of streamChunks) {
     notify('item/agentMessage/delta', {
       threadId: targetThreadId, turnId, itemId: `msg_${turnCount}`, delta: char
     });
-    await sleep(10);
+    await sleep(streamDelayMs);
   }
 
   // Complete the message
@@ -113,6 +123,96 @@ async function simulateTurn(input, targetThreadId = threadId) {
     items: [
       { type: 'userMessage', content: [{ type: 'text', text: input, text_elements: [] }] },
       { type: 'agentMessage', id: `msg_${turnCount}`, text: responseText },
+    ],
+  });
+}
+
+async function simulateTurnGroup(input, targetThreadId = threadId) {
+  turnCount++;
+  const turnId = `turn_${turnCount}`;
+  const itemId = `cmd_group_${turnCount}`;
+  activeTurnId = turnId;
+  notify('turn/started', {
+    threadId: targetThreadId,
+    turn: { id: turnId, status: 'inProgress' },
+  });
+  for (const char of 'Before the tool.') {
+    notify('item/agentMessage/delta', {
+      threadId: targetThreadId, turnId, itemId: `msg_before_${turnCount}`, delta: char,
+    });
+    await sleep(15);
+  }
+  notify('item/started', {
+    threadId: targetThreadId,
+    turnId,
+    item: { type: 'commandExecution', id: itemId, command: 'printf grouped', status: 'inProgress' },
+  });
+  notify('item/commandExecution/outputDelta', {
+    threadId: targetThreadId, turnId, itemId, delta: 'grouped\n', stream: 'stdout',
+  });
+  notify('item/completed', {
+    threadId: targetThreadId,
+    turnId,
+    item: { type: 'commandExecution', id: itemId, command: 'printf grouped', aggregatedOutput: 'grouped\n', exitCode: 0, status: 'completed' },
+  });
+  for (const char of 'After the tool.') {
+    notify('item/agentMessage/delta', {
+      threadId: targetThreadId, turnId, itemId: `msg_after_${turnCount}`, delta: char,
+    });
+    await sleep(15);
+  }
+  notify('turn/completed', {
+    threadId: targetThreadId,
+    turn: { id: turnId, status: 'completed' },
+  });
+  activeTurnId = null;
+  threadHistory.set(targetThreadId, {
+    input,
+    responseText: 'Before the tool. After the tool.',
+    turnId,
+    items: [
+      { type: 'userMessage', content: [{ type: 'text', text: input, text_elements: [] }] },
+      { type: 'agentMessage', text: 'Before the tool.' },
+      { type: 'commandExecution', id: itemId, command: 'printf grouped', aggregatedOutput: 'grouped\n', exitCode: 0, status: 'completed' },
+      { type: 'agentMessage', text: 'After the tool.' },
+    ],
+  });
+}
+
+async function simulateReasoningTurn(input, targetThreadId = threadId) {
+  turnCount++;
+  const turnId = `turn_${turnCount}`;
+  const reasoningItemId = `reasoning_${turnCount}`;
+  activeTurnId = turnId;
+  notify('turn/started', {
+    threadId: targetThreadId,
+    turn: { id: turnId, status: 'inProgress' },
+  });
+  for (const delta of ['Inspecting ', 'the current ', 'streaming ', 'layout.']) {
+    notify('item/reasoning/summaryTextDelta', {
+      threadId: targetThreadId, turnId, itemId: reasoningItemId, delta,
+    });
+    await sleep(140);
+  }
+  for (const char of 'Reasoning fixture complete.') {
+    notify('item/agentMessage/delta', {
+      threadId: targetThreadId, turnId, itemId: `msg_${turnCount}`, delta: char,
+    });
+    await sleep(20);
+  }
+  notify('turn/completed', {
+    threadId: targetThreadId,
+    turn: { id: turnId, status: 'completed' },
+  });
+  activeTurnId = null;
+  threadHistory.set(targetThreadId, {
+    input,
+    responseText: 'Reasoning fixture complete.',
+    turnId,
+    items: [
+      { type: 'userMessage', content: [{ type: 'text', text: input, text_elements: [] }] },
+      { type: 'reasoning', summary: ['Inspecting the current streaming layout.'] },
+      { type: 'agentMessage', text: 'Reasoning fixture complete.' },
     ],
   });
 }
@@ -318,6 +418,10 @@ rl.on('line', async (line) => {
         // Simulate async turn processing
         if (input.includes('PRE_ACK_STREAM')) {
           break;
+        } else if (input.includes('REASONING_STREAM_FIXTURE')) {
+          simulateReasoningTurn(input, targetThreadId).catch(() => {});
+        } else if (input.includes('TURN_GROUP_FIXTURE')) {
+          simulateTurnGroup(input, targetThreadId).catch(() => {});
         } else if (input.includes('SLOW_TURN')) {
           simulateSlowTurn(input, targetThreadId).catch(() => {});
         } else if (input.includes('FILE_CHANGE_FIXTURE')) {

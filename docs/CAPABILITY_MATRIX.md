@@ -19,8 +19,8 @@
 | 命令与工具 | 默认，受权限约束 | Codex 发起 | 卡片、实时输出、exit code | 原生 thread |
 | MCP/Search | 条件于配置/模型 | Codex 发起 | MCP/Search 卡片 | 原生 thread |
 | File change/Diff/Plan | 默认，取决于任务 | 消息区或 slash 命令 | 结构化卡片 | 原生 thread |
-| 中断 | 默认 | 主按钮 `■` | ACK + turn 终态 | 不持久化为浏览器状态 |
-| Steer/队列 | 默认 | 进行中再输入后点第二颗 `↑` | steered 或 queued 气泡 | runtime 进程内队列 |
+| 中断 | 默认 | 主按钮停止图标 | ACK + turn 终态 | 不持久化为浏览器状态 |
+| Steer/队列 | 默认 | 进行中再输入后点第二颗发送箭头 | steered 或 queued 气泡 | runtime 进程内队列 |
 
 ## 历史、恢复与多设备
 
