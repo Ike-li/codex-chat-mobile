@@ -3030,7 +3030,7 @@ import {
     const card = document.createElement('div');
     card.className = 'tool-card';
     card.innerHTML = `<div class="tool-name">🔍 搜索: ${escHtml(payload.query || '')}</div>`
-      + results.map(r => `<div class="tool-cmd" style="margin-bottom:4px;"><a href="${escHtml(r.url)}" target="_blank" style="color:var(--accent-light);text-decoration:none;font-weight:600;">${escHtml(r.title)}</a><br><span class="tool-output" style="background:transparent;color:var(--text-muted);padding:4px 0 0;">${escHtml(r.snippet || '')}</span></div>`).join('');
+      + results.map(r => `<div class="tool-cmd" style="margin-bottom:4px;"><a href="${escHtml(r.url)}" target="_blank" style="color:var(--accent-text);text-decoration:none;font-weight:600;">${escHtml(r.title)}</a><br><span class="tool-output" style="background:transparent;color:var(--text-muted);padding:4px 0 0;">${escHtml(r.snippet || '')}</span></div>`).join('');
     appendRaw(card, 'codex');
     scrollBottom();
   }
@@ -3430,12 +3430,6 @@ import {
       if (e.target.closest('.native-control-btn')) closeDrawer();
     });
   }
-  document.querySelectorAll('#quick-actions [data-command]').forEach(btn => {
-    btn.onclick = () => {
-      inputEl.value = btn.dataset.command;
-      sendMessage();
-    };
-  });
   if (copyLatestBtn) copyLatestBtn.onclick = copyLatestOutput;
   if (retryLastBtn) retryLastBtn.onclick = retryLastFailed;
   inputEl.addEventListener('keydown', e => {

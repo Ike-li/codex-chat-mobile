@@ -21,11 +21,11 @@ test.describe('审批卡按钮视觉层级', () => {
     );
     expect(denyBg, '拒绝按钮不应是刺眼的实心大红').not.toBe(HARSH_RED);
 
-    // 批准是主操作,保持 OpenAI 绿实心。
+    // 批准是主操作,保持 OpenAI 绿实心 —— 白字压底改用文字档 var(--accent-text) #0d8265(4.77:1)。
     const approveBg = await card.locator('.approve-btn').first().evaluate(
       el => el.ownerDocument.defaultView.getComputedStyle(el).backgroundColor,
     );
-    expect(approveBg, '批准按钮应保持主操作绿').toBe('rgb(16, 163, 127)');
+    expect(approveBg, '批准按钮应保持主操作绿').toBe('rgb(13, 130, 101)');
 
     const cardBox = await card.boundingBox();
     const messagesBox = await page.locator('#messages').boundingBox();

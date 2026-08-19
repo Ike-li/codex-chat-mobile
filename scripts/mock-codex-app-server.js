@@ -10,6 +10,28 @@ let activeTurnId = null;
 const pendingApprovals = new Map(); // id → { resolve }
 const threadHistory = new Map();
 
+// marked 开着 gfm: true,真实回复里表格/标题/引用/分隔线都会出现。这份 fixture 刻意让
+// 表格宽到超过 720px 阅读栏,用来守护"宽表格自己横向滚动、不撑破整条消息"。
+const RICH_MARKDOWN = [
+  '# 顶层标题',
+  '',
+  '## 次级标题',
+  '',
+  '> 引用块:验证左边框与 muted 文字色。',
+  '',
+  '---',
+  '',
+  // 单元格里放不可断行的长 token(路径、命令行),表格的 min-content 宽度会直接超过
+  // 720px 阅读栏 —— 这才是真实会破版的形态,纯中文说明会自己换行,构不成守护。
+  '| 文件 | 命令 | 门禁 | 说明 |',
+  '| --- | --- | --- | --- |',
+  '| `public/js/workspace-panel.js` | `npm run test:e2e -- --project=mobile-chrome` | `lint` | 一段足够长的中文说明文本，继续把这张表格撑宽 |',
+  '| `scripts/mock-codex-app-server.js` | `node --test --test-concurrency=1 test/*.test.mjs` | `protocol:check` | 另一段同样很长的中文说明文本，确保必须横向滚动 |',
+  '',
+  '- 列表项一',
+  '- 列表项二',
+].join('\n');
+
 function respond(id, result) {
   process.stdout.write(JSON.stringify({ id, result }) + '\n');
 }
@@ -83,6 +105,9 @@ async function simulateTurn(input, targetThreadId = threadId) {
     ? 'REAL_BROWSER_OK'
     : input.includes('PRE_ACK_STREAM')
       ? 'PRE_ACK_STREAM_OK'
+    // RICH 分支必须排在 MARKDOWN_FIXTURE 之前:后者是前者的子串。
+    : input.includes('RICH_MARKDOWN_FIXTURE')
+      ? RICH_MARKDOWN
     : input.includes('MARKDOWN_FIXTURE')
       ? 'Here is **bold** and `code`.\n\n- item one\n- item two'
     : input.includes('/status')
@@ -92,8 +117,10 @@ async function simulateTurn(input, targetThreadId = threadId) {
     ? 40
     : input.includes('SCROLL_STREAM_FIXTURE')
       ? 35
+    : input.includes('RICH_MARKDOWN_FIXTURE')
+      ? 1
       : 10;
-  const streamChunks = input.includes('SCROLL_STREAM_FIXTURE')
+  const streamChunks = input.includes('SCROLL_STREAM_FIXTURE') || input.includes('RICH_MARKDOWN_FIXTURE')
     ? responseText.split('\n').map((line, index, lines) => index < lines.length - 1 ? `${line}\n` : line)
     : [...responseText];
 

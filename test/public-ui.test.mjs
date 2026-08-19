@@ -1,10 +1,20 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 const appJs = readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
 const allContent = html + '\n' + appJs;
+
+// 形态无关的样式表读取器:样式在独立文件里就读文件,否则回落到 index.html 的 <style> 块。
+// 这让 CSS 断言表达的是「应用样式表里有这条规则」,与规则的物理位置解耦。
+const cssUrl = new URL('../public/css/app.css', import.meta.url);
+const css = existsSync(cssUrl)
+  ? readFileSync(cssUrl, 'utf8')
+  : (html.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '');
+// 回退分支的正则若失配会静默返回空串,让所有 doesNotMatch 假绿。这条断言在模块加载期
+// 就让整个文件崩掉,而不是给出一片虚假的绿。
+assert.ok(css.length > 20000, '应用样式表读取失败——读取器与当前文件形态失配');
 
 test('HTML loads the application from an external module and contains no inline scripts', () => {
   assert.match(html, /<script\s+type="module"\s+src="\/js\/app\.js"><\/script>/);
@@ -18,14 +28,90 @@ test('HTML loads the application from an external module and contains no inline 
   }
 });
 
+test('every stylesheet and script the shell references resolves to a file under public/', () => {
+  // 引用完整性零守护时,拆分资源(抽 CSS、拆模块)一旦写错路径,单测全绿而页面裸奔。
+  let checked = 0;
+  const references = [];
+  for (const [tag] of html.matchAll(/<link\b[^>]*>/gi)) {
+    if (!/\brel="stylesheet"/i.test(tag)) continue;
+    references.push(tag.match(/\bhref="([^"]+)"/i)?.[1]);
+  }
+  for (const [, src] of html.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/gi)) {
+    references.push(src);
+  }
+
+  for (const target of references) {
+    assert.ok(target, '引用标签缺少 href/src');
+    if (/^(?:https?:)?\/\//.test(target)) continue;
+    // socket.io 客户端由 socket.io 中间件在运行时动态提供,public/ 下没有这个文件。
+    if (target === '/socket.io/socket.io.js') continue;
+    checked += 1;
+    assert.ok(
+      existsSync(new URL(`../public${target}`, import.meta.url)),
+      `index.html references missing asset ${target}`,
+    );
+  }
+  assert.ok(checked >= 5, `资源扫描器失配——只检出 ${checked} 个本地引用`);
+});
+
+test('application styles live in an external stylesheet loaded after the hljs themes', () => {
+  assert.ok(existsSync(cssUrl), 'public/css/app.css 必须存在');
+  assert.doesNotMatch(html, /<style>/);
+  assert.match(html, /<link rel="stylesheet" href="\/css\/app\.css">/);
+
+  // app.css 必须排在 hljs 主题之后,否则 .hljs 的覆盖关系会反转。
+  // 用引用顺序的索引断言,不用行号——行号会随任何无关编辑漂移。
+  const sheets = [...html.matchAll(/<link\b[^>]*\brel="stylesheet"[^>]*>/gi)]
+    .map(([tag]) => tag.match(/\bhref="([^"]+)"/i)?.[1]);
+  const appIdx = sheets.indexOf('/css/app.css');
+  const darkIdx = sheets.indexOf('/vendor/github-dark.min.css');
+  assert.ok(darkIdx >= 0, 'hljs 主题样式表应仍被引用');
+  assert.ok(appIdx > darkIdx, `app.css(#${appIdx})必须排在 github-dark(#${darkIdx})之后`);
+});
+
+test('code blocks ship only the dark hljs theme so token colours match the dark pre background', () => {
+  // .codex .bubble.md pre 与 .tool-output 都硬编码了 #1e1e1e 暗底,而两个 hljs 主题原本
+  // 按 prefers-color-scheme 互斥加载:浅色下生效的是 github-light,它的深灰/深蓝 token
+  // 前景色压在这块黑底上几乎读不出来。代码块统一走暗色 ⇒ 只保留 github-dark 且不带 media。
+  assert.match(html, /<link rel="stylesheet" href="\/vendor\/github-dark\.min\.css">/);
+  assert.doesNotMatch(html, /github-light/, 'github-light 不应再被引用');
+  assert.ok(
+    !existsSync(new URL('../public/vendor/github-light.min.css', import.meta.url)),
+    '未被引用的 vendor 文件应删除',
+  );
+  // 上面那条引用完整性守护只检查「被引用的文件存在」,不检查「文件都被引用」——
+  // 删文件不会让它变红,所以这里主动补一条反向断言,并同步第三方登记。
+  const notices = readFileSync(new URL('../public/vendor/THIRD-PARTY-NOTICES.md', import.meta.url), 'utf8');
+  assert.doesNotMatch(notices, /github-light/, '第三方登记必须与实际打包的文件一致');
+  assert.match(notices, /github-dark\.min\.css/);
+});
+
+test('extracting the stylesheet drops dead rules without gutting shared scrollbar styling', () => {
+  // #quick-actions:HTML 里没有这个元素;.premium-popover:HTML 与 JS 全无引用。
+  assert.doesNotMatch(css, /#quick-actions/, '#quick-actions 无宿主元素,规则应删除');
+  assert.doesNotMatch(appJs, /#quick-actions/, '#quick-actions 选择器永远返回空集,绑定应删除');
+  assert.doesNotMatch(css, /\.premium-popover/, '.premium-popover 无任何引用,规则应删除');
+  // #session-list 同样无宿主,但它出现在几条共享滚动条规则的选择器列表里。
+  // 只能摘掉这一项,整条删会连带干掉 #messages / .tool-output 的滚动条样式。
+  assert.doesNotMatch(css, /#session-list/, '#session-list 无宿主元素,应从所有选择器中摘除');
+  assert.match(css, /#messages, \.tool-output \{[^}]*scrollbar-width:\s*thin/s);
+  for (const part of ['', '-thumb', '-track']) {
+    assert.match(
+      css,
+      new RegExp(`#messages::-webkit-scrollbar${part}, \\.tool-output::-webkit-scrollbar${part} \\{`),
+      `共享滚动条规则 ::-webkit-scrollbar${part} 不能被整条删掉`,
+    );
+  }
+});
+
 test('composer send controls use vector icons and keep them when switching mode', () => {
   const composerHtml = html.slice(html.indexOf('id="input-area"'), html.indexOf('id="session-settings"'));
   assert.match(composerHtml, /id="send-btn"[^>]*>[\s\S]*<svg class="icon-send"/);
   assert.match(composerHtml, /id="send-btn"[\s\S]*<svg class="icon-stop"/);
   assert.match(composerHtml, /id="followup-btn"[^>]*>[\s\S]*<svg class="icon-send"/);
   assert.doesNotMatch(composerHtml, />\s*[↑■]\s*</);
-  assert.match(html, /#send-btn\[data-mode="stop"\][\s\S]*\.icon-send/);
-  assert.match(html, /#send-btn\[data-mode="stop"\][\s\S]*\.icon-stop/);
+  assert.match(css, /#send-btn\[data-mode="stop"\][\s\S]*\.icon-send/);
+  assert.match(css, /#send-btn\[data-mode="stop"\][\s\S]*\.icon-stop/);
   assert.doesNotMatch(appJs, /sendBtn\.textContent\s*=/);
   assert.match(appJs, /sendBtn\.dataset\.mode = state\.mode/);
 });
@@ -218,8 +304,8 @@ test('drawer hides the tools panel and labels conversations by project', () => {
 });
 
 test('opening the drawer pins projects at the top and does not start at the bottom', () => {
-  assert.match(html, /#drawer \{[^}]*overflow:\s*hidden/);
-  assert.match(html, /#drawer-body \{[^}]*min-height:\s*0/);
+  assert.match(css, /#drawer \{[^}]*overflow:\s*hidden/);
+  assert.match(css, /#drawer-body \{[^}]*min-height:\s*0/);
   assert.match(appJs, /function resetDrawerScroll/);
   const start = appJs.indexOf("$('menu-btn').onclick");
   const end = appJs.indexOf('function closeDrawer', start);
@@ -351,39 +437,329 @@ test('empty landing is a question plus task cards, not a slash-command menu', ()
 });
 
 test('chat transcript uses a user pill and a full-width assistant column', () => {
-  assert.match(html, /\.msg\.user\s*\{[^}]*align-self:\s*flex-end/s);
-  assert.match(html, /\.msg\.codex\s*\{[^}]*max-width:\s*100%/s);
-  assert.match(html, /\.user \.bubble\s*\{[^}]*border-radius:\s*18px/s);
-  assert.match(html, /#messages\s*\{[^}]*max-width:\s*720px/s);
-  assert.match(html, /#input-area\s*\{[^}]*max-width:\s*720px/s);
-  assert.doesNotMatch(html, /--user-bg:\s*#0d0d0d/);
+  assert.match(css, /\.msg\.user\s*\{[^}]*align-self:\s*flex-end/s);
+  assert.match(css, /\.msg\.codex\s*\{[^}]*max-width:\s*100%/s);
+  assert.match(css, /\.user \.bubble\s*\{[^}]*border-radius:\s*18px/s);
+  assert.match(css, /#messages\s*\{[^}]*max-width:\s*720px/s);
+  assert.match(css, /#input-area\s*\{[^}]*max-width:\s*720px/s);
+  assert.doesNotMatch(css, /--user-bg:\s*#0d0d0d/);
 });
 
 test('tool and approval cards span the transcript column, not a 360px bubble', () => {
-  assert.match(html, /\.tool-card\s*\{[^}]*max-width:\s*100%/s);
-  assert.doesNotMatch(html, /\.tool-card\s*\{[^}]*max-width:\s*360px/s);
-  assert.match(html, /\.approval-btns\s*\{[^}]*display:\s*flex/s);
-  assert.match(html, /\.reasoning-card\s*\{[^}]*background:\s*transparent/s);
-  assert.doesNotMatch(html, /width: min\(340px/);
+  assert.match(css, /\.tool-card\s*\{[^}]*max-width:\s*100%/s);
+  assert.doesNotMatch(css, /\.tool-card\s*\{[^}]*max-width:\s*360px/s);
+  assert.match(css, /\.approval-btns\s*\{[^}]*display:\s*flex/s);
+  assert.match(css, /\.reasoning-card\s*\{[^}]*background:\s*transparent/s);
+  assert.doesNotMatch(css, /width: min\(340px/);
 });
 
 test('needs-you banner and reasoning sit in the transcript column', () => {
-  assert.match(html, /#needs-you-panel\s*\{[^}]*max-width:\s*720px/s);
-  assert.match(html, /#needs-you-panel\s*\{[^}]*border-radius:\s*14px/s);
-  assert.match(html, /\.reasoning-fold/);
-  assert.match(html, /\.reasoning-body/);
+  assert.match(css, /#needs-you-panel\s*\{[^}]*max-width:\s*720px/s);
+  assert.match(css, /#needs-you-panel\s*\{[^}]*border-radius:\s*14px/s);
+  // 带前导点的选择器字面量:markup 里是 class="reasoning-fold"(无点),只有样式表里才有 `.`。
+  assert.match(css, /\.reasoning-fold/);
+  assert.match(css, /\.reasoning-body/);
   assert.match(appJs, /reasoning-fold/);
   assert.match(appJs, /reasoning-body/);
 });
 
 test('connection chrome sits in the transcript column and collapsed reasoning is short', () => {
-  assert.match(html, /#conn-banner\s*\{[^}]*max-width:\s*720px/s);
-  assert.match(html, /#conn-banner\s*\{[^}]*border-radius:\s*14px/s);
-  assert.match(html, /#pending-panel\s*\{[^}]*max-width:\s*720px/s);
-  assert.match(html, /\.reasoning-card\[data-streaming="true"\] \.reasoning-label/);
+  assert.match(css, /#conn-banner\s*\{[^}]*max-width:\s*720px/s);
+  assert.match(css, /#conn-banner\s*\{[^}]*border-radius:\s*14px/s);
+  assert.match(css, /#pending-panel\s*\{[^}]*max-width:\s*720px/s);
+  assert.match(css, /\.reasoning-card\[data-streaming="true"\] \.reasoning-label/);
   assert.match(appJs, /reasoning-label/);
   assert.match(appJs, /<span class="reasoning-label">思考中<\/span>/);
   assert.doesNotMatch(appJs, /fold\.open = false/);
+});
+
+test('accent green is split into a text-grade tier and a decorative tier', () => {
+  // 文字档:#0d8265 on #ffffff = 4.77:1、on --bg #f8f9fa = 4.53:1,两者都过 WCAG AA 正文。
+  assert.match(css, /--accent-text:\s*#0d8265/);
+  // 深色下 #10a37f 已达 5.33:1(on --surface #1c1c1c),文字档回落到装饰档同值。
+  const darkStart = css.indexOf('@media (prefers-color-scheme: dark)');
+  const darkBlock = css.slice(darkStart, css.indexOf('* { box-sizing', darkStart));
+  assert.ok(darkStart >= 0 && darkBlock.length > 0);
+  assert.match(darkBlock, /--accent-text:\s*#10a37f/);
+  // 装饰档余量注释:在 --bg 上仅 3.03:1,提亮 --bg 会跌破 3:1 非文本标准。
+  assert.match(css, /3\.03:1/);
+
+  // 文字用法一律走文字档。
+  assert.match(css, /\.drawer-project-item\.active\s*\{[^}]*color:\s*var\(--accent-text\)/s);
+  assert.match(css, /\.codex \.bubble\.md a\s*\{[^}]*color:\s*var\(--accent-text\)/s);
+  assert.match(css, /\.approve-btn\s*\{[^}]*background:\s*var\(--accent-text\)/s);
+  // 搜索结果卡标题的内联 style CSS 够不着,必须在 JS 里换档。
+  assert.doesNotMatch(appJs, /color:var\(--accent-light\)/);
+  assert.match(appJs, /color:var\(--accent-text\)/);
+
+  // 装饰用法保持装饰档,不随文字档下沉。
+  assert.match(css, /#header-context svg\s*\{[^}]*color:\s*var\(--accent-light\)/s);
+  assert.match(css, /#status-dot\.connected\s*\{[^}]*background:\s*var\(--accent-light\)/s);
+  assert.match(css, /\.badge-dot\s*\{[^}]*color:\s*var\(--accent-light\)/s);
+  assert.match(css, /\.popover-item-check\s*\{[^}]*color:\s*var\(--accent-light\)/s);
+});
+
+test('color-mix tokens sit behind an @supports guard that keeps hard-coded fallbacks in front', () => {
+  // color-mix() 需要 Safari 16.2+ / Chrome 111+,而本项目现基线约 Safari 15.4 / Chrome 108。
+  // 它的降级不是优雅降级:自定义属性接受任意 token,不支持的引擎不会回落到前一条声明,
+  // 而是在使用处(background: var(--banner-warn))触发 invalid at computed-value time,
+  // background 变成 unset —— 横幅会完全没有底色。所以硬编码 fallback 必须留在守护块之前。
+  const supportsAt = css.indexOf('@supports (color: color-mix(');
+  assert.ok(supportsAt > 0, 'color-mix 必须被 @supports (color: color-mix(…)) 守护');
+
+  const beforeSupports = css.slice(0, supportsAt);
+  for (const [name, fallback] of [
+    ['--info-surface', /--info-surface:\s*#e8f4ff/],
+    ['--warn-surface', /--warn-surface:\s*#fff4e0/],
+    ['--success-surface', /--success-surface:\s*#e8f7ef/],
+    ['--diff-add', /--diff-add:\s*rgba\(16,\s*163,\s*127,\s*0\.12\)/],
+    ['--diff-del', /--diff-del:\s*rgba\(223,\s*28,\s*28,\s*0\.1\)/],
+  ]) {
+    assert.match(beforeSupports, fallback, `${name} 的硬编码 fallback 必须排在 @supports 之前`);
+  }
+  // 别名只是一跳间接:守护块之外它必须指向上面那些硬编码 fallback。
+  assert.match(beforeSupports, /--banner-info:\s*var\(--info-surface\)/);
+  assert.match(beforeSupports, /--banner-warn:\s*var\(--warn-surface\)/);
+  assert.match(beforeSupports, /--banner-success:\s*var\(--success-surface\)/);
+
+  // --diff-* 的 rgba 精确等于既有语义色(#10a37f / #df1c1c),是零观感变化的等价替换,
+  // 用它确立 color-mix 的写法惯例。
+  const guarded = css.slice(supportsAt);
+  assert.match(guarded, /--diff-add:\s*color-mix\(in srgb, var\(--accent-light\) 12%, transparent\)/);
+  assert.match(guarded, /--diff-del:\s*color-mix\(in srgb, var\(--error\) 10%, transparent\)/);
+  assert.match(guarded, /--diff-add:\s*color-mix\(in srgb, var\(--accent-light\) 20%, transparent\)/);
+  assert.match(guarded, /--diff-del:\s*color-mix\(in srgb, var\(--error\) 18%, transparent\)/);
+});
+
+test('each banner semantic derives surface/border/text from a single base colour', () => {
+  const supportsAt = css.indexOf('@supports (color: color-mix(');
+  const beforeSupports = css.slice(0, supportsAt);
+  const guarded = css.slice(supportsAt);
+
+  // 基色刻意留在守护块之外:它们是纯 hex 不需要守护,而且 --warn 被守护块之外的规则
+  // (#status-dot.busy 等)直接引用 —— 放进 @supports 会让不支持的引擎读到 undefined,
+  // background 同样变成 unset。
+  assert.match(beforeSupports, /--info:\s*#2f7fd6/);
+  assert.match(beforeSupports, /--warn:\s*#e09a10/);
+  assert.match(beforeSupports, /--success:\s*#1a9d6d/);
+
+  // 每语义 1 基色 + 3 派生。派生公式只写一遍:var() 惰性求值,--surface/--text 换成
+  // 深色值后 8 个派生 token 自动跟随,深色块只需要覆盖混比。
+  for (const [token, base, against] of [
+    ['--info-surface', '--info', '--surface'],
+    ['--info-border', '--info', '--surface'],
+    ['--warn-surface', '--warn', '--surface'],
+    ['--warn-border', '--warn', '--surface'],
+    ['--warn-text', '--warn', '--text'],
+    ['--success-surface', '--success', '--surface'],
+    ['--success-border', '--success', '--surface'],
+    ['--success-text', '--success', '--text'],
+  ]) {
+    assert.match(
+      guarded,
+      new RegExp(`\\${token}:\\s*color-mix\\(in srgb, var\\(\\${base}\\) var\\(\\${token}-mix\\), var\\(\\${against}\\)\\)`),
+      `${token} 应由 var(${base}) 与 var(${against}) 按 var(${token}-mix) 派生`,
+    );
+  }
+  // --info-text 现状就是正文色,没有混色可言,不进守护块。
+  assert.match(beforeSupports, /--info-text:\s*var\(--text\)/);
+
+  // 混比必须分模式:浅色是「白 + 一点色」,深色是「暗面 + 较多色」。
+  const guardedDarkStart = guarded.indexOf('@media (prefers-color-scheme: dark)');
+  assert.ok(guardedDarkStart > 0, '守护块内应有深色混比覆盖');
+  const guardedLight = guarded.slice(0, guardedDarkStart);
+  const guardedDark = guarded.slice(guardedDarkStart);
+  for (const [token, light, dark] of [
+    ['--info-surface-mix', '12%', '20%'],
+    ['--info-border-mix', '30%', '42%'],
+    ['--warn-surface-mix', '12%', '15%'],
+    ['--warn-border-mix', '42%', '32%'],
+    ['--warn-text-mix', '46%', '70%'],
+    ['--success-surface-mix', '12%', '12%'],
+    ['--success-border-mix', '48%', '33%'],
+    ['--success-text-mix', '66%', '55%'],
+  ]) {
+    assert.match(guardedLight, new RegExp(`\\${token}:\\s*${light}`), `${token} 浅色档`);
+    assert.match(guardedDark, new RegExp(`\\${token}:\\s*${dark}`), `${token} 深色档`);
+  }
+
+  // 深色的绿基色单独下沉一档:浅色基色 #1a9d6d 明度不够,和 --text 怎么混都出不来
+  // 深色下 #87e0a2 那种高亮薄荷绿文字。蓝/琥珀两个基色两模式共用。
+  const darkStart = css.indexOf('@media (prefers-color-scheme: dark)');
+  const darkFallbacks = css.slice(darkStart, supportsAt);
+  assert.match(darkFallbacks, /--success:\s*#2ecc71/);
+  assert.doesNotMatch(darkFallbacks, /--info:\s*#/);
+  assert.doesNotMatch(darkFallbacks, /--warn:\s*#/);
+});
+
+test('banner components read semantic tokens instead of per-element hard-coded colours', () => {
+  // token 层之后就是组件层。语义色的模式差异全部收敛进 token,组件规则里不该再出现
+  // 散落的同色系硬编码,也不该再为深色重写一遍颜色。
+  const componentCss = css.slice(css.indexOf('* { box-sizing'));
+
+  for (const [selector, declarations] of [
+    ['#conn-banner\\[data-tone="info"\\]', ['var\\(--banner-info\\)', 'var\\(--info-text\\)', 'var\\(--info-border\\)']],
+    ['#conn-banner\\[data-tone="warn"\\]', ['var\\(--banner-warn\\)', 'var\\(--warn-text\\)', 'var\\(--warn-border\\)']],
+    ['#conn-banner\\[data-tone="success"\\]', ['var\\(--banner-success\\)', 'var\\(--success-text\\)', 'var\\(--success-border\\)']],
+    ['#pending-panel', ['var\\(--banner-warn\\)', 'var\\(--warn-border\\)']],
+    ['#needs-you-panel', ['var\\(--banner-warn\\)', 'var\\(--warn-border\\)']],
+    ['\\.needs-you-heading', ['var\\(--warn-text\\)']],
+  ]) {
+    for (const declaration of declarations) {
+      assert.match(
+        componentCss,
+        new RegExp(`${selector}\\s*\\{[^}]*${declaration}`, 's'),
+        `${selector.replace(/\\/g, '')} 应引用 ${declaration.replace(/\\/g, '')}`,
+      );
+    }
+  }
+
+  // 只换 background 会造成"底色变了、描边没跟上"的半迁移 —— 连带的 border/text 硬编码
+  // 必须整组迁走。
+  for (const literal of [
+    '#c5dff5', '#2a4a66', // info border(浅/深)
+    '#f0d49a', '#5a4520', // warn border(浅/深)
+    '#6e4c00', '#e0b05a', '#7b4c00', // warn text(横幅/重试按钮)
+    '#0d6b45', '#24543a', // success text / border(深)
+    '#e8a020', // 琥珀装饰档:状态点与重试按钮描边
+  ]) {
+    assert.ok(!componentCss.includes(literal), `组件规则里不应再有硬编码 ${literal}`);
+  }
+
+  // 派生 token 自身模式感知 ⇒ 组件层不再需要任何 prefers-color-scheme 覆盖。
+  assert.doesNotMatch(
+    componentCss,
+    /@media \(prefers-color-scheme: dark\)/,
+    '颜色的深浅差异应全部收敛到 token 层',
+  );
+
+  // 有意保留的例外:RTT 芯片的警告态。#9a5f22 on --bg 已是 4.94:1(过 AA),
+  // 归并到 --warn-text 会推到 7.22:1 —— 不必要的超额收益,代价是芯片肉眼可辨地变深棕。
+  // 这条断言把"不归并"固化成契约,避免后来者把它当成遗漏顺手统一掉。
+  assert.match(
+    componentCss,
+    /#conn-rtt\[data-tone="warn"\]\s*\{[^}]*color:\s*#9a5f22/s,
+    'RTT 芯片警告态应保留 #9a5f22——它已过 AA,归并只会无谓加深观感',
+  );
+
+  // 绕过变量的同色硬编码。
+  assert.match(componentCss, /\.thread-status-dot\.running\s*\{[^}]*background:\s*var\(--accent-light\)/s);
+});
+
+test('markdown styling covers every element gfm actually emits', () => {
+  // marked 开着 gfm: true,但样式表原本只覆盖 p / ul,ol / pre / code / a。
+  // 表格、标题、引用、分隔线的观感由 e2e/markdown-typography.spec.js 守护;
+  // 下面这几个在浏览器里难以稳定构造,用规则存在性兜底。
+  assert.match(
+    css,
+    /\.codex \.bubble\.md img\s*\{[^}]*max-width:\s*100%[^}]*height:\s*auto/s,
+    '回复里贴的图不加约束会按原始像素宽度撑破阅读栏',
+  );
+  assert.match(css, /\.codex \.bubble\.md li\s*\{[^}]*margin-bottom/s, '列表项之间要有呼吸');
+  assert.match(css, /\.codex \.bubble\.md li:last-child\s*\{[^}]*margin-bottom:\s*0/s);
+  assert.match(css, /\.codex \.bubble\.md strong\s*\{[^}]*font-weight/s);
+  assert.match(css, /\.codex \.bubble\.md em\s*\{[^}]*font-style:\s*italic/s);
+  for (const tag of ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'hr', 'table', 'th', 'td']) {
+    assert.ok(css.includes(`.codex .bubble.md ${tag}`), `.codex .bubble.md ${tag} 应有规则`);
+  }
+});
+
+test('the body font stack drops the never-loaded Outfit family', () => {
+  // 全仓库没有 @font-face、没有字体文件、也没有外链 —— 'Outfit' 从来没被加载过,
+  // 一直在空转 fallback 到 -apple-system。删掉让声明诚实,零视觉变化。
+  assert.doesNotMatch(css, /Outfit/);
+  assert.doesNotMatch(css, /@font-face/, '不引入任何字体文件');
+  assert.match(css, /body \{[^}]*font-family:\s*-apple-system, BlinkMacSystemFont/s);
+});
+
+test('hover affordances are gated behind (hover: hover) and touch targets keep an :active fallback', () => {
+  // 触屏点一下会让 :hover 粘住,直到点别处才消失。所有悬停态必须关进 @media (hover: hover)。
+  // 这里不能用 /selector\s*\{[^}]*/ —— `[^}]*` 会被嵌套规则的第一个 } 提前截断,
+  // 改用切片定域:从 @media 起数花括号深度,回到 0 处即块尾(与缩进无关)。
+  const hoverStart = css.indexOf('@media (hover: hover) {');
+  assert.ok(hoverStart >= 0, '样式表应有 @media (hover: hover) 块');
+  let hoverEnd = -1;
+  for (let i = hoverStart, depth = 0; i < css.length; i += 1) {
+    if (css[i] === '{') depth += 1;
+    else if (css[i] === '}' && (depth -= 1) === 0) { hoverEnd = i + 1; break; }
+  }
+  assert.ok(hoverEnd > hoverStart, '@media (hover: hover) 块未闭合');
+  const hoverBlock = css.slice(hoverStart, hoverEnd);
+  assert.ok(hoverBlock.length > 100);
+
+  for (const selector of [
+    '.session-item:hover',
+    '.badge-pill:hover',
+    '.slash-item:hover',
+    '#composer-defaults:hover',
+    '#attach-btn:hover',
+    '#send-btn:hover:not(:disabled)',
+    '#followup-btn:hover',
+    '.popover-item:hover',
+    '.attach-chip-remove:hover',
+  ]) {
+    assert.ok(hoverBlock.includes(selector), `${selector} 应落在 @media (hover: hover) 内`);
+  }
+
+  // 门控之外不允许再有裸悬停规则(注释里提到 :hover 不算)。
+  const outsideHover = (css.slice(0, hoverStart) + css.slice(hoverEnd))
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.doesNotMatch(outsideHover, /:hover/);
+
+  // 陷阱 A:#composer-defaults 的 :hover 与 :focus-visible 原本共用声明块。
+  // 整块包进媒体查询会让键盘焦点态在触摸设备上一并丢失,必须拆开。
+  assert.ok(!hoverBlock.includes('#composer-defaults:focus-visible'));
+  assert.match(css, /#composer-defaults:focus-visible\s*\{[^}]*color:\s*var\(--text\)/s);
+
+  // 陷阱 B:.popover-item.selected 与 .popover-item:hover 同特异度(0,2,0)且在其后,
+  // 导致悬停一个已选中项反而比未选中更浅。用 0,3,0 的独立规则修掉,与源序无关。
+  assert.match(css, /\.popover-item\.selected\s*\{[^}]*background:\s*rgba\(0,0,0,0\.02\)/s);
+  assert.match(hoverBlock, /\.popover-item:hover\s*\{[^}]*background:\s*rgba\(0,0,0,0\.03\)/s);
+  assert.match(hoverBlock, /\.popover-item\.selected:hover\s*\{[^}]*background:\s*rgba\(0,0,0,0\.06\)/s);
+
+  // 陷阱 C:这 5 个宿主原本只有 hover 一种反馈,门控后在移动端会变成零点按反馈。
+  for (const selector of [
+    '.session-item:active',
+    '.badge-pill:active',
+    '.slash-item:active',
+    '.popover-item:active',
+    '.attach-chip-remove:active',
+  ]) {
+    assert.ok(css.includes(selector), `${selector} 应提供触摸点按反馈`);
+  }
+  // :active 兜底必须排在 hover 块之后,否则桌面端按下时会被同特异度的 :hover 压过。
+  assert.ok(css.indexOf('.session-item:active') > hoverStart);
+  assert.ok(css.indexOf('.slash-item:active') > hoverStart);
+  assert.ok(css.indexOf('.popover-item:active') > hoverStart);
+});
+
+test('scrollable overlays and nested panes contain their scroll chain', () => {
+  // 浮层/嵌套滚动区滚到边界后继续滑,会把滚动传递给背后的 #messages 或 body。
+  // overscroll-behavior: contain 把滚动链截断在自己身上。
+  for (const selector of [
+    // 浮层
+    '#drawer-body',
+    '.slash-popup',
+    '#at-mention-popup',
+    // 同一个 <div id="session-settings-body" class="workspace-body"> 同时命中这两条规则,
+    // 只改一条会漏掉另一个用到该规则的面板。
+    '#session-settings-body',
+    '.workspace-body',
+    '#native-panel',
+    // 嵌套滚动区
+    '#messages',
+    '.empty-state',
+    '.reasoning-body',
+    '.tool-output',
+    '.codex .bubble.md pre',
+  ]) {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    assert.match(
+      css,
+      new RegExp(`${escaped}\\s*\\{[^}]*overscroll-behavior:\\s*contain`, 's'),
+      `${selector} 应含 overscroll-behavior: contain`,
+    );
+  }
 });
 
 test('mobile shell exposes connection banner, workspace sheet, confirm sheet and @ mention search', () => {

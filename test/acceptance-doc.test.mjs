@@ -51,6 +51,16 @@ test('bilingual READMEs keep their language contract and stay cross-linked', () 
   }
 });
 
+test('key-file docs name the extracted stylesheet, not an index.html "CSS shell"', () => {
+  // 样式已抽到 public/css/app.css,把 index.html 描述成 "HTML and CSS shell" 会误导读者
+  // 去 index.html 里找样式。CONTRIBUTING.md 要求 EN/ZH 同步,三处必须一起改。
+  for (const docPath of ['../README.md', '../README.zh-CN.md', '../docs/ARCHITECTURE.md']) {
+    const doc = readDoc(docPath);
+    assert.match(doc, /public\/css\/app\.css/, `${docPath} must name public/css/app.css`);
+    assert.doesNotMatch(doc, /HTML (and|\/) ?CSS shell/i, `${docPath} still calls index.html a CSS shell`);
+  }
+});
+
 test('maintained Chinese docs use Chinese section titles', () => {
   const docs = {
     'README.zh-CN.md': readDoc('../README.zh-CN.md'),

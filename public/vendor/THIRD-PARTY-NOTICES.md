@@ -25,9 +25,9 @@
 - 许可 / License: BSD-3-Clause (SPDX: `BSD-3-Clause`)
 - 来源 / Source: https://github.com/highlightjs/highlight.js
 
-## highlight.js GitHub themes — `github-light.min.css`, `github-dark.min.css`
+## highlight.js GitHub theme — `github-dark.min.css`
 
-- 来源主题 / Theme: GitHub Light/Dark, highlight.js bundled styles
+- 来源主题 / Theme: GitHub Dark, highlight.js bundled styles
 - 版权与许可同 highlight.js / Copyright and license: same as highlight.js above (BSD-3-Clause)
 - 来源 / Source: https://github.com/highlightjs/highlight.js/tree/main/src/styles
 
