@@ -18,6 +18,11 @@ import {
   formatComposerPermission,
   formatComposerModel,
   formatComposerEffort,
+  normalizeCollaborationMode,
+  collaborationModePayload,
+  collaborationModeFromThreadSettings,
+  isUnsupportedCollaborationModeError,
+  parseCollaborationModeSlash,
   sanitizeTurnOverrides,
   sandboxPolicyFromMode,
   buildTurnStartOverrides,
@@ -169,6 +174,8 @@ test('badges show CLI-faithful model, effort, approval and sandbox labels', () =
 });
 
 test('composer chips use short labels that will not wrap on a phone toolbar', () => {
+  assert.equal(formatComposerMode('default'), '对话');
+  assert.equal(formatComposerMode('plan'), '计划');
   assert.equal(formatComposerMode('/chat'), '对话');
   assert.equal(formatComposerMode('/plan'), '计划');
   assert.equal(
@@ -185,7 +192,7 @@ test('composer chips use short labels that will not wrap on a phone toolbar', ()
   assert.equal(formatComposerEffort('max'), '最大');
   assert.equal(formatComposerEffort(''), '');
   for (const label of [
-    formatComposerMode('/chat'),
+    formatComposerMode('default'),
     formatComposerPermission({ approvalPolicy: 'on-request', sandbox: 'workspace-write' }),
     formatComposerModel({ displayName: 'GPT-5.6-Sol' }),
   ]) {
@@ -238,6 +245,41 @@ test('turn overrides map CLI sandbox modes onto turn/start sandboxPolicy objects
       sandboxPolicy: { type: 'dangerFullAccess' },
     },
   );
+});
+
+test('collaboration mode uses protocol ids and is applied as a turn override, not a slash message', () => {
+  assert.equal(normalizeCollaborationMode('plan'), 'plan');
+  assert.equal(normalizeCollaborationMode('default'), 'default');
+  assert.equal(normalizeCollaborationMode('/plan'), 'plan');
+  assert.equal(normalizeCollaborationMode('/chat'), 'default');
+  assert.equal(normalizeCollaborationMode('nope'), '');
+  assert.deepEqual(sanitizeTurnOverrides({ collaborationMode: '/plan' }), { collaborationMode: 'plan' });
+  assert.deepEqual(sanitizeTurnOverrides({ collaborationMode: 'default' }), { collaborationMode: 'default' });
+  assert.equal(sanitizeTurnOverrides({ collaborationMode: 'pair' }).collaborationMode, undefined);
+  assert.deepEqual(buildTurnStartOverrides({ collaborationMode: 'plan' }).collaborationMode, {
+    mode: 'plan',
+    settings: { developer_instructions: null },
+  });
+  assert.equal(buildTurnStartOverrides({}).collaborationMode, undefined);
+  assert.deepEqual(collaborationModePayload('plan'), {
+    mode: 'plan',
+    settings: { developer_instructions: null },
+  });
+  assert.equal(collaborationModePayload('pair'), null);
+  assert.equal(collaborationModeFromThreadSettings({
+    collaborationMode: { mode: 'plan', settings: { developer_instructions: null } },
+  }), 'plan');
+  assert.equal(collaborationModeFromThreadSettings({ collaborationMode: { mode: 'default' } }), 'default');
+  assert.equal(collaborationModeFromThreadSettings({}), '');
+  assert.equal(isUnsupportedCollaborationModeError({ code: -32601, message: 'Method not found' }), true);
+  assert.equal(isUnsupportedCollaborationModeError({
+    message: 'thread/settings/update requires experimentalApi capability',
+  }), true);
+  assert.equal(isUnsupportedCollaborationModeError({ code: -32602, message: 'invalid params' }), false);
+  assert.deepEqual(parseCollaborationModeSlash('/plan'), { mode: 'plan', rest: '' });
+  assert.deepEqual(parseCollaborationModeSlash('/plan 先列步骤'), { mode: 'plan', rest: '先列步骤' });
+  assert.deepEqual(parseCollaborationModeSlash('/chat'), { mode: 'default', rest: '' });
+  assert.equal(parseCollaborationModeSlash('/status'), null);
 });
 
 test('browser settings migrate old slash-label keys into CLI protocol ids', () => {

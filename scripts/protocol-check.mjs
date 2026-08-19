@@ -29,6 +29,12 @@ export const LEGACY_METHOD_ALLOWLIST = new Set([
   'turn/failed',
 ]);
 
+export const EXPERIMENTAL_METHOD_ALLOWLIST = new Set([
+  // Probed and degraded: B1 does not export this request. The bridge treats
+  // -32601 / experimentalApi errors as "defer to next turn/start".
+  'thread/settings/update',
+]);
+
 export function readProtocolMethodSets(protocolDir) {
   const out = {};
   for (const [kind, typeName] of Object.entries(PROTOCOL_KINDS)) {
@@ -66,7 +72,7 @@ export function collectBridgeMethodUsage({ agentAppserverSource, approvalBrokerS
 export function findMissingProtocolCoverage({
   usage,
   protocol,
-  allowlist = LEGACY_METHOD_ALLOWLIST,
+  allowlist = new Set([...LEGACY_METHOD_ALLOWLIST, ...EXPERIMENTAL_METHOD_ALLOWLIST]),
 }) {
   const missing = [];
   for (const [direction, protocolType] of Object.entries(PROTOCOL_KINDS)) {
@@ -396,6 +402,7 @@ function runProtocolCheck() {
     console.log(driftReport);
     console.log(coverageReport);
     console.log(`Legacy allowlist: ${sortSet(LEGACY_METHOD_ALLOWLIST).join(', ') || '(empty)'}`);
+    console.log(`Experimental allowlist: ${sortSet(EXPERIMENTAL_METHOD_ALLOWLIST).join(', ') || '(empty)'}`);
 
     return hasProtocolDrift({ methodDiff, typeDiff, fileDiff }) || missing.length > 0 ? 1 : 0;
   } finally {

@@ -2079,7 +2079,7 @@
     <span class="slash-icon">📋</span>
     <div class="slash-details">
       <span class="slash-name">/plan</span>
-      <span class="slash-desc">将下一轮交互切换到计划模式</span>
+      <span class="slash-desc">切换到计划模式，不发送消息</span>
     </div>
   </div>
   <div class="slash-item" data-cmd="/diff">
@@ -2124,6 +2124,10 @@
       <div id="composer-chips" class="composer-chips">
         <button type="button" id="composer-defaults" data-testid="composer-defaults" title="会话设置">
           <span id="model-trigger-text" class="pill-part">模型</span>
+          <span id="mode-trigger" hidden>
+            <span class="composer-sep" aria-hidden="true">·</span>
+            <span id="mode-trigger-text" class="pill-part"></span>
+          </span>
           <span class="composer-sep" aria-hidden="true">·</span>
           <span id="perm-trigger-text" class="pill-part">权限</span>
           <span id="effort-trigger" hidden>
@@ -2169,7 +2173,7 @@
     <div id="session-settings-body" class="workspace-body" style="padding-bottom:8px;">
       <div class="popover-section-label">会话模式</div>
       <div class="popover-list" id="mode-list">
-        <div class="popover-item selected" data-value="/chat">
+        <div class="popover-item selected" data-mode="default">
           <span class="popover-item-icon">💬</span>
           <div class="popover-item-details">
             <span class="popover-item-title">对话模式 (Chat)</span>
@@ -2177,11 +2181,11 @@
           </div>
           <span class="popover-item-check">✓</span>
         </div>
-        <div class="popover-item" data-value="/plan">
+        <div class="popover-item" data-mode="plan">
           <span class="popover-item-icon">📋</span>
           <div class="popover-item-details">
             <span class="popover-item-title">计划模式 (Plan)</span>
-            <span class="popover-item-desc">生成并逐步执行复杂的开发任务</span>
+            <span class="popover-item-desc">只规划、提问，不改代码或执行命令</span>
           </div>
           <span class="popover-item-check">✓</span>
         </div>

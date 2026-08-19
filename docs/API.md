@@ -82,6 +82,7 @@
 | `thread:history` | `threadId`、`cwd` | `{ok:true, thread, messages, source:"thread/read"}` |
 | `thread:archive` / `thread:unarchive` / `thread:delete` | `threadId`、`cwd` | `{ok:true, threadId}` |
 | `thread:rename` | `threadId`、`name`、`cwd` | `{ok:true, threadId, name}` |
+| `thread:collaborationMode` | `mode`（`default` / `plan`）、`threadId`、`cwd` | `{ok:true, mode, applied, deferred?, threadId}`。有 thread 时探测 `thread/settings/update`；方法不可用或尚无 thread 则 `deferred:true`，下一轮 `turn/start` 再带 `collaborationMode` |
 | `thread:compact` | `threadId`、`cwd` | `{ok:true, threadId}` |
 | `thread:rollback` | `threadId`、`numTurns`、`cwd` | `{ok:true, thread}` |
 
@@ -207,6 +208,7 @@ Admin 成功、失败、拒绝、unlock、lock 与过期均写 owner-only 脱敏
 | `needs_you_changed` | 跨 thread 待办的 opened/resolved/revoked/expired 版本变化 |
 | `status` / `thread_status` / `status_line` | runtime 状态、原生 `thread/status/changed`、git/context 状态栏；host-scope 状态带 `payload.scope:"host"` 与 revision |
 | `thread_event` | archived、unarchived、deleted、name_updated 等原生 thread 变化 |
+| `collaboration_mode` | Chat/Plan 生效或降级为下一轮覆盖项 |
 | `user_message` / `queued_message` / `dequeued_message` / `queue_cleared` | 用户输入和内存队列状态 |
 | `message_receipt` | `clientRequestId` 的 queued/submitted/steered/rejected 状态推进 |
 | `text_delta` / `reasoning` | 助手文本增量 / summary 或 full reasoning 增量 |

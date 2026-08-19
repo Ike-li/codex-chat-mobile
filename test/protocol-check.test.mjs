@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   LEGACY_METHOD_ALLOWLIST,
+  EXPERIMENTAL_METHOD_ALLOWLIST,
   collectBridgeMethodUsage,
   diffMethodSets,
   diffProtocolFiles,
@@ -51,6 +52,20 @@ test('protocol check reports a bridge method missing from the generated protocol
   }]);
   assert.match(formatMissingProtocolCoverage(missing), /ClientRequest/);
   assert.match(formatMissingProtocolCoverage(missing), /thread\/nonexistentForTest/);
+});
+
+test('protocol check exempts probed experimental client requests such as thread/settings/update', () => {
+  const protocol = readProtocolMethodSets(protocolDir);
+  const usage = {
+    serverNotifications: new Set(),
+    clientRequests: new Set(['thread/settings/update']),
+    clientNotifications: new Set(),
+    serverRequests: new Set(),
+  };
+
+  assert.equal(EXPERIMENTAL_METHOD_ALLOWLIST.has('thread/settings/update'), true);
+  assert.equal(protocol.clientRequests.has('thread/settings/update'), false);
+  assert.deepEqual(findMissingProtocolCoverage({ usage, protocol }), []);
 });
 
 test('protocol check exempts explicit legacy methods such as turn/failed', () => {

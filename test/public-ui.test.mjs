@@ -294,6 +294,7 @@ test('client exposes P1 native app-server controls and readonly status panels', 
     'thread:unarchive',
     'thread:delete',
     'thread:rename',
+    'thread:collaborationMode',
     'thread:compact',
     'thread:rollback',
     'models:read',
@@ -556,6 +557,13 @@ test('composer settings expose CLI model, reasoning, approval and sandbox withou
   assert.doesNotMatch(appJs, /inputEl\.value = '\/model '/);
   assert.doesNotMatch(appJs, /inputEl\.value = '\/reasoning '/);
   assert.doesNotMatch(appJs, /inputEl\.value = '\/approval-policy '/);
+  assert.doesNotMatch(appJs, /inputEl\.value = val;\s*closeSessionSettings\(\);\s*sendMessage\(\)/);
+  assert.match(appJs, /socket\.emit\('thread:collaborationMode'/);
+  assert.match(appJs, /parseCollaborationModeSlash/);
+  assert.match(appJs, /case 'collaboration_mode'/);
+  assert.match(html, /id="mode-list"[\s\S]*data-mode="default"/);
+  assert.match(html, /id="mode-list"[\s\S]*data-mode="plan"/);
+  assert.doesNotMatch(html, /id="mode-list"[\s\S]*data-value="\/chat"/);
   assert.doesNotMatch(html, /data-value="unlessTrusted"/);
   assert.doesNotMatch(html, /data-reasoning="超高"/);
 });

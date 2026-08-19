@@ -64,7 +64,12 @@ test.describe('Popovers And Slash Suggestions', () => {
 
     await defaults.click();
     await expect(page.locator('#session-settings')).toBeVisible();
-    await expect(page.locator('#mode-list .popover-item[data-value="/chat"]')).toBeVisible();
+    await expect(page.locator('#mode-list .popover-item[data-mode="default"]')).toBeVisible();
+    await page.locator('#mode-list .popover-item[data-mode="plan"]').click();
+    await expect(page.locator('#mode-list .popover-item[data-mode="plan"]')).toHaveClass(/selected/);
+    await expect(page.locator('#mode-trigger-text')).toHaveText('计划');
+    await expect(page.locator('.msg.user')).toHaveCount(0);
+    await expect(page.locator('#state-label')).toHaveText('idle');
     for (const approval of ['untrusted', 'on-failure', 'on-request', 'never']) {
       await expect(page.locator(`#approval-list [data-approval="${approval}"]`)).toBeVisible();
     }
@@ -79,6 +84,11 @@ test.describe('Popovers And Slash Suggestions', () => {
     await expect(page.locator('#session-settings')).toBeHidden();
     await expect(page.locator('.msg.user')).toHaveCount(0);
     await expect(page.locator('#state-label')).toHaveText('idle', { timeout: 10000 });
+    await input.fill('/plan');
+    await input.press('Enter');
+    await expect(page.locator('.msg.user')).toHaveCount(0);
+    await expect(page.locator('#msg-input')).toHaveValue('');
+    await expect(page.locator('#mode-trigger-text')).toHaveText('计划');
 
     expectNoForbiddenRuntimeErrors(runtimeErrors);
   });

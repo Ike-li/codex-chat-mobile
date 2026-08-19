@@ -64,7 +64,8 @@ Admin、Labs 和远程图片默认关闭，需要服务端显式启用。
 - 最长 50,000 字符的文本；
 - `/help`：查看命令说明；
 - `/status`：查看会话、目录和上下文状态；
-- `/plan`：切换计划模式；
+- `/plan`：切换计划模式，单独发送不进入对话；`/plan 做X` 先切模式再发送「做X」；
+- `/chat`：切回对话模式，规则同 `/plan`；
 - `/diff`：查看工作区差异；
 - `/review`：发起代码审查；
 - `/compact`：压缩上下文；
@@ -75,7 +76,7 @@ Admin、Labs 和远程图片默认关闭，需要服务端显式启用。
 ### 可以点击什么
 
 - 主按钮：空闲且有内容时发送；turn 进行中变成停止，精确中断当前目标 turn；进行中再输入时旁边出现第二颗发送钮，把内容 `steer` 进当前 turn 或排进该 runtime FIFO；停止会丢掉未执行的队列；
-- Chat / Plan：会话设置 sheet 里的模式入口；选中后仍发送 `/chat` 或 `/plan`；
+- Chat / Plan：会话设置 sheet 里的模式入口；有 thread 时走 `thread/settings/update`，没有 thread 或方法不可用时记为下一轮 `turn/start.collaborationMode`。都不会把 `/chat` 或 `/plan` 写进对话；
 - 模型选择：读取本机 `model/list`，对应 CLI `-m/--model`；
 - 思考强度：使用该模型的 `supportedReasoningEfforts`（`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`），对应 `model_reasoning_effort`；
 - 服务档位：仅当模型返回 `serviceTiers` 时显示；

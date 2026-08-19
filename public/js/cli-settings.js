@@ -231,8 +231,55 @@ const COMPOSER_SANDBOX = {
   'danger-full-access': '全开',
 };
 
+const COLLABORATION_MODE_IDS = new Set(['default', 'plan']);
+const COLLABORATION_MODE_ALIASES = {
+  '/chat': 'default',
+  chat: 'default',
+  default: 'default',
+  '/plan': 'plan',
+  plan: 'plan',
+};
+
+export function normalizeCollaborationMode(value) {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const alias = COLLABORATION_MODE_ALIASES[trimmed] || COLLABORATION_MODE_ALIASES[trimmed.toLowerCase()];
+  return COLLABORATION_MODE_IDS.has(alias) ? alias : '';
+}
+
 export function formatComposerMode(mode) {
-  return mode === '/plan' ? '计划' : '对话';
+  return normalizeCollaborationMode(mode) === 'plan' ? '计划' : '对话';
+}
+
+export function collaborationModePayload(mode) {
+  const normalized = normalizeCollaborationMode(mode);
+  if (!normalized) return null;
+  return {
+    mode: normalized,
+    settings: { developer_instructions: null },
+  };
+}
+
+export function collaborationModeFromThreadSettings(threadSettings) {
+  return normalizeCollaborationMode(threadSettings?.collaborationMode?.mode);
+}
+
+export function isUnsupportedCollaborationModeError(error) {
+  if (!error) return false;
+  if (error.code === -32601) return true;
+  const message = String(error.message || error);
+  return /experimentalApi/i.test(message) || /thread\/settings\/update/i.test(message);
+}
+
+export function parseCollaborationModeSlash(text) {
+  const raw = typeof text === 'string' ? text.trim() : '';
+  const match = raw.match(/^\/(plan|chat)(?:\s+([\s\S]*))?$/i);
+  if (!match) return null;
+  return {
+    mode: match[1].toLowerCase() === 'plan' ? 'plan' : 'default',
+    rest: (match[2] || '').trim(),
+  };
 }
 
 export function formatComposerPermission({
@@ -275,6 +322,8 @@ export function sanitizeTurnOverrides(input = {}) {
   if (typeof input.serviceTier === 'string' && input.serviceTier.trim()) {
     out.serviceTier = input.serviceTier.trim();
   }
+  const collaborationMode = normalizeCollaborationMode(input.collaborationMode);
+  if (collaborationMode) out.collaborationMode = collaborationMode;
   return out;
 }
 
@@ -340,5 +389,7 @@ export function buildTurnStartOverrides(settings = {}) {
   if (clean.serviceTier) out.serviceTier = clean.serviceTier;
   const sandboxPolicy = sandboxPolicyFromMode(clean.sandbox);
   if (sandboxPolicy) out.sandboxPolicy = sandboxPolicy;
+  const collaborationMode = collaborationModePayload(clean.collaborationMode);
+  if (collaborationMode) out.collaborationMode = collaborationMode;
   return out;
 }

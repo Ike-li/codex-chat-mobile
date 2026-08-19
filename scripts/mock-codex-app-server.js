@@ -350,6 +350,18 @@ rl.on('line', async (line) => {
         });
         break;
 
+      case 'thread/settings/update': {
+        const mode = msg.params?.collaborationMode?.mode || 'default';
+        respond(msg.id, {});
+        notify('thread/settings/updated', {
+          threadId: msg.params?.threadId || threadId,
+          threadSettings: {
+            collaborationMode: msg.params?.collaborationMode || { mode, settings: { developer_instructions: null } },
+          },
+        });
+        break;
+      }
+
       case 'thread/resume':
         threadId = msg.params?.threadId || threadId;
         respond(msg.id, {

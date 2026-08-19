@@ -76,6 +76,7 @@ app-server 发起且必须响应的交互：
 
 - 账号：`account/read`、`account/usage/read`、`account/rateLimits/read`、`account/login/start`、`account/login/cancel`
 - 模型：`model/list`、`modelProvider/capabilities/read`
+- 会话模式：B1 可读取 `thread/settings/updated.collaborationMode`；写入走实验方法 `thread/settings/update`（探测失败则降级为下一轮 `turn/start.collaborationMode`）
 - 只读资源：`fs/readFile`、`fs/readDirectory`、`mcpServerStatus/list`、`skills/list`、`externalAgentConfig/detect`、`externalAgentConfig/import`
 - Admin 门控写操作：`config/value/write`、`config/batchWrite`、`fs/writeFile`、`fs/remove`、`fs/copy`、`plugin/install`、`plugin/uninstall`、`marketplace/add`、`marketplace/remove`、`marketplace/upgrade`、`mcpServer/tool/call`、`account/logout`
 

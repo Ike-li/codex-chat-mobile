@@ -10,7 +10,14 @@ import { appendOwnerOnlyFile } from './file-security.js';
 import { sanitize, sanitizePath } from './sanitizer.js';
 import { buildUserInputs } from './user-inputs.js';
 import { truncate } from './text-utils.js';
-import { buildTurnStartOverrides, sanitizeTurnOverrides } from './public/js/cli-settings.js';
+import {
+  buildTurnStartOverrides,
+  collaborationModeFromThreadSettings,
+  collaborationModePayload,
+  isUnsupportedCollaborationModeError,
+  normalizeCollaborationMode,
+  sanitizeTurnOverrides,
+} from './public/js/cli-settings.js';
 
 const BUFFER_CAP = 500;
 const TOOL_SUMMARY_CAP = 600;
@@ -826,6 +833,11 @@ export class ThreadRuntime {
           name: params.threadName ?? params.name ?? null,
         });
         break;
+      case 'thread/settings/updated':
+        this.emitCollaborationMode(params.threadId, collaborationModeFromThreadSettings(params.threadSettings), {
+          applied: true,
+        });
+        break;
       case 'thread/compacted':
         this.emit('compact', {
           status: 'compacted',
@@ -1190,6 +1202,44 @@ export class ThreadRuntime {
     const trimmed = String(name || '').trim();
     if (!trimmed) throw new Error('thread name is required');
     return this.request('thread/name/set', { threadId: requireThreadId(threadId, 'rename'), name: trimmed });
+  }
+
+  async updateThreadCollaborationMode(threadId, mode) {
+    const normalized = normalizeCollaborationMode(mode);
+    if (!normalized) throw new Error('无效的会话模式');
+    const targetThreadId = requireThreadId(threadId || this.sessionId, '切换会话模式');
+    const collaborationMode = collaborationModePayload(normalized);
+    this.applyTurnOverrides({ collaborationMode: normalized });
+    await this.ensureInitialized();
+    try {
+      await this.request('thread/settings/update', {
+        threadId: targetThreadId,
+        collaborationMode,
+      });
+      this.emitCollaborationMode(targetThreadId, normalized, { applied: true });
+      return { ok: true, applied: true, deferred: false, mode: normalized, threadId: targetThreadId };
+    } catch (error) {
+      if (!isUnsupportedCollaborationModeError(error)) throw error;
+      this.emitCollaborationMode(targetThreadId, normalized, { applied: false, deferred: true });
+      return {
+        ok: true,
+        applied: false,
+        deferred: true,
+        mode: normalized,
+        threadId: targetThreadId,
+        reason: 'unsupported',
+      };
+    }
+  }
+
+  emitCollaborationMode(threadId, mode, extra = {}) {
+    const normalized = normalizeCollaborationMode(mode);
+    if (!normalized) return;
+    this.emit('collaboration_mode', {
+      threadId: threadId || this.sessionId || null,
+      mode: normalized,
+      ...extra,
+    });
   }
 
   async compactThread(threadId = this.sessionId) {

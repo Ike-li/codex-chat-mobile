@@ -26,7 +26,7 @@ import { createPushSender } from './push-sender.js';
 import { isPublicEndpointHostname, isPublicIpAddress } from './network-address.js';
 import { validateAttachments, saveAttachments, pruneExpiredUploads } from './uploads.js';
 import { buildStatusLine } from './statusline.js';
-import { sanitizeTurnOverrides } from './public/js/cli-settings.js';
+import { normalizeCollaborationMode, sanitizeTurnOverrides } from './public/js/cli-settings.js';
 import webpush from 'web-push';
 import {
   isDeviceTrusted,
@@ -2216,6 +2216,27 @@ io.on('connection', socket => {
       }
       broadcastInstances();
       ackOk(ack, { threadId });
+    } catch (err) {
+      ackError(ack, err);
+    }
+  });
+
+  on(socket, 'thread:collaborationMode', async (payload = {}, ack) => {
+    try {
+      const mode = normalizeCollaborationMode(payload?.mode);
+      if (!mode) throw new Error('无效的会话模式');
+      const requestedThreadId = typeof payload?.threadId === 'string' && payload.threadId
+        ? payload.threadId
+        : null;
+      const ai = ensureControlAgent(payload?.cwd, socket);
+      const threadId = requestedThreadId || ai.sessionId || null;
+      if (!threadId) {
+        ai.applyTurnOverrides({ collaborationMode: mode });
+        ackOk(ack, { mode, applied: false, deferred: true, threadId: null });
+        return;
+      }
+      const result = await ai.updateThreadCollaborationMode(threadId, mode);
+      ackOk(ack, result);
     } catch (err) {
       ackError(ack, err);
     }

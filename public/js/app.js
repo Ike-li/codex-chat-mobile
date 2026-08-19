@@ -33,6 +33,9 @@ import {
   formatComposerPermission,
   formatComposerModel,
   formatComposerEffort,
+  formatComposerMode,
+  normalizeCollaborationMode,
+  parseCollaborationModeSlash,
   loadCliSettings,
   reasoningOptionsForModel,
   resolveSelectedModel,
@@ -644,7 +647,7 @@ import {
   let selectedServiceTier = storedCliSettings.serviceTier || '';
   let selectedApproval = storedCliSettings.approvalPolicy || '';
   let selectedSandbox = storedCliSettings.sandbox || '';
-  let selectedMode = '/chat';
+  let selectedMode = storedCliSettings.collaborationMode || '';
   let availableModels = [];
 
   const miInput = $('model-input');
@@ -677,6 +680,7 @@ import {
       approvalPolicy: selectedApproval,
       sandbox: selectedSandbox,
       serviceTier: selectedServiceTier,
+      collaborationMode: selectedMode,
     });
   }
 
@@ -684,6 +688,27 @@ import {
     saveCliSettings(localStorage, currentTurnSettings());
     if (miInput) miInput.value = selectedModel;
     if (permSelect) permSelect.value = selectedApproval;
+  }
+
+  function applyCollaborationMode(mode) {
+    const next = normalizeCollaborationMode(mode);
+    if (!next) return;
+    selectedMode = next;
+    persistComposerSettings();
+    renderCliSettingsPopovers();
+    if (!isTransportConnected()) return;
+    socket.emit('thread:collaborationMode', withTarget({
+      mode: next,
+      cwd: serverCwd,
+    }, viewTarget()), ack => {
+      if (!ack?.ok) {
+        appendSystem(ack?.error || '切换会话模式失败', true);
+        return;
+      }
+      if (ack.mode) selectedMode = ack.mode;
+      persistComposerSettings();
+      renderCliSettingsPopovers();
+    });
   }
 
   function renderPopoverItems(container, items, dataAttr, selectedId) {
@@ -808,6 +833,12 @@ import {
     if (effortTextEl) effortTextEl.textContent = effortText;
     if (effortWrap) effortWrap.hidden = !effortText;
 
+    const modeWrap = $('mode-trigger');
+    const modeTextEl = $('mode-trigger-text');
+    const modeId = normalizeCollaborationMode(selectedMode);
+    if (modeTextEl) modeTextEl.textContent = formatComposerMode(modeId);
+    if (modeWrap) modeWrap.hidden = modeId !== 'plan';
+
     const defaults = $('composer-defaults');
     if (defaults) {
       defaults.title = [
@@ -825,8 +856,9 @@ import {
       ].filter(Boolean).join('\n');
     }
 
+    const visibleMode = normalizeCollaborationMode(selectedMode) || 'default';
     document.querySelectorAll('#mode-list .popover-item').forEach(item => {
-      item.classList.toggle('selected', item.dataset.value === selectedMode);
+      item.classList.toggle('selected', item.dataset.mode === visibleMode);
     });
   }
 
@@ -889,14 +921,10 @@ import {
     renderCliSettingsPopovers();
   });
 
-  document.querySelectorAll('#mode-list .popover-item').forEach(item => {
-    item.onclick = () => {
-      const val = item.dataset.value;
-      selectedMode = val;
-      inputEl.value = val;
-      closeSessionSettings();
-      sendMessage();
-    };
+  $('mode-list')?.addEventListener('click', event => {
+    const item = event.target.closest('[data-mode]');
+    if (!item) return;
+    applyCollaborationMode(item.dataset.mode);
   });
 
   renderCliSettingsPopovers();
@@ -989,9 +1017,16 @@ import {
   document.querySelectorAll('.slash-item').forEach(item => {
     item.onclick = () => {
       const cmd = item.dataset.cmd;
+      hideSlashPopup();
+      const modeSlash = parseCollaborationModeSlash(cmd);
+      if (modeSlash) {
+        applyCollaborationMode(modeSlash.mode);
+        inputEl.value = '';
+        applyComposerMode();
+        return;
+      }
       inputEl.value = cmd + ' ';
       inputEl.focus();
-      hideSlashPopup();
       inputEl.style.height = 'auto';
       inputEl.style.height = Math.min(inputEl.scrollHeight, 140) + 'px';
     };
@@ -1059,6 +1094,13 @@ import {
         break;
       case 'thread_status':
         handleThreadStatus(ev.payload);
+        break;
+      case 'collaboration_mode':
+        if (ev.payload?.mode) {
+          selectedMode = ev.payload.mode;
+          persistComposerSettings();
+          renderCliSettingsPopovers();
+        }
         break;
       case 'user_message':
         finalizeStream();
@@ -3410,6 +3452,13 @@ import {
 
   async function sendMessage() {
     if (interruptPending) return;
+    const modeSlash = parseCollaborationModeSlash(inputEl.value);
+    if (modeSlash) {
+      applyCollaborationMode(modeSlash.mode);
+      inputEl.value = modeSlash.rest;
+      applyComposerMode();
+      if (!modeSlash.rest && !currentAttachments.length && !currentInputParts.length) return;
+    }
     const text = inputEl.value.trim();
     const hasAttachments = currentAttachments.length > 0;
     const hasParts = currentInputParts.length > 0;

@@ -3380,6 +3380,84 @@ test('thread:list preserves UTF-8 when an app-server frame splits inside a code 
   }
 });
 
+test('thread:collaborationMode updates a loaded thread without sending a user message', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ccm-collab-mode-test-'));
+  const rpcLog = join(root, 'rpc.jsonl');
+  const fixture = await startIsolatedServer({
+    codexBin: createFakeCodexBin(root),
+    rpcLog,
+  });
+  try {
+    const socket = await connectSocket(fixture.url, fixture.authToken);
+    try {
+      await waitForAgentEvent(socket, 'init');
+
+      const empty = await emitWithAck(socket, 'session:new', { cwd: fixture.workDir });
+      assert.equal(empty.threadId, null);
+      const deferred = await emitWithAck(socket, 'thread:collaborationMode', { mode: 'plan', cwd: fixture.workDir });
+      assert.equal(deferred.ok, true);
+      assert.equal(deferred.applied, false);
+      assert.equal(deferred.deferred, true);
+      assert.equal(deferred.mode, 'plan');
+
+      const selected = await emitWithAck(socket, 'thread:select', {
+        threadId: 'thr_fake',
+        cwd: fixture.workDir,
+      });
+      assert.equal(selected.ok, true);
+      const applied = await emitWithAck(socket, 'thread:collaborationMode', {
+        threadId: 'thr_fake',
+        mode: 'plan',
+        cwd: fixture.workDir,
+      });
+      assert.equal(applied.ok, true);
+      assert.equal(applied.applied, true);
+      assert.equal(applied.mode, 'plan');
+
+      const event = await waitForAgentEvent(socket, 'collaboration_mode');
+      assert.equal(event.payload.mode, 'plan');
+      assert.equal(event.payload.applied, true);
+
+      const calls = readFileSync(rpcLog, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      assert.ok(calls.some(call => call.method === 'thread/settings/update'));
+      assert.ok(!calls.some(call => call.method === 'turn/start'));
+    } finally {
+      socket.disconnect();
+    }
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('thread:collaborationMode defers when app-server rejects the experimental method', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ccm-collab-mode-unsupported-'));
+  const fixture = await startIsolatedServer({
+    codexBin: createUnsupportedCollaborationModeCodexBin(root),
+  });
+  try {
+    const socket = await connectSocket(fixture.url, fixture.authToken);
+    try {
+      await waitForAgentEvent(socket, 'init');
+      await emitWithAck(socket, 'thread:select', { threadId: 'thr_fake', cwd: fixture.workDir });
+      const result = await emitWithAck(socket, 'thread:collaborationMode', {
+        threadId: 'thr_fake',
+        mode: 'plan',
+        cwd: fixture.workDir,
+      });
+      assert.equal(result.ok, true);
+      assert.equal(result.applied, false);
+      assert.equal(result.deferred, true);
+      assert.equal(result.reason, 'unsupported');
+    } finally {
+      socket.disconnect();
+    }
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('server exposes P1 native app-server controls over Socket.IO', async () => {
   const root = mkdtempSync(join(tmpdir(), 'ccm-p1-controls-test-'));
   const rpcLog = join(root, 'rpc.jsonl');
@@ -4073,6 +4151,44 @@ function emitWithAck(socket, event, payload, timeoutMs = 5000) {
   });
 }
 
+function createUnsupportedCollaborationModeCodexBin(root) {
+  const file = join(root, 'fake-codex-no-collab.mjs');
+  writeFileSync(file, `#!/usr/bin/env node
+import readline from 'node:readline';
+const threadId = 'thr_fake';
+const rl = readline.createInterface({ input: process.stdin });
+function send(message) {
+  process.stdout.write(JSON.stringify(message) + '\\n');
+}
+rl.on('line', line => {
+  const message = JSON.parse(line);
+  if (message.id === undefined) return;
+  if (message.method === 'thread/settings/update') {
+    return send({
+      id: message.id,
+      error: { code: -32601, message: 'thread/settings/update requires experimentalApi capability' },
+    });
+  }
+  if (message.method === 'thread/list') {
+    return send({ id: message.id, result: { data: [{
+      id: threadId,
+      preview: 'fake thread',
+      name: 'Fake thread',
+      cwd: process.env.WORK_DIR,
+      createdAt: 1710000000,
+      updatedAt: 1710000100,
+      status: { type: 'idle' },
+    }], nextCursor: null } });
+  }
+  if (message.method === 'thread/start') return send({ id: message.id, result: { thread: { id: threadId } } });
+  if (message.method === 'thread/resume') return send({ id: message.id, result: { thread: { id: threadId } } });
+  send({ id: message.id, result: {} });
+});
+`, 'utf8');
+  chmodSync(file, 0o700);
+  return file;
+}
+
 function createFakeCodexBin(root) {
   const file = join(root, 'fake-codex.mjs');
   writeFileSync(file, `#!/usr/bin/env node
@@ -4198,6 +4314,17 @@ rl.on('line', line => {
 	    turns: []
 	  }], nextCursor: null, backwardsCursor: null } });
 	  if (message.method === 'thread/name/set') return send({ id: message.id, result: {} });
+	  if (message.method === 'thread/settings/update') {
+	    send({ id: message.id, result: {} });
+	    setTimeout(() => send({
+	      method: 'thread/settings/updated',
+	      params: {
+	        threadId: message.params.threadId,
+	        threadSettings: { collaborationMode: message.params.collaborationMode },
+	      },
+	    }), 5);
+	    return;
+	  }
 	  if (message.method === 'thread/archive') return send({ id: message.id, result: {} });
 	  if (message.method === 'thread/unarchive') return send({ id: message.id, result: {} });
 	  if (message.method === 'thread/delete') return send({ id: message.id, result: {} });

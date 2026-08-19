@@ -867,6 +867,63 @@ test('P1 native controls call stable app-server methods with protocol params', a
   });
 });
 
+test('updateThreadCollaborationMode writes built-in plan settings without starting a turn', async () => {
+  const { session } = makeSession();
+  const calls = [];
+  session.request = async (method, params) => {
+    calls.push({ method, params });
+    return {};
+  };
+
+  const result = await session.updateThreadCollaborationMode('thr_source', 'plan');
+  session.dispose();
+  assert.equal(result.ok, true);
+  assert.equal(result.applied, true);
+  assert.equal(result.mode, 'plan');
+  assert.deepEqual(calls.filter(call => call.method === 'thread/settings/update'), [{
+    method: 'thread/settings/update',
+    params: {
+      threadId: 'thr_source',
+      collaborationMode: {
+        mode: 'plan',
+        settings: { developer_instructions: null },
+      },
+    },
+  }]);
+});
+
+test('updateThreadCollaborationMode defers when app-server does not expose the method', async () => {
+  const { session } = makeSession();
+  session.request = async method => {
+    if (method !== 'thread/settings/update') return {};
+    const error = new Error('thread/settings/update requires experimentalApi capability');
+    error.code = -32601;
+    throw error;
+  };
+
+  const result = await session.updateThreadCollaborationMode('thr_source', 'plan');
+  session.dispose();
+  assert.equal(result.ok, true);
+  assert.equal(result.applied, false);
+  assert.equal(result.deferred, true);
+  assert.equal(result.mode, 'plan');
+  assert.equal(session.turnOverrides.collaborationMode, 'plan');
+});
+
+test('thread/settings/updated emits the effective collaboration mode', () => {
+  const { session, events } = makeSession();
+  session.handleNotification('thread/settings/updated', {
+    threadId: 'thr_1',
+    threadSettings: {
+      collaborationMode: { mode: 'plan', settings: { developer_instructions: null } },
+    },
+  });
+  const update = byType(events, 'collaboration_mode').at(-1);
+  assert.equal(update.payload.threadId, 'thr_1');
+  assert.equal(update.payload.mode, 'plan');
+  assert.equal(update.payload.applied, true);
+});
+
 test('P1 notifications map native app-server state to frontend envelopes', () => {
   const { session, events } = makeSession();
 
