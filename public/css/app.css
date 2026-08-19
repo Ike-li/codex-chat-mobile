@@ -1036,29 +1036,6 @@ body {
   max-height: 180px;
   color: #f1f1f1;
 }
-.copy-fallback {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 10px;
-  width: 100%;
-  max-width: 100%;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-.copy-fallback textarea {
-  margin-top: 6px;
-  width: 100%;
-  min-height: 80px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 6px;
-  resize: vertical;
-  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: var(--text);
-  background: var(--bg);
-}
-
 .ansi-bold { font-weight: 700; color: #ffffff; }
 .ansi-dim { opacity: 0.65; }
 .ansi-red { color: #ff6b6b; }
@@ -1162,11 +1139,6 @@ body {
 .slash-details { display: flex; flex-direction: column; min-width: 0; }
 .slash-name { font-size: 13px; font-weight: 600; color: var(--text); }
 .slash-desc { font-size: 11px; color: var(--text-muted); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
-
-#retry-last-btn.has-failure {
-  border-color: var(--warn);
-  color: var(--warn-text);
-}
 
 /* Input area redesign - premium desktop-like integrated style */
 #input-area {

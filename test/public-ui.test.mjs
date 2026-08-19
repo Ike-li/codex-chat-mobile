@@ -139,11 +139,25 @@ test('client handles queued input, reconnect catch-up, status, and ANSI output',
   assert.match(allContent, /case 'tool_output_delta'/);
   assert.match(allContent, /socket\.emit\('catch-up'/);
   assert.match(allContent, /function renderAnsi/);
-  assert.match(allContent, /function retryLastFailed/);
-  assert.match(allContent, /function copyLatestOutput/);
   assert.match(allContent, /function setBusy\(b\)/);
   assert.match(allContent, /if \(!b\) hideTyping\(\)/);
   assert.match(allContent, /aria-live="polite"/);
+});
+
+test('no unreachable button handlers survive with their orphaned state', () => {
+  // `#retry-last-btn` 与 `#copy-latest-btn` 的 id 从未出现在 index.html —— 引入时只写了
+  // JS,没配 HTML。`$()` 返回 null,`if (btn)` 空值守卫让它们静默失败,两个处理函数
+  // 永远调不到,而 `lastFailedText` / `latestOutputText` 一直在被赋值。
+  // 此前反倒有断言要求这两个函数存在,等于用测试给死代码背书。
+  for (const symbol of [
+    'retry-last-btn', 'retryLastBtn', 'retryLastFailed', 'lastFailedText', 'rememberFailure',
+    'copy-latest-btn', 'copyLatestBtn', 'copyLatestOutput', 'latestOutputText',
+  ]) {
+    assert.ok(!appJs.includes(symbol), `app.js 仍残留不可达的 ${symbol}`);
+  }
+  assert.doesNotMatch(css, /#retry-last-btn/, '样式表仍有无宿主元素的 #retry-last-btn 规则');
+  // showCopyFallback 是 .copy-fallback 的唯一创建者,它走后这两条规则也没了宿主。
+  assert.doesNotMatch(css, /\.copy-fallback/, '样式表仍有无创建者的 .copy-fallback 规则');
 });
 
 test('client applies app-server thread status to thread and instance activity', () => {
@@ -172,16 +186,12 @@ test('client reconciles optimistic and queued message bubbles by clientRequestId
   assert.doesNotMatch(allContent, /offlineUserBubbles\.findIndex\(q => q\.text === text\)/);
 });
 
-test('copy buffer is restored from replayed Codex output events', () => {
-  assert.match(allContent, /let latestOutputText = '';/);
-  assert.match(allContent, /function rememberOutput\(text\)/);
-  assert.match(allContent, /rememberOutput\(transcriptStream\.append\(text\)\)/);
-  assert.match(allContent, /rememberOutput\(msg\)/);
-  assert.match(allContent, /const text = latestOutputText\.trim\(\)/);
-  assert.match(allContent, /function fallbackCopyText\(text\)/);
-  assert.match(allContent, /fallbackCopyText\(text\)/);
-  assert.match(allContent, /function showCopyFallback\(text\)/);
-  assert.match(allContent, /copy-fallback/);
+test('code block copy degrades to a selection fallback when the clipboard API is unavailable', () => {
+  // 这里原本还断言 latestOutputText / rememberOutput / showCopyFallback —— 那条链服务的是
+  // 从不存在的 #copy-latest-btn,已随死代码一并移除。仍然活着的是代码块的复制按钮,
+  // 它在 navigator.clipboard 不可用时回退到 fallbackCopyText。
+  assert.match(appJs, /function fallbackCopyText\(text\)/);
+  assert.match(appJs, /else fallbackCopyText\(code\)/);
 });
 
 test('mobile keyboard uses visual viewport safe area instead of fixed screen height', () => {

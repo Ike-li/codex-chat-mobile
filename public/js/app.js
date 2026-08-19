@@ -55,8 +55,6 @@ import {
   const attachBtn = $('attach-btn');
   const fileInput = $('file-input');
   const attachTray = $('attach-tray');
-  const copyLatestBtn = $('copy-latest-btn');
-  const retryLastBtn = $('retry-last-btn');
   const statusDot = $('status-dot');
   const stateLabel = $('state-label');
   const sessionMetaEl = $('session-meta');
@@ -171,9 +169,6 @@ import {
   let gatewayEpoch = null;
   let workDirs = [];
   let versions = {};
-  let activeTurnText = '';
-  let lastFailedText = '';
-  let latestOutputText = '';
   let currentAttachments = []; // [{name, mimeType, data: base64}]
   let currentInputParts = []; // server-validated mention / skill / imageUrl descriptors
   let instanceList = [];
@@ -1207,7 +1202,6 @@ import {
         finishAssistantTurn();
         announceTurnComplete('回复失败');
         appendError(ev.payload.message);
-        if (activeTurnText) rememberFailure(activeTurnText);
         setBusy(false);
         break;
       case 'system':
@@ -2198,7 +2192,6 @@ import {
   function handleP3TerminalOutput(payload) {
     const text = String(payload?.text || '');
     if (!text) return;
-    rememberOutput(text);
     appendSystem(`Terminal ${payload?.stream || 'stdout'} ${payload?.processId || ''}: ${text.slice(0, 600)}`, payload?.stream === 'stderr');
   }
 
@@ -2705,8 +2698,6 @@ import {
       exitCode: payload.exitCode ?? (payload.ok ? 0 : null),
       status: payload.status || 'completed',
     });
-    const statusLine = `status: ${model.status} · exit: ${model.exitCode ?? 'unknown'}\n`;
-    const resultText = statusLine + model.output;
     if (card) {
       card.classList.add('command-card');
       if (model.ok === true) card.dataset.ok = 'true';
@@ -2732,7 +2723,6 @@ import {
       }
       delete pendingToolCards[payload.toolUseId];
     }
-    rememberOutput(resultText);
     scrollBottom();
   }
 
@@ -2741,8 +2731,6 @@ import {
     finishAssistantTurn();
     announceTurnComplete(payload?.ok === false ? '回复失败' : '回复完成');
     setBusy(false);
-    if (payload && payload.ok === false && activeTurnText) rememberFailure(activeTurnText);
-    if (payload && payload.ok !== false) activeTurnText = '';
     refreshNativeThreads();
     checkEmptyState();
   }
@@ -3074,7 +3062,7 @@ import {
   // Streaming text
   function appendTextDelta(text) {
     if (appendReasoning.card) sealReasoning();
-    rememberOutput(transcriptStream.append(text));
+    transcriptStream.append(text);
   }
 
   function finalizeStream() {
@@ -3097,8 +3085,6 @@ import {
   }
 
   function appendUserBubble(text, attachments, parts, clientRequestId) {
-    activeTurnText = text;
-    latestOutputText = '';
     if (promoteOfflineBubble(clientRequestId)) {
       scrollBottom();
       setBusy(true);
@@ -3198,22 +3184,8 @@ import {
     el.className = 'msg system-msg error-msg';
     el.innerHTML = `<div class="bubble">❌ ${escHtml(msg)}</div>`;
     messagesEl.appendChild(el);
-    rememberOutput(msg);
     scrollBottom();
     checkEmptyState();
-  }
-
-  function rememberOutput(text) {
-    const clean = String(text || '').trim();
-    if (clean) latestOutputText = clean;
-  }
-
-  function rememberFailure(text) {
-    lastFailedText = text || lastFailedText;
-    if (retryLastBtn) {
-      retryLastBtn.disabled = !lastFailedText;
-      retryLastBtn.classList.toggle('has-failure', Boolean(lastFailedText));
-    }
   }
 
   function clearMessages() {
@@ -3225,7 +3197,6 @@ import {
     queuedUserBubbles = [];
     offlineUserBubbles = [];
     renderedOutboxIds = new Set();
-    latestOutputText = '';
     followTranscript = true;
     jumpToLatestBtn.hidden = true;
     setBusy(false);
@@ -3430,8 +3401,6 @@ import {
       if (e.target.closest('.native-control-btn')) closeDrawer();
     });
   }
-  if (copyLatestBtn) copyLatestBtn.onclick = copyLatestOutput;
-  if (retryLastBtn) retryLastBtn.onclick = retryLastFailed;
   inputEl.addEventListener('keydown', e => {
     if (e.key !== 'Enter' || e.shiftKey) return;
     e.preventDefault();
@@ -3499,38 +3468,6 @@ import {
     });
   }
 
-  async function copyLatestOutput() {
-    const text = latestOutputText.trim();
-    if (!text) return;
-    try {
-      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
-      else if (!fallbackCopyText(text)) throw new Error('clipboard unavailable');
-      appendSystem('已复制最近输出', false);
-    } catch {
-      if (fallbackCopyText(text)) appendSystem('已复制最近输出', false);
-      else showCopyFallback(text);
-    }
-  }
-
-  function showCopyFallback(text) {
-    const card = document.createElement('div');
-    card.className = 'copy-fallback';
-    const label = document.createElement('div');
-    label.textContent = '剪贴板受限，已选中最近输出，请用系统复制菜单。';
-    const ta = document.createElement('textarea');
-    ta.readOnly = true;
-    ta.value = text;
-    card.appendChild(label);
-    card.appendChild(ta);
-    appendRaw(card, 'system-msg');
-    scrollBottom();
-    setTimeout(() => {
-      ta.focus();
-      ta.select();
-      ta.setSelectionRange(0, ta.value.length);
-    }, 0);
-  }
-
   function fallbackCopyText(text) {
     const ta = document.createElement('textarea');
     ta.value = text;
@@ -3549,12 +3486,6 @@ import {
     ta.remove();
     inputEl.focus();
     return ok;
-  }
-
-  function retryLastFailed() {
-    if (!lastFailedText || !socket.connected) return;
-    inputEl.value = lastFailedText;
-    sendMessage();
   }
 
   // ---- Web Push ----
