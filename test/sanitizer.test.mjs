@@ -129,3 +129,38 @@ test('sanitize: 非字符串返回空', () => {
   assert.equal(sanitize(null), '');
   assert.equal(sanitize(123), '');
 });
+
+
+// ---- sanitize: 灾难性回溯防护 ----
+//
+// 回归护栏。密钥赋值模式曾写成 [A-Za-z_]*(key|secret|…)[A-Za-z_]*，前后两个 Kleene
+// star 与中间的 alternation 字符集完全重叠，导致每个起始位置都要穷举切分点。
+// 实测退化为 O(n³)：200→2.4ms、400→14ms、800→114ms、1600→897ms。
+// sanitize() 是同步的，一次触发即冻结整个网关的事件循环——连 node:test 的
+// { timeout } 都无法中断它，所以这里用绝对耗时而非测试超时来守。
+
+test('sanitize: 对抗性赋值串不触发灾难性回溯', () => {
+  const hostile = 'A_KEY'.repeat(320);           // 1600 字符，全部命中敏感词前后缀
+  const started = performance.now();
+  sanitize(hostile);
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed < 200, `1600 字符对抗输入应在 200ms 内完成，实际 ${elapsed.toFixed(0)}ms`);
+});
+
+test('sanitize: 耗时随输入规模线性增长', () => {
+  const measure = size => {
+    const started = performance.now();
+    sanitize('A_KEY'.repeat(size / 5));
+    return performance.now() - started;
+  };
+  measure(400);                                   // 预热，避开 JIT 冷启动
+  const small = Math.max(measure(400), 0.05);
+  const large = measure(1600);                    // 4 倍输入
+  assert.ok(large / small < 20, `4 倍输入的耗时比应远小于 20（线性约为 4），实际 ${(large / small).toFixed(1)}`);
+});
+
+test('sanitize: 长串无敏感词时不回溯', () => {
+  const started = performance.now();
+  sanitize('-----BEGIN RSA PRIVATE KEY-----' + 'x'.repeat(100000));   // 有 BEGIN 无 END
+  assert.ok(performance.now() - started < 200);
+});

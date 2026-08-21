@@ -27,6 +27,9 @@ const DEFAULT_BACKPRESSURE_RETRIES = 5;
 const DEFAULT_BACKPRESSURE_BASE_MS = 250;
 const MAX_BACKPRESSURE_DELAY_MS = 5000;
 const RPC_SUMMARY_CAP = 240;
+// 进入脱敏正则的扫描窗口。输出本就截到 RPC_SUMMARY_CAP，落在窗口之外的内容
+// 无论如何都会被丢弃，所以限制窗口不改变输出，只是不让正则去扫它。
+const RPC_SCAN_LIMIT = RPC_SUMMARY_CAP * 8;
 const SENSITIVE_RPC_KEY_RE = /(token|secret|password|passwd|credential|authorization|api[_-]?key|private[_-]?key|refreshToken|accessToken|chatgptAuthTokens|dataBase64)/i;
 const CONTENT_RPC_KEY_RE = /^(text|input|prompt|content|delta|aggregatedOutput|output|diff|data)$/i;
 const LEGACY_APPROVAL_METHODS = new Set(['applyPatchApproval', 'execCommandApproval']);
@@ -1720,7 +1723,7 @@ function redactRpcString(value, key = '') {
   const pathSafe = key === 'cwd' || key === 'path' || /^([A-Za-z]:\\|\/Users\/|\/home\/|\/tmp\/|\/var\/)/.test(value)
     ? sanitizePath(value)
     : value;
-  return truncate(sanitize(pathSafe), RPC_SUMMARY_CAP);
+  return truncate(sanitize(pathSafe.slice(0, RPC_SCAN_LIMIT)), RPC_SUMMARY_CAP);
 }
 
 function definedParams(params) {

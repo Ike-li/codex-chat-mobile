@@ -1,6 +1,20 @@
 // sanitizer.js —— 日志脱敏模块
 // 功能：过滤日志/终端输出中的敏感信息（token、API key、密码等），防止泄露。
 
+// 敏感赋值：先把标识符整体匹配一次，再在回调里判定是否敏感。
+// 不要写成 [A-Za-z_]*(key|secret|…)[A-Za-z_]* —— 前后两个 Kleene star 与中间
+// alternation 的字符集完全重叠，每个起始位置都要穷举切分点，实测退化到 O(n³)。
+const SENSITIVE_ASSIGNMENT_RE = /\b([A-Za-z_][A-Za-z0-9_]{0,127})(\s*=\s*)(\S+)/g;
+const SENSITIVE_NAME_RE = /key|secret|token|password|passwd|credential/i;
+
+function redactAssignment(match, name, separator, value) {
+  if (!SENSITIVE_NAME_RE.test(name)) return match;
+  // 全大写标识符（环境变量风格）不限 value 长度；其余要求 value 至少 8 字符，
+  // 避免把 foo=bar 这类普通赋值误伤。
+  if (/^[A-Z_]+$/.test(name) || value.length >= 8) return `${name}${separator}***`;
+  return match;
+}
+
 const PATTERNS = [
   [/\b(sk|key|api)[-_][A-Za-z0-9][A-Za-z0-9_-]{15,}\b/g, '***'],
   [/\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b/g, '***'],
@@ -8,8 +22,7 @@ const PATTERNS = [
   [/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, '***'],
   [/-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]+?-----END [A-Z ]+PRIVATE KEY-----/g, '***'],
   [/Bearer\s+[A-Za-z0-9._-]{20,}/g, 'Bearer ***'],
-  [/([A-Z_]*(KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL)[A-Z_]*\s*=\s*)\S+/g, '$1***'],
-  [/([A-Za-z_]*(key|secret|token|password|passwd|credential)[A-Za-z_]*\s*=\s*)\S{8,}/gi, '$1***'],
+  [SENSITIVE_ASSIGNMENT_RE, redactAssignment],
   [/\b(aws_session_token|AWS_SESSION_TOKEN)\s*=\s*\S+/gi, '***'],
   [/\b(access_token|refresh_token)[:=]\s*[A-Za-z0-9._-]{20,}\b/g, '$1:***'],
   [/\b[0-9a-f]{2}(:[0-9a-f]{2}){15,}\b/g, '***'],
