@@ -108,6 +108,48 @@ test('abort during thread/start prevents the pending turn/start', async () => {
   assert.ok(byType(events, 'system').some(event => /中断/.test(event.payload.message)));
 });
 
+test('abort while turn/start is in flight interrupts the orphaned turn', async () => {
+  // 姊妹用例 'abort during thread/start …' 守的是 ensureReady() 期间的窗口。
+  // 这一条守它之后的窗口：turn/start 已经发出、响应尚未回来时用户点停止。
+  // 此刻 currentTurnId 还是 null，abort() 发不出 turn/interrupt；若返回后不补发，
+  // 这个 turn 会在 app-server 上继续跑，且再也没有任何路径能中断它。
+  const { session, events } = makeSession();
+  session.sessionId = 'thr-orphan';
+  session.child = {};
+  session.ensureReady = async () => {};
+  const calls = [];
+  let releaseTurnStart;
+  session.request = async (method, params) => {
+    calls.push({ method, params });
+    if (method !== 'turn/start') return {};
+    return new Promise(resolve => { releaseTurnStart = () => resolve({ turn: { id: 'turn-orphan' } }); });
+  };
+
+  const dispatched = session.dispatchUserMessage({ text: 'rm -rf /tmp/x', clientRequestId: 'req-orphan' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(calls.some(call => call.method === 'turn/start'), 'turn/start 应已在途');
+
+  await session.abort();
+  assert.equal(session.currentTurnId, null);
+  assert.ok(!calls.some(call => call.method === 'turn/interrupt'), 'abort 当时还不知道 turnId');
+
+  releaseTurnStart();
+  const outcome = await dispatched;
+
+  const interrupt = calls.find(call => call.method === 'turn/interrupt');
+  assert.ok(interrupt, 'turn/start 返回后必须补发 turn/interrupt');
+  assert.equal(interrupt.params.turnId, 'turn-orphan');
+  assert.equal(interrupt.params.threadId, 'thr-orphan');
+
+  assert.equal(outcome.accepted, false);
+  assert.equal(outcome.state, 'rejected');
+  assert.equal(outcome.reason, 'interrupted');
+  assert.equal(session.currentTurnId, null, '被撤销的 turn 不应进入 currentTurnId');
+
+  // 与既有的 interrupted 分支保持一致：不把被撤销的 turn 记成已提交。
+  assert.equal(byType(events, 'status').some(event => event.payload.reason === 'turn_submitted'), false);
+});
+
 test('turn completed before turn/start continuation does not resurrect its turn id or submitted status', async () => {
   const { session, events } = makeSession();
   session.ensureReady = async () => {};

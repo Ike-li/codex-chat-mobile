@@ -609,6 +609,24 @@ export class ThreadRuntime {
       if (clientRequestId) params.clientUserMessageId = clientRequestId;
       const turnStart = await this.request('turn/start', params);
       const turnId = turnStart?.turn?.id ?? turnStart?.turnId ?? null;
+      // abort 落在 turn/start 的在途窗口里：turn 已经在 app-server 上起来了，但既没进
+      // currentTurnId 的追踪、也不会被后续任何 interrupt 命中——用户会看到「已中断」而
+      // 命令仍在跑。必须就地撤销。turnEpoch 比 busy 精确：只有 abort() 会递增它，而
+      // busy 也可能被 thread/status/changed 的 idle 通知改写。
+      if (this.disposed || this.turnEpoch !== turnEpoch) {
+        if (turnId && this.child && this.sessionId) {
+          this.request('turn/interrupt', { threadId: this.sessionId, turnId }, {
+            timeoutMs: this.interruptTimeoutMs,
+          }).catch(() => {});
+        }
+        return {
+          accepted: false,
+          state: 'rejected',
+          clientRequestId,
+          threadId: this.sessionId,
+          reason: 'interrupted',
+        };
+      }
       const outcome = {
         accepted: true,
         state: 'submitted',
