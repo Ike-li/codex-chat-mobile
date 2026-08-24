@@ -15,6 +15,7 @@ npm run test:e2e
 - `npm run protocol:check` 要求本机 Codex 版本等于 `.codex-version`，并检查 `.protocol/stable/` 的覆盖与漂移；版本不匹配就是失败，不能跳过后宣称门禁通过。
 - `npm run test:e2e` 用 Playwright mobile Chrome 连接 mock gateway，不启动真实 Codex。
 - `npm run test:ci` 串联 lint、单测、覆盖率门禁和 E2E；协议门禁仍需按上面的四条命令单独运行。
+- 本机 Node 25 跑 `npm test` 会间歇报 `Unable to deserialize cloned data`。这是 Node 25 test runner 与测试子进程之间 v8 序列化 IPC 的回归，与被测代码无关：Node 22 连跑 5 次全绿，换 `--test-reporter=tap` 无效，而 `--test-isolation=none`（同进程运行、绕开该 IPC）连跑 5 次全绿。本地改用 `npm run test:local`；CI 跑 Node 20/22，门禁仍以 `npm test` 为准。
 
 ## 自动化覆盖
 

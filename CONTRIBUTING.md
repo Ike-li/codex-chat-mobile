@@ -39,6 +39,8 @@ npm run test:e2e
 
 `npm run test:ci` chains lint, unit tests, coverage thresholds, and Playwright E2E — the same set CI runs on Node 20 and 22. Coverage must not regress (`scripts/check-coverage.js`, `scripts/check-coverage-delta.js`).
 
+On Node 25, `npm test` fails intermittently with `Unable to deserialize cloned data`. That is a regression in the Node 25 test runner's v8-serialized IPC with its test subprocesses, not a fault in the code under test — Node 22 passes 5/5, switching to `--test-reporter=tap` does not help, and `--test-isolation=none` (one process, no IPC) passes 5/5. Use `npm run test:local` while developing on Node 25. CI runs Node 20 and 22, where `npm test` remains the gate.
+
 ## Protocol Changes
 
 The app-server protocol is pinned via `.codex-version` and the baseline in `.protocol/stable/`. When bumping the Codex CLI version, follow [docs/PROTOCOL_UPGRADE.md](docs/PROTOCOL_UPGRADE.md): regenerate the baseline, run the drift check, and update the bridge plus focused tests before accepting drift.

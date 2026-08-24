@@ -24,6 +24,7 @@
     "lint:fix": "eslint . --fix",
     "protocol:check": "node scripts/protocol-check.mjs",
     "test": "node --test --test-concurrency=1 test/*.test.mjs",
+    "test:local": "node --test --test-isolation=none test/*.test.mjs",
     "test:e2e": "playwright test",
     "test:all": "npm test && npm run test:e2e",
     "test:ci": "npm run lint && npm test && node scripts/check-coverage.js && npm run test:e2e",
