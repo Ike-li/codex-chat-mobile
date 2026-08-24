@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 // ---- git 状态（per-cwd 短 TTL 缓存）----
 const GIT_TTL_MS = 5_000;
 const gitCache = new Map(); // cwd -> { at, data|null }
+const gitInFlight = new Map(); // cwd -> Promise，避免并发重复 spawn git
 
 function execGit(args, cwd) {
   return new Promise(resolve => {
@@ -30,11 +31,29 @@ function parseRepo(url) {
 }
 
 // 返回 { branch, changed, ahead, behind, insertions, deletions, repo } 或 null
-async function gitStatus(cwd) {
-  if (!cwd) return null;
+function gitStatus(cwd) {
+  if (!cwd) return Promise.resolve(null);
   const hit = gitCache.get(cwd);
-  if (hit && Date.now() - hit.at < GIT_TTL_MS) return hit.data;
+  if (hit && Date.now() - hit.at < GIT_TTL_MS) return Promise.resolve(hit.data);
 
+  // 单飞。缓存写在 5 次 await execGit 之后，所以并发调用会全部 miss 并各自 spawn 5 个
+  // git 子进程；网关每 4 秒对每个已批准 socket 推一次状态栏，多设备下放大成进程风暴。
+  const inFlight = gitInFlight.get(cwd);
+  if (inFlight) return inFlight;
+
+  const pending = collectGitStatus(cwd)
+    .then(data => {
+      gitCache.set(cwd, { at: Date.now(), data });
+      return data;
+    })
+    .finally(() => {
+      if (gitInFlight.get(cwd) === pending) gitInFlight.delete(cwd);
+    });
+  gitInFlight.set(cwd, pending);
+  return pending;
+}
+
+async function collectGitStatus(cwd) {
   const branch = (await execGit(['symbolic-ref', '--short', 'HEAD'], cwd))
     || (await execGit(['rev-parse', '--short', 'HEAD'], cwd));
   let data = null;
@@ -48,7 +67,6 @@ async function gitStatus(cwd) {
     const repo = parseRepo(await execGit(['config', '--get', 'remote.origin.url'], cwd));
     data = { branch, changed, ahead, behind, insertions, deletions, repo };
   }
-  gitCache.set(cwd, { at: Date.now(), data });
   return data;
 }
 

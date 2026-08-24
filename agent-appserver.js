@@ -128,7 +128,7 @@ export class ThreadRuntime {
     if (this.host) {
       this.host.attach(this);
       this.child = this.host.start();
-      this.idleTimer = setInterval(() => this.checkIdle(), 30_000);
+      this.startIdleWatchdog();
       return;
     }
     if (!this.transport) {
@@ -153,7 +153,15 @@ export class ThreadRuntime {
       });
     }
     this.child = this.transport.start();
+    this.startIdleWatchdog();
+  }
+
+  // 先 clear 再 set：spawnIfNeeded 会在每次 child 变 null 后重新进入，重复 setInterval
+  // 会让旧 handle 失联。unref 是因为它是维护定时器，不该把进程吊住。
+  startIdleWatchdog() {
+    clearInterval(this.idleTimer);
     this.idleTimer = setInterval(() => this.checkIdle(), 30_000);
+    this.idleTimer.unref?.();
   }
 
   handleTransportExit() {
@@ -180,6 +188,7 @@ export class ThreadRuntime {
     this.clearQueue('process_error');
     this.clearBackpressureRetries(err);
     this.rejectAllPending(err);
+    clearInterval(this.idleTimer); this.idleTimer = null;
     this.emit('error', { message: `codex app-server 启动失败：${sanitize(err.message)}`, recoverable: false });
     this.emitStatus('process_error');
   }

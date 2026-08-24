@@ -153,3 +153,24 @@ test('git 缓存: 短时间内重复调用返回缓存结果', async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('git 缓存: 并发调用共享同一次 git 查询', async () => {
+  const dir = makeTempDir();
+  try {
+    writeFileSync(join(dir, 'test.txt'), 'hello');
+    execSync('git add . && git commit -q -m "init"', { cwd: dir, stdio: 'ignore' });
+    const [p1, p2, p3] = await Promise.all([
+      buildStatusLine({ agent: null, cwd: dir, versions: null }),
+      buildStatusLine({ agent: null, cwd: dir, versions: null }),
+      buildStatusLine({ agent: null, cwd: dir, versions: null }),
+    ]);
+    // 缓存写在 5 次 await execGit 之后，所以并发调用会全部 miss，各自 spawn 5 个 git
+    // 子进程——网关每 4 秒对每个已批准 socket 调一次，多设备下会放大成进程风暴。
+    // 单飞后三者共享同一个 in-flight promise，因此拿到同一个对象引用；没有单飞时
+    // 是三个内容相同但引用不同的对象。
+    assert.equal(p1.git, p2.git);
+    assert.equal(p2.git, p3.git);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

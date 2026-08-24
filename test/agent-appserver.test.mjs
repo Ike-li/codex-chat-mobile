@@ -1333,3 +1333,63 @@ test('clearQueue: 清空队列并返回丢弃数量', () => {
   assert.equal(qe.payload.dropped, 2);
   assert.equal(qe.payload.reason, 'test_clear');
 });
+
+// ---- idle watchdog 生命周期 ----
+
+function makeFakeTransportFactory() {
+  return () => {
+    const transport = {
+      child: null,
+      start() {
+        transport.child = { stdin: { write() {} } };
+        return transport.child;
+      },
+      request: async () => ({}),
+      notify() {},
+      dispose() {},
+    };
+    return transport;
+  };
+}
+
+test('handleTransportError clears the idle watchdog instead of leaking it', () => {
+  const { session } = makeSession({ transportFactory: makeFakeTransportFactory() });
+  session.spawnIfNeeded();
+  assert.ok(session.idleTimer, 'spawn 应建立 idle watchdog');
+
+  session.handleTransportError(new Error('spawn failed'));
+  assert.equal(session.idleTimer, null, 'transport 出错后必须清掉 watchdog');
+
+  session.dispose();
+});
+
+test('repeated transport errors do not leak idle watchdog intervals', () => {
+  // handleTransportExit 清了 timer，handleTransportError 没有。下一次请求走
+  // spawnIfNeeded 时 child 为 null，于是无条件再建一个 interval，旧的失联。
+  // 这些 interval 没有 unref，泄漏后还会继续把进程吊住并重复触发 checkIdle。
+  const originalSetInterval = globalThis.setInterval;
+  const originalClearInterval = globalThis.clearInterval;
+  const live = new Set();
+  globalThis.setInterval = (callback, delay, ...args) => {
+    const handle = originalSetInterval(callback, delay, ...args);
+    if (delay === 30_000) live.add(handle);
+    return handle;
+  };
+  globalThis.clearInterval = handle => {
+    live.delete(handle);
+    return originalClearInterval(handle);
+  };
+
+  try {
+    const { session } = makeSession({ transportFactory: makeFakeTransportFactory() });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      session.spawnIfNeeded();
+      session.handleTransportError(new Error(`spawn failed ${attempt}`));
+    }
+    assert.equal(live.size, 0, '每次 transport 出错都应清掉自己的 watchdog');
+    session.dispose();
+  } finally {
+    globalThis.setInterval = originalSetInterval;
+    globalThis.clearInterval = originalClearInterval;
+  }
+});
