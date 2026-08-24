@@ -1131,6 +1131,16 @@ export class ThreadRuntime {
     }
   }
 
+  // 空闲回收资格。runtime 只回答自己手上还有没有活；「有没有 socket 在看它」
+  // 是网关才知道的信息，由 server.js 的 reclaimIdleAgents 另行判断。
+  isReclaimable(idleSince) {
+    return !this.disposed
+      && !this.busy
+      && this.pendingApprovals.size === 0
+      && this.inputQueue.length === 0
+      && this.lastActivity <= idleSince;
+  }
+
   checkIdle() {
     if (!this.busy) return;
     if (Date.now() - this.lastActivity > this.idleTimeoutMs) {

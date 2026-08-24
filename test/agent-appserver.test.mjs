@@ -1393,3 +1393,33 @@ test('repeated transport errors do not leak idle watchdog intervals', () => {
     globalThis.clearInterval = originalClearInterval;
   }
 });
+
+// ---- 空闲回收资格 ----
+
+test('isReclaimable refuses while the runtime still holds work', () => {
+  // 网关侧另有「没有任何 socket 在看」这一条；runtime 只回答自己手上有没有活。
+  const { session } = makeSession();
+  session.lastActivity = 1_000;
+  const idleSince = 5_000;
+
+  assert.equal(session.isReclaimable(idleSince), true, '空闲且久未活动的实例可以回收');
+
+  session.busy = true;
+  assert.equal(session.isReclaimable(idleSince), false, 'turn 正在跑时不能回收');
+  session.busy = false;
+
+  session.pendingApprovals.add(1);
+  assert.equal(session.isReclaimable(idleSince), false, '有待人处理的审批时不能回收');
+  session.pendingApprovals.clear();
+
+  session.inputQueue.push({ text: 'queued', queuedAt: Date.now() });
+  assert.equal(session.isReclaimable(idleSince), false, '排队消息未发完时不能回收');
+  session.inputQueue.length = 0;
+
+  session.lastActivity = 9_000;
+  assert.equal(session.isReclaimable(idleSince), false, '最近还有活动的实例不能回收');
+  session.lastActivity = 1_000;
+
+  session.disposed = true;
+  assert.equal(session.isReclaimable(idleSince), false, '已 dispose 的实例不重复回收');
+});

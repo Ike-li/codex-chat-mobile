@@ -115,6 +115,10 @@ const rawPendingDeviceLimit = Number(process.env.CODEX_PENDING_DEVICE_LIMIT);
 const PENDING_DEVICE_LIMIT = Number.isInteger(rawPendingDeviceLimit) && rawPendingDeviceLimit > 0
   ? rawPendingDeviceLimit
   : 32;
+const rawAgentIdleTtlMs = Number(process.env.CODEX_AGENT_IDLE_TTL_MS);
+const AGENT_IDLE_TTL_MS = Number.isInteger(rawAgentIdleTtlMs) && rawAgentIdleTtlMs >= 0
+  ? rawAgentIdleTtlMs
+  : 30 * 60 * 1000;
 const CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 const DEVICE_TOKEN_PATTERN = /^[A-Za-z0-9._:-]{16,128}$/;
 const SOCKET_MAX_HTTP_BUFFER_SIZE = 32 * 1024 * 1024;
@@ -1287,6 +1291,37 @@ function broadcastInstances() {
       payload: { instances: list, viewingInstanceId: socket.data.viewingInstanceId ?? null }
     });
   }
+}
+
+// 空闲实例回收。createAgent 有五个调用点而 agents.delete 只有 thread:delete 一个，
+// 于是每次「新建会话」都留下一个常驻 runtime（各持 500 条事件环形缓冲）。
+//
+// 回收条件分两层：runtime 用 isReclaimable 回答自己手上还有没有活（非 busy、无待定
+// 审批、队列为空、久未活动），网关这一层再确认没有任何 socket 还指着它。
+//
+// 这不影响「断线重连找回原会话」：thread 的事实源在 app-server，回收掉的只是网关侧的
+// runtime 壳，浏览器保留着按 cwd 的 thread 指针，重连后 thread:select 会经
+// createAgent(threadId) 重建并 thread/resume。
+export function reclaimIdleAgents(now = Date.now()) {
+  const idleSince = now - AGENT_IDLE_TTL_MS;
+  const viewed = new Set();
+  for (const socket of io.sockets.sockets.values()) {
+    if (socket.data.viewingInstanceId) viewed.add(socket.data.viewingInstanceId);
+    if (socket.data.controlInstanceId) viewed.add(socket.data.controlInstanceId);
+  }
+
+  let reclaimed = 0;
+  for (const [instanceId, agent] of [...agents]) {
+    if (viewed.has(instanceId)) continue;
+    if (typeof agent.isReclaimable !== 'function' || !agent.isReclaimable(idleSince)) continue;
+    try { agent.dispose(); } catch { /* dispose 失败不应挡住回收其余实例 */ }
+    threadRegistry.release(agent);
+    agents.delete(instanceId);
+    clearSocketInstanceReferences(instanceId);
+    reclaimed += 1;
+  }
+  if (reclaimed > 0) broadcastInstances();
+  return reclaimed;
 }
 
 // ---- 契约路由辅助 ----
@@ -2818,6 +2853,7 @@ io.on('connection', socket => {
 // ---- 状态栏刷新 ----
 let statusRefreshTimer = null;
 let pruneUploadsTimer = null;
+let agentReclaimTimer = null;
 
 async function refreshStatusLine() {
   const tasks = [];
@@ -2880,6 +2916,10 @@ export function startServer() {
     // 每 5 分钟清理过期限流窗口
     failureWindowsPruneTimer = setInterval(pruneExpiredFailureWindows, 300_000);
     failureWindowsPruneTimer.unref?.();
+
+    // 每 5 分钟回收无人查看的空闲实例
+    agentReclaimTimer = setInterval(() => reclaimIdleAgents(), 300_000);
+    agentReclaimTimer.unref?.();
   });
   return httpServer;
 }
@@ -2894,6 +2934,8 @@ export function stopServer(callback) {
   authSessionsPruneTimer = null;
   clearInterval(failureWindowsPruneTimer);
   failureWindowsPruneTimer = null;
+  clearInterval(agentReclaimTimer);
+  agentReclaimTimer = null;
   for (const agent of agents.values()) {
     try { agent.dispose?.(); } catch { /* noop */ }
     threadRegistry.release(agent);

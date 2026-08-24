@@ -149,11 +149,11 @@ test('stopServer clears every maintenance interval created by startServer', asyn
     const maintenanceIntervals = [...intervals]
       .filter(([, delay]) => [4_000, 300_000, 3_600_000].includes(delay))
       .map(([handle]) => handle);
-    assert.equal(maintenanceIntervals.length, 4);
+    assert.equal(maintenanceIntervals.length, 5);
     assert.deepEqual(
       maintenanceIntervals.filter(handle => !cleared.has(handle)),
       [],
-      'stopServer must clear status, upload, auth-session, and failure-window intervals',
+      'stopServer must clear status, upload, auth-session, failure-window, and agent-reclaim intervals',
     );
   } finally {
     if (fixture) await fixture.close();
@@ -3941,7 +3941,7 @@ test('server exposes P3 experimental controls only behind feature flag', async (
   }
 });
 
-async function startIsolatedServer({ codexBin, rpcLog, spawnLog, adminEnabled = false, adminUnlockTtlMs, adminUnlockMaxFailures, adminUnlockWindowMs, p3Experimental = false, eventBufferCap, vapid, initialPushSubscriptions, initialTrustedDevices, pushMaxSubscriptions, allowedOrigins = [], trustedProxyIps = [], allowInsecureRemote = false, authMaxFailures, authWindowMs, pendingDeviceLimit } = {}) {
+async function startIsolatedServer({ codexBin, rpcLog, spawnLog, adminEnabled = false, adminUnlockTtlMs, adminUnlockMaxFailures, adminUnlockWindowMs, p3Experimental = false, eventBufferCap, vapid, initialPushSubscriptions, initialTrustedDevices, pushMaxSubscriptions, allowedOrigins = [], trustedProxyIps = [], allowInsecureRemote = false, authMaxFailures, authWindowMs, pendingDeviceLimit, agentIdleTtlMs } = {}) {
   const previous = snapshotEnv();
   const root = mkdtempSync(join(tmpdir(), 'ccm-server-test-'));
   let workDir = join(root, 'work');
@@ -3986,6 +3986,11 @@ async function startIsolatedServer({ codexBin, rpcLog, spawnLog, adminEnabled = 
     process.env.CODEX_PENDING_DEVICE_LIMIT = String(pendingDeviceLimit);
   } else {
     delete process.env.CODEX_PENDING_DEVICE_LIMIT;
+  }
+  if (Number.isInteger(agentIdleTtlMs) && agentIdleTtlMs >= 0) {
+    process.env.CODEX_AGENT_IDLE_TTL_MS = String(agentIdleTtlMs);
+  } else {
+    delete process.env.CODEX_AGENT_IDLE_TTL_MS;
   }
   if (codexBin) process.env.CODEX_BIN = codexBin;
   if (rpcLog) process.env.CODEX_FAKE_RPC_LOG = rpcLog;
@@ -4042,6 +4047,7 @@ async function startIsolatedServer({ codexBin, rpcLog, spawnLog, adminEnabled = 
     altWorkDir,
     dataDir,
     authToken: process.env.AUTH_TOKEN,
+    reclaimIdleAgents: () => serverModule.reclaimIdleAgents(),
     async close() {
       await new Promise(resolve => serverModule.stopServer(resolve));
       restoreEnv(previous);
@@ -4736,3 +4742,71 @@ function restoreEnv(previous) {
     else process.env[key] = previous[key];
   }
 }
+
+test('idle agents are reclaimed once no socket is viewing them', async () => {
+  // createAgent 有五个调用点，agents.delete 此前只有 thread:delete 一个。每次点
+  // 「新建会话」都会留下一个常驻 runtime，各自持有 500 条事件环形缓冲。
+  const root = mkdtempSync(join(tmpdir(), 'ccm-agent-reclaim-test-'));
+  const codexBin = createFakeCodexBin(root);
+  const fixture = await startIsolatedServer({ codexBin, agentIdleTtlMs: 0 });
+  try {
+    const socket = await connectSocket(fixture.url, fixture.authToken);
+    try {
+      await waitForAgentEvent(socket, 'init');
+      const created = await emitWithAck(socket, 'session:new', { cwd: fixture.workDir });
+      assert.equal(created.ok, true);
+      assert.equal(fixture.reclaimIdleAgents(), 0, '正被 socket 查看的实例不能回收');
+    } finally {
+      socket.disconnect();
+    }
+    await waitForCondition(
+      () => fixture.reclaimIdleAgents() === 1,
+      '断开后无人查看的空闲实例应被回收',
+    );
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a reclaimed thread can be selected again', async () => {
+  // 回收的只是网关侧的 runtime 壳——thread 的事实源在 app-server，所以
+  // 「断线重连找回原会话」必须不受影响。
+  const root = mkdtempSync(join(tmpdir(), 'ccm-agent-reclaim-resume-test-'));
+  const codexBin = createFakeCodexBin(root);
+  const fixture = await startIsolatedServer({ codexBin, agentIdleTtlMs: 0 });
+  const threadId = 'thr_reclaim_probe';
+  try {
+    let firstInstanceId = null;
+    const first = await connectSocket(fixture.url, fixture.authToken);
+    try {
+      await waitForAgentEvent(first, 'init');
+      const selected = await emitWithAck(first, 'thread:select', { threadId, cwd: fixture.workDir });
+      assert.equal(selected.ok, true);
+      firstInstanceId = selected.instanceId;
+      assert.ok(firstInstanceId);
+    } finally {
+      first.disconnect();
+    }
+
+    await waitForCondition(
+      () => fixture.reclaimIdleAgents() >= 1,
+      '断开后空闲实例应被回收',
+    );
+
+    const second = await connectSocket(fixture.url, fixture.authToken);
+    try {
+      await waitForAgentEvent(second, 'init');
+      const reselected = await emitWithAck(second, 'thread:select', { threadId, cwd: fixture.workDir });
+      assert.equal(reselected.ok, true, '回收之后仍应能重新选中同一个 thread');
+      assert.equal(reselected.threadId, threadId);
+      assert.ok(reselected.instanceId);
+      assert.notEqual(reselected.instanceId, firstInstanceId, '应重建出一个新的 runtime 壳');
+    } finally {
+      second.disconnect();
+    }
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
