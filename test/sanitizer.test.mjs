@@ -164,3 +164,43 @@ test('sanitize: 长串无敏感词时不回溯', () => {
   sanitize('-----BEGIN RSA PRIVATE KEY-----' + 'x'.repeat(100000));   // 有 BEGIN 无 END
   assert.ok(performance.now() - started < 200);
 });
+
+// ---- 脱敏覆盖面：回归护栏 ----
+//
+// 这些形式在把嵌套量词换成「匹配标识符 + 回调判定」时全部漏过了。根因有两个：
+// 值用 \S+ 匹配会吃掉整个非空白串，replace 的 lastIndex 随之跨过后面的敏感赋值；
+// 标识符起锚要求首字符是字母或下划线，数字开头的名字锚不上。
+
+test('sanitize: 敏感赋值紧邻在非敏感赋值之后仍被遮蔽', () => {
+  const secret = 'deadbeefdeadbeefdeadbeefdeadbeef';
+  for (const input of [
+    `curl 'https://api.vendor.com/run?project=demo&secret=${secret}'`,
+    `DSN=postgres://x;password=${secret}`,
+    `a=b,secret=${secret}`,
+    `user=root;password=${secret}`,
+    `X-Req=1|api_key=${secret}`,
+    `foo=1&client_secret=${secret}`,
+  ]) {
+    assert.ok(!sanitize(input).includes(secret), `未遮蔽：${input}`);
+  }
+});
+
+test('sanitize: 数字开头与含数字的标识符同样被遮蔽', () => {
+  const secret = 'deadbeefdeadbeefdeadbeefdeadbeef';
+  assert.ok(!sanitize(`2FA_TOKEN=${secret}`).includes(secret));
+  assert.ok(!sanitize(`403_secret=${secret}`).includes(secret));
+  assert.equal(sanitize('S3_KEY=abc'), 'S3_KEY=***');
+  assert.equal(sanitize('K8S_SECRET=q'), 'K8S_SECRET=***');
+});
+
+test('sanitize: 超长标识符不会因长度上限而漏掉', () => {
+  const secret = 'deadbeefdeadbeefdeadbeefdeadbeef';
+  const longName = `${'A_'.repeat(90)}SECRET`;   // 远超 128 字符
+  assert.ok(!sanitize(`${longName}=${secret}`).includes(secret));
+});
+
+test('sanitize: 普通赋值不被误伤', () => {
+  assert.equal(sanitize('foo=bar'), 'foo=bar');
+  assert.equal(sanitize('count=42&page=3'), 'count=42&page=3');
+  assert.equal(sanitize('hello world'), 'hello world');
+});

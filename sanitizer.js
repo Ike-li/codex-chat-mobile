@@ -4,14 +4,18 @@
 // 敏感赋值：先把标识符整体匹配一次，再在回调里判定是否敏感。
 // 不要写成 [A-Za-z_]*(key|secret|…)[A-Za-z_]* —— 前后两个 Kleene star 与中间
 // alternation 的字符集完全重叠，每个起始位置都要穷举切分点，实测退化到 O(n³)。
-const SENSITIVE_ASSIGNMENT_RE = /\b([A-Za-z_][A-Za-z0-9_]{0,127})(\s*=\s*)(\S+)/g;
+//
+// 值必须停在分隔符处。用 \S+ 会吃掉整个非空白串，replace 的 lastIndex 随之跨过
+// 后面的敏感赋值——project=demo&secret=… 里的 secret 就是这样整条漏出去的。
+// 起锚用负向后顾而不是 \b，首字符允许数字（2FA_TOKEN=…），标识符不设长度上限。
+const SENSITIVE_ASSIGNMENT_RE = /(?<![A-Za-z0-9_])([A-Za-z0-9_]+)(\s*=\s*)([^\s;,&|]+)/g;
 const SENSITIVE_NAME_RE = /key|secret|token|password|passwd|credential/i;
 
 function redactAssignment(match, name, separator, value) {
   if (!SENSITIVE_NAME_RE.test(name)) return match;
-  // 全大写标识符（环境变量风格）不限 value 长度；其余要求 value 至少 8 字符，
+  // 全大写标识符（环境变量风格，含数字如 S3_KEY / OAUTH2_TOKEN）不限 value 长度；其余要求 value 至少 8 字符，
   // 避免把 foo=bar 这类普通赋值误伤。
-  if (/^[A-Z_]+$/.test(name) || value.length >= 8) return `${name}${separator}***`;
+  if (/^[A-Z0-9_]+$/.test(name) || value.length >= 8) return `${name}${separator}***`;
   return match;
 }
 

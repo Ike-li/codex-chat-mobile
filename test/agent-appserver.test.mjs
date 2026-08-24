@@ -1423,3 +1423,82 @@ test('isReclaimable refuses while the runtime still holds work', () => {
   session.disposed = true;
   assert.equal(session.isReclaimable(idleSince), false, '已 dispose 的实例不重复回收');
 });
+
+// ---- 回收资格所依赖的信号 ----
+
+test('lastActivity tracks request/response traffic, not just notifications', async () => {
+  // isReclaimable 拿 lastActivity 当空闲判据，但 host 模式下 AppServerHost 构造
+  // transport 时没传 onActivity，所以 RPC 往返（thread/resume、command/exec、审批
+  // 请求）全都不算「活动」。一个正在跑长命令的 runtime 会被判成空闲。
+  const { session } = makeSession();
+  session.lastActivity = 1_000;
+
+  session.observeTransportFrame({
+    direction: 'outbound',
+    method: 'thread/resume',
+    frame: { method: 'thread/resume', id: 1, params: { threadId: 'thr_1' } },
+  });
+  assert.ok(session.lastActivity > 1_000, 'RPC 往返应算作活动');
+
+  session.lastActivity = 1_000;
+  session.handleServerRequest(7, 'item/commandExecution/requestApproval', {
+    threadId: 'thr_1', turnId: 'turn_1', itemId: 'item_1', command: ['ls'],
+  });
+  assert.ok(session.lastActivity > 1_000, '收到审批请求应算作活动');
+  session.dispose();
+});
+
+test('dispose rejects in-flight requests instead of leaving them pending', { timeout: 3000 }, async () => {
+  // dispose() 里的 rejectAllPending 清的是 legacy 路径的 map（host 模式下恒空）；
+  // 真正的在途请求躺在 host.transport.pending 里，条目的 context.runtime 是强引用，
+  // 于是「被回收」的 runtime 连同它 500 条事件缓冲一起留在内存里，调用方永不 settle。
+  const { AppServerHost } = await import('../app-server-host.js');
+  const { ThreadRegistry } = await import('../thread-registry.js');
+  const host = new AppServerHost({
+    registry: new ThreadRegistry(),
+    spawnImpl: () => ({
+      stdin: { write: () => true, on() {} },
+      stdout: { on() {} },
+      stderr: { on() {} },
+      on() {},
+      kill() {},
+    }),
+  });
+  const { session } = makeSession({ host });
+
+  const inFlight = session.request('thread/resume', { threadId: 'thr_1' });
+  assert.equal(host.transport.pending.size, 1);
+
+  session.dispose();
+  await assert.rejects(inFlight, /dispos/i, '在途请求应在 dispose 时被拒绝');
+  assert.equal(host.transport.pending.size, 0, 'transport.pending 里不应残留对已回收 runtime 的引用');
+  host.dispose();
+});
+
+test('a disposed runtime is not re-attached by a late response', { timeout: 3000 }, async () => {
+  // ensureInitialized 的 await 解开后会 notify('initialized')，那条路径会 attach()。
+  // 如果 runtime 已经被回收，它就这样被塞回 host.runtimes——而 detach 只由 dispose
+  // 调用，不会再发生第二次，于是永久泄漏。
+  const { AppServerHost } = await import('../app-server-host.js');
+  const { ThreadRegistry } = await import('../thread-registry.js');
+  const host = new AppServerHost({
+    registry: new ThreadRegistry(),
+    spawnImpl: () => ({
+      stdin: { write: () => true, on() {} },
+      stdout: { on() {} },
+      stderr: { on() {} },
+      on() {},
+      kill() {},
+    }),
+  });
+  const { session } = makeSession({ host });
+  host.attach(session);
+  assert.equal(host.runtimes.has(session), true);
+
+  session.dispose();
+  assert.equal(host.runtimes.has(session), false);
+
+  host.attach(session);
+  assert.equal(host.runtimes.has(session), false, '已 dispose 的 runtime 不应被重新 attach');
+  host.dispose();
+});

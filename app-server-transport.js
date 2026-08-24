@@ -217,6 +217,18 @@ export class AppServerTransport {
     }
   }
 
+  // 按 context 里的 runtime 定向拒绝。dispose 一个 runtime 时，它的在途请求会把
+  // 自己留在 pending 里，条目的 context.runtime 是强引用——被回收的 runtime 连同
+  // 它的事件缓冲一起留在内存里，调用方的 promise 也永不 settle。
+  rejectPendingFor(runtime, error) {
+    for (const [id, pending] of this.pending) {
+      if (pending.context?.runtime !== runtime) continue;
+      this.pending.delete(id);
+      if (pending.timer) clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+  }
+
   rejectPending(error) {
     for (const pending of this.pending.values()) {
       if (pending.timer) clearTimeout(pending.timer);

@@ -2925,8 +2925,12 @@ export function startServer() {
     failureWindowsPruneTimer = setInterval(pruneExpiredFailureWindows, 300_000);
     failureWindowsPruneTimer.unref?.();
 
-    // 每 5 分钟回收无人查看的空闲实例
-    agentReclaimTimer = setInterval(() => reclaimIdleAgents(), 300_000);
+    // 每 5 分钟回收无人查看的空闲实例，并顺带回收 needs-you 的终态记录——
+    // 那边的 prune 只挂在 open() 上，长期没有新审批就一直不释放。
+    agentReclaimTimer = setInterval(() => {
+      reclaimIdleAgents();
+      needsYouRegistry.prune();
+    }, 300_000);
     agentReclaimTimer.unref?.();
   });
   return httpServer;

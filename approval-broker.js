@@ -115,7 +115,17 @@ export class ApprovalBroker {
       this.pendingApprovals.delete(approvalId);
       this.pending.delete(approvalId);
       try {
-        this.respond(approvalId, this.resultFor(method, record?.params, 'decline'));
+        const result = this.resultFor(method, record?.params, 'decline');
+        this.respond(approvalId, result);
+        this.audit('decision', approvalId, method, { decision: 'decline', result });
+        // 其它 clearPending 的调用点（abort、turn 终态、进程退出）都会顺带发一个
+        // 能让 server.js 的 trackNeedsYou 关单的事件。不发的话这条 needs-you 记录
+        // 永远停在 pending：不参与 prune，还会推给每台重连的手机。
+        this.emit('approval_revoked', {
+          approvalId,
+          requestId: approvalId,
+          threadId: record?.params?.threadId ?? null,
+        });
       } catch {
         // 单个回包失败不应挡住其余的
       }

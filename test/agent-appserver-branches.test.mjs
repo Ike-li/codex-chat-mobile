@@ -4,7 +4,7 @@
 // 失败恢复、resume vs 新建、队列满、进程死亡、附件路径不外泄等。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CodexAppServerSession } from '../agent-appserver.js';
@@ -857,6 +857,91 @@ test('rpc observability: CODEX_RPC_LOG=0 turns the log off entirely', () => {
   } finally {
     if (previous === undefined) delete process.env.CODEX_RPC_LOG;
     else process.env.CODEX_RPC_LOG = previous;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('rpc observability: redacts a private key longer than any scan window', () => {
+  // 曾经给脱敏加过一个 1920 字符的扫描窗口，理由是「输出反正只截到 240，窗口外的
+  // 内容都会被丢掉，所以不改变输出」。那是错的：PEM 这类模式需要匹配到结束标记，
+  // 把 END 切掉整条 pattern 就失配，于是 240 字符的密钥材料明文落盘。
+  const dir = mkdtempSync(join(tmpdir(), 'ccm-rpc-pem-'));
+  const rpcLogPath = join(dir, 'rpc-pem.jsonl');
+  try {
+    const { session } = makeSession({ cwd: dir, rpcLogPath });
+    const { child } = fakeChild();
+    session.child = child;
+
+    const pem = `-----BEGIN RSA PRIVATE KEY-----\n${'MIIJKQIBAAKCAgEA'.repeat(200)}\n-----END RSA PRIVATE KEY-----`;
+    session.handleLine(JSON.stringify({
+      method: 'thread/compacted',
+      params: { threadId: 'thr_1', reason: `failed to load key: ${pem}` },
+    }));
+
+    const raw = readFileSync(rpcLogPath, 'utf8');
+    assert.doesNotMatch(raw, /BEGIN RSA PRIVATE KEY/, '私钥块不应出现在日志里');
+    assert.doesNotMatch(raw, /MIIJKQIBAAKCAgEA/, '私钥材料不应出现在日志里');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('rpc observability: recreates a deleted log with owner-only permissions', () => {
+  // Codex agent 在自己的 cwd 里有 shell（rm、git clean -xfd），日志文件可能在运行中
+  // 消失。裸 appendFileSync 会按 umask 默认模式重建，把 RPC 流量暴露给同机其他用户。
+  const dir = mkdtempSync(join(tmpdir(), 'ccm-rpc-remode-'));
+  const rpcLogPath = join(dir, 'rpc-remode.jsonl');
+  try {
+    const { session } = makeSession({ cwd: dir, rpcLogPath });
+    session.appendRpcLog({ frame: 'first' });
+    assert.equal(statSync(rpcLogPath).mode & 0o777, 0o600);
+
+    unlinkSync(rpcLogPath);
+    session.appendRpcLog({ frame: 'after delete' });
+    assert.equal(statSync(rpcLogPath).mode & 0o777, 0o600, '重建的日志仍须 owner-only');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('rpc observability: rotation survives another runtime sharing the same log', () => {
+  // rpcLogPath 默认是 join(cwd, '.codex-chat-rpc.jsonl')，而 server.js 的 createAgent
+  // 从不传它——同一个 cwd 上的多个 runtime 共写一个文件，却各持一个字节计数器。
+  // 谁的计数先到上限谁就轮转，rmSync(path.1) 顺手删掉别人刚存下的那一代。
+  const dir = mkdtempSync(join(tmpdir(), 'ccm-rpc-shared-'));
+  const rpcLogPath = join(dir, 'shared.jsonl');
+  try {
+    const first = makeSession({ cwd: dir, rpcLogPath, rpcLogMaxBytes: 4096 }).session;
+    const second = makeSession({ cwd: dir, rpcLogPath, rpcLogMaxBytes: 4096 }).session;
+    for (let index = 0; index < 300; index += 1) {
+      (index % 2 === 0 ? first : second).appendRpcLog({ frame: 'x'.repeat(40), index });
+    }
+
+    const countLines = path => readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).length;
+    const retained = countLines(rpcLogPath) + countLines(`${rpcLogPath}.1`);
+    assert.ok(retained > 40, `共享日志时轮转互相踩踏，两代加起来只剩 ${retained} 行`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('rpc observability: a failing rotation does not silence the log forever', () => {
+  // 轮转抛错（.1 被占用、只读挂载）时异常被 appendRpcLog 的空 catch 吞掉，而文件
+  // 仍然超限——下一帧再次尝试轮转、再次抛错，日志就此永久静默。旧实现每帧独立
+  // append，单次失败下一帧就恢复了。
+  const dir = mkdtempSync(join(tmpdir(), 'ccm-rpc-rotfail-'));
+  const rpcLogPath = join(dir, 'rotfail.jsonl');
+  try {
+    const { session } = makeSession({ cwd: dir, rpcLogPath, rpcLogMaxBytes: 512 });
+    session.rotateRpcLog = () => { throw new Error('rotation failed'); };
+
+    for (let index = 0; index < 40; index += 1) {
+      session.appendRpcLog({ frame: 'x'.repeat(40), index });
+    }
+
+    const lines = readFileSync(rpcLogPath, 'utf8').trim().split('\n').filter(Boolean).length;
+    assert.ok(lines > 20, `轮转失败后日志被永久静默，只写进 ${lines} 行`);
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });

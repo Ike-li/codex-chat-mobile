@@ -50,8 +50,16 @@ export class AppServerHost {
 
   attach(runtime) {
     if (!runtime || this.disposed) throw new Error('cannot attach runtime to disposed host');
+    // 已 dispose 的 runtime 不再接回来。ensureInitialized 的 await 解开后会走
+    // notify() → attach()，把一个刚被回收的 runtime 重新塞进 runtimes，而 detach
+    // 只由 dispose 调用、不会再发生第二次，于是永久泄漏。
+    if (runtime.disposed === true) return runtime;
     this.runtimes.add(runtime);
     return runtime;
+  }
+
+  rejectPending(runtime, error) {
+    this.transport.rejectPendingFor(runtime, error);
   }
 
   detach(runtime) {

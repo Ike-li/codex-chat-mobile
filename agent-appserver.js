@@ -2,7 +2,7 @@
 // 生产环境由 AppServerHost/AppServerTransport 共享一个 stdio JSON-RPC 子进程；
 // 本类负责 start/resume/turn、队列、中断、事件映射和审批。
 // CodexAppServerSession 仅保留为迁移期兼容导出名。
-import { appendFileSync, closeSync, constants, mkdirSync, openSync, renameSync, rmSync, statSync } from 'node:fs';
+import { closeSync, constants, fstatSync, mkdirSync, openSync, renameSync, rmSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { AppServerTransport } from './app-server-transport.js';
 import { ApprovalBroker } from './approval-broker.js';
@@ -28,9 +28,6 @@ const DEFAULT_BACKPRESSURE_BASE_MS = 250;
 const MAX_BACKPRESSURE_DELAY_MS = 5000;
 const RPC_SUMMARY_CAP = 240;
 const DEFAULT_RPC_LOG_MAX_BYTES = 8 * 1024 * 1024;
-// 进入脱敏正则的扫描窗口。输出本就截到 RPC_SUMMARY_CAP，落在窗口之外的内容
-// 无论如何都会被丢弃，所以限制窗口不改变输出，只是不让正则去扫它。
-const RPC_SCAN_LIMIT = RPC_SUMMARY_CAP * 8;
 const SENSITIVE_RPC_KEY_RE = /(token|secret|password|passwd|credential|authorization|api[_-]?key|private[_-]?key|refreshToken|accessToken|chatgptAuthTokens|dataBase64)/i;
 const CONTENT_RPC_KEY_RE = /^(text|input|prompt|content|delta|aggregatedOutput|output|diff|data)$/i;
 const LEGACY_APPROVAL_METHODS = new Set(['applyPatchApproval', 'execCommandApproval']);
@@ -89,7 +86,6 @@ export class ThreadRuntime {
       ? rpcLogMaxBytes
       : numberFromEnv('CODEX_RPC_LOG_MAX_BYTES', DEFAULT_RPC_LOG_MAX_BYTES);
     this.rpcLogReady = false;
-    this.rpcLogBytes = 0;
     this.rpcStats = {
       clientRequests: 0,
       clientResponses: 0,
@@ -266,6 +262,10 @@ export class ThreadRuntime {
   }
 
   observeTransportFrame({ direction, method, frame }) {
+    // 每一帧都算活动。host 模式下 AppServerHost 构造 transport 时没传 onActivity，
+    // 所以此前只有通知流会推进 lastActivity——RPC 往返（thread/resume、command/exec）
+    // 和 inbound 审批请求都不算，而 checkIdle 与 isReclaimable 都建立在这个信号上。
+    this.lastActivity = Date.now();
     if (direction === 'inbound' && (method === 'turn/start' || method === 'turn/steer')) {
       this.recordCurrentTurn(frame?.result);
     }
@@ -290,6 +290,7 @@ export class ThreadRuntime {
 
   // server→client 请求处理。审批类透传给手机；其余安全兜底回应，避免 agent 挂起。
   handleServerRequest(rpcId, method, params) {
+    this.lastActivity = Date.now();
     const requestParams = normalizeServerRequestParams(this, rpcId, method, params);
     if (!this.currentTurnId && typeof requestParams?.turnId === 'string' && requestParams.turnId) {
       this.currentTurnId = requestParams.turnId;
@@ -1585,6 +1586,7 @@ export class ThreadRuntime {
     this.clearQueue('dispose', false);
     this.clearBackpressureRetries(new Error('disposed'));
     if (this.host) {
+      this.host.rejectPending?.(this, new Error('disposed'));
       this.host.detach(this);
       this.child = null;
     } else if (this.transport) {
@@ -1698,15 +1700,41 @@ export class ThreadRuntime {
       const line = JSON.stringify(entry) + '\n';
       const bytes = Buffer.byteLength(line);
       this.ensureRpcLogReady();
-      // 用计数器而不是每帧 statSync：写入量由我们自己产生，没必要问文件系统。
-      if (this.rpcLogBytes > 0 && this.rpcLogBytes + bytes > this.rpcLogMaxBytes) {
-        this.rotateRpcLog();
+      let fd = this.openRpcLog();
+      try {
+        // 以文件的真实大小为准，不用本实例的计数器：rpcLogPath 默认是
+        // join(cwd, ...)，同一个 cwd 上的多个 runtime 共写一个文件却各记各的账，
+        // 谁先到上限谁就轮转，rmSync(path.1) 顺手删掉别人刚存下的那一代。
+        // fstat 作用在已打开的 fd 上，比按路径 stat 便宜，也没有 TOCTOU。
+        if (fstatSync(fd).size + bytes > this.rpcLogMaxBytes) {
+          closeSync(fd);
+          fd = null;
+          try {
+            this.rotateRpcLog();
+          } catch {
+            // 轮转失败（.1 被占、只读挂载…）就放弃这一次，继续往当前文件追加。
+            // 否则文件仍然超限，下一帧再次尝试轮转、再次抛错，日志就此永久静默。
+          }
+          fd = this.openRpcLog();
+        }
+        writeSync(fd, line);
+      } finally {
+        if (fd !== null) closeSync(fd);
       }
-      appendFileSync(this.rpcLogPath, line);
-      this.rpcLogBytes += bytes;
     } catch {
       // Observability must not interfere with JSON-RPC protocol progress.
     }
+  }
+
+  // 每帧都显式 O_CREAT 0600：日志文件可能在运行中消失（Codex agent 在自己的 cwd
+  // 里有 shell，rm / git clean -xfd 都会删它），裸 appendFileSync 会按 umask 的
+  // 默认模式重建，把 RPC 流量暴露给同机其他用户。
+  openRpcLog() {
+    return openSync(
+      this.rpcLogPath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND,
+      0o600,
+    );
   }
 
   // 目录与权限只在首次落一次。这里刻意不像 audit-log 那样每条 fsync——RPC 日志是可观测
@@ -1714,13 +1742,10 @@ export class ThreadRuntime {
   ensureRpcLogReady() {
     if (this.rpcLogReady) return;
     mkdirSync(dirname(this.rpcLogPath), { recursive: true, mode: 0o700 });
-    closeSync(openSync(
-      this.rpcLogPath,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND,
-      0o600,
-    ));
+    // 已存在的文件可能是历史遗留的宽权限，首次修一次；之后每帧的 O_CREAT 0600
+    // 保证新建出来的本就是 owner-only。
+    closeSync(this.openRpcLog());
     fixPermissions(this.rpcLogPath, false);
-    this.rpcLogBytes = statSync(this.rpcLogPath).size;
     this.rpcLogReady = true;
   }
 
@@ -1729,8 +1754,6 @@ export class ThreadRuntime {
     rmSync(rotated, { force: true });
     renameSync(this.rpcLogPath, rotated);
     fixPermissions(rotated, false);
-    this.rpcLogReady = false;
-    this.ensureRpcLogReady();
   }
 }
 
@@ -1803,7 +1826,10 @@ function redactRpcString(value, key = '') {
   const pathSafe = key === 'cwd' || key === 'path' || /^([A-Za-z]:\\|\/Users\/|\/home\/|\/tmp\/|\/var\/)/.test(value)
     ? sanitizePath(value)
     : value;
-  return truncate(sanitize(pathSafe.slice(0, RPC_SCAN_LIMIT)), RPC_SUMMARY_CAP);
+  // 不要在这里对输入切窗口。sanitize 会缩短文本（整块 PEM → ***），窗口既会丢掉
+  // 本可进入输出的正文，也会把 -----END----- 这类结束锚切走，让整条 pattern 失配
+  // 而把密钥材料原样留下。正则是线性的，全长扫描不是问题。
+  return truncate(sanitize(pathSafe), RPC_SUMMARY_CAP);
 }
 
 function definedParams(params) {

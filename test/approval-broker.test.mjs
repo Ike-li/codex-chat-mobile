@@ -265,3 +265,27 @@ test('approval audit is owner-only and records metadata without commands, questi
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('declinePending emits a revocation so the gateway can close the need', () => {
+  // clearPending 的其它调用点（abort、turn 完成、进程退出）都会顺带发一个能让
+  // server.js 的 trackNeedsYou 关单的事件。declinePending 原本只回包不发事件，
+  // 于是那条 needs-you 记录永远停在 pending：不参与 prune，还会推给每台重连的手机。
+  const emitted = [];
+  const responded = [];
+  const broker = new ApprovalBroker({
+    emit: (type, payload) => emitted.push({ type, payload }),
+    respond: (id, result) => responded.push({ id, result }),
+    pendingApprovals: new Set(),
+  });
+
+  broker.handleRequest(7, 'item/commandExecution/requestApproval', {
+    threadId: 'thr_1', turnId: 'turn_1', itemId: 'item_1', command: ['rm', '-rf', '/tmp/x'],
+  });
+  emitted.length = 0;
+
+  broker.declinePending();
+  assert.deepEqual(responded.map(entry => entry.result), [{ decision: 'decline' }]);
+  assert.deepEqual(emitted.map(entry => entry.type), ['approval_revoked']);
+  assert.equal(emitted[0].payload.approvalId, 7);
+  assert.equal(broker.pendingApprovals.size, 0);
+});
