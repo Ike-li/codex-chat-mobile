@@ -1,5 +1,9 @@
 import { AppServerTransport } from './app-server-transport.js';
 
+// thread 状态缓存只用来给 thread:list 补最新状态，丢掉冷门 thread 的旧状态没有影响。
+// 不设上限的话，每个被 app-server 报过状态的 thread 都会留一条，跑几天单调增长。
+const MAX_THREAD_STATUSES = 512;
+
 const TARGETED_SERVER_REQUESTS = new Set([
   'item/commandExecution/requestApproval',
   'item/fileChange/requestApproval',
@@ -291,7 +295,12 @@ export class AppServerHost {
       status: structuredClone(status),
       revision: ++this.threadStatusRevision,
     };
+    // 先删再插：Map 保持插入顺序，这样淘汰的是最久没更新的那个，而不是最早见到的。
+    this.threadStatuses.delete(threadId);
     this.threadStatuses.set(threadId, change);
+    while (this.threadStatuses.size > MAX_THREAD_STATUSES) {
+      this.threadStatuses.delete(this.threadStatuses.keys().next().value);
+    }
     try {
       this.onThreadStatus(structuredClone(change));
     } catch {

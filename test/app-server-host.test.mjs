@@ -580,3 +580,36 @@ test('shared process exit notifies every attached runtime exactly once', () => {
   assert.deepEqual(runtimeB.errors, []);
   host.dispose();
 });
+
+test('thread status cache does not grow without bound', () => {
+  // threadStatuses 只在 transport 退出/出错/dispose 时整体 clear，每个被 app-server
+  // 报过状态的 thread 留一条，跑几天单调增长。
+  const fake = fakeChild();
+  const host = new AppServerHost({ registry: new ThreadRegistry(), spawnImpl: () => fake.child });
+  for (let index = 0; index < 2000; index += 1) {
+    host.handleMessage({
+      method: 'thread/status/changed',
+      params: { threadId: `thr_${index}`, status: { type: 'idle' } },
+    });
+  }
+  assert.ok(host.threadStatuses.size <= 512, `状态缓存涨到 ${host.threadStatuses.size} 条`);
+  host.dispose();
+});
+
+test('thread status cache keeps the most recently seen threads', () => {
+  const fake = fakeChild();
+  const host = new AppServerHost({ registry: new ThreadRegistry(), spawnImpl: () => fake.child });
+  for (let index = 0; index < 600; index += 1) {
+    host.handleMessage({
+      method: 'thread/status/changed',
+      params: { threadId: `thr_${index}`, status: { type: 'idle' } },
+    });
+    // 让 thr_0 一直保持活跃
+    host.handleMessage({
+      method: 'thread/status/changed',
+      params: { threadId: 'thr_0', status: { type: 'active' } },
+    });
+  }
+  assert.ok(host.latestThreadStatus('thr_0'), '一直在更新的 thread 不该被挤掉');
+  host.dispose();
+});

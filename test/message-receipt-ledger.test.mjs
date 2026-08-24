@@ -220,3 +220,32 @@ test('receipt ledger releases a definitely unaccepted retryable request for the 
   });
   assert.equal(retry.kind, 'owner');
 });
+
+test('prune 回收所有已结算条目，不只是终态的', () => {
+  // settledPhase 对 { ok:false, retryable:true, resultUnknown:true }（dispatch_failed
+  // 的形状）返回 'settled'，terminalAt 永远是 null，于是 prune 永远碰不到它。
+  // 逼近 maxEntries 之后 claim 一律返回 'full'，网关会对所有带 clientRequestId 的
+  // 消息回 receipt_ledger_full，只能重启。
+  let clock = 1_000_000;
+  const ledger = new MessageReceiptLedger({ ttlMs: 60_000, now: () => clock });
+  const claim = ledger.claim({ identity: 'device:a', requestId: 'req-1', fingerprint: 'f1' });
+  ledger.settle(claim.handle, {
+    ok: false, errorCode: 'dispatch_failed', retryable: true, resultUnknown: true,
+  });
+  assert.equal(ledger.stats().size, 1);
+
+  clock += 120_000;
+  ledger.prune();
+  assert.equal(ledger.stats().size, 0, '超过 TTL 的已结算条目应被回收');
+});
+
+test('prune 不动还在派发中的条目', () => {
+  // pending 条目的 ready promise 还有人等着，删掉会让 replay 永远挂住。
+  let clock = 1_000_000;
+  const ledger = new MessageReceiptLedger({ ttlMs: 60_000, now: () => clock });
+  ledger.claim({ identity: 'device:a', requestId: 'req-1', fingerprint: 'f1' });
+  clock += 120_000;
+  ledger.prune();
+  assert.equal(ledger.stats().size, 1, '还在派发中的条目不能删');
+});
+

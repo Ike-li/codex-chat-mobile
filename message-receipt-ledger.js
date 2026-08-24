@@ -35,6 +35,7 @@ export class MessageReceiptLedger {
       createdAt: this.now(),
       updatedAt: this.now(),
       terminalAt: null,
+      settledAt: null,
       ready,
       resolveReady,
     };
@@ -50,6 +51,7 @@ export class MessageReceiptLedger {
     entry.phase = settledPhase(result, receipt);
     entry.result = applyReceipt(result, receipt);
     entry.updatedAt = this.now();
+    entry.settledAt = entry.updatedAt;
     if (entry.phase === 'terminal') entry.terminalAt = entry.updatedAt;
     entry.resolveReady();
     if (
@@ -85,6 +87,7 @@ export class MessageReceiptLedger {
     entry.latestReceipt = { ...(current || {}), ...receipt };
     if (entry.result) entry.result = applyReceipt(entry.result, entry.latestReceipt);
     entry.updatedAt = this.now();
+    if (entry.settledAt !== null) entry.settledAt = entry.updatedAt;
     if (entry.phase !== 'pending') {
       entry.phase = receiptPhase(entry.latestReceipt);
       if (entry.phase === 'terminal' && entry.terminalAt === null) {
@@ -112,7 +115,14 @@ export class MessageReceiptLedger {
   prune() {
     const cutoff = this.now() - this.ttlMs;
     for (const entry of this.entries.values()) {
-      if (entry.phase !== 'terminal' || entry.terminalAt === null || entry.terminalAt > cutoff) continue;
+      // 回收依据是「已结算」而不是「已终态」。settledPhase 对 dispatch_failed 的形状
+      // （retryable + resultUnknown）返回 'settled'，对停在队列里的返回 'waiting'——
+      // 两者的 terminalAt 都是 null，原先永远回收不掉，最终把 maxEntries 占满，
+      // 之后所有带 clientRequestId 的消息都会收到 receipt_ledger_full。
+      // pending 的 ready promise 还有人等着，删了会挂住 replay；waiting 是还排在
+      // 队列里、尚未执行的消息，删掉它的回执会让 reconcile 查不到而重复发送。
+      if (entry.phase === 'pending' || entry.phase === 'waiting') continue;
+      if (entry.settledAt === null || entry.settledAt > cutoff) continue;
       this.removeEntry(entry);
     }
   }
