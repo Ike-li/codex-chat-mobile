@@ -6,7 +6,7 @@ import { createServer } from 'node:http';
 import { statSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { isIP } from 'node:net';
 import { watch } from 'node:fs';
@@ -24,7 +24,7 @@ import { writeOwnerOnlyFile, appendOwnerOnlyFile } from './file-security.js';
 import { appendJsonlAuditRecord } from './audit-log.js';
 import { createPushSender } from './push-sender.js';
 import { isPublicEndpointHostname, isPublicIpAddress } from './network-address.js';
-import { validateAttachments, saveAttachments, pruneExpiredUploads } from './uploads.js';
+import { decodeAttachments, saveAttachments, pruneExpiredUploads } from './uploads.js';
 import { buildStatusLine } from './statusline.js';
 import { normalizeCollaborationMode, sanitizeTurnOverrides } from './public/js/cli-settings.js';
 import webpush from 'web-push';
@@ -119,6 +119,7 @@ const rawAgentIdleTtlMs = Number(process.env.CODEX_AGENT_IDLE_TTL_MS);
 const AGENT_IDLE_TTL_MS = Number.isInteger(rawAgentIdleTtlMs) && rawAgentIdleTtlMs >= 0
   ? rawAgentIdleTtlMs
   : 30 * 60 * 1000;
+const THREAD_LIST_LIMIT_MAX = 200;
 const CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 const DEVICE_TOKEN_PATTERN = /^[A-Za-z0-9._:-]{16,128}$/;
 const SOCKET_MAX_HTTP_BUFFER_SIZE = 32 * 1024 * 1024;
@@ -247,17 +248,16 @@ function pushText(value) {
   return text.length > 180 ? `${text.slice(0, 180)} ...` : text;
 }
 
-async function canonicalAttachmentFingerprints(attachments) {
+async function canonicalAttachmentFingerprints(attachments, decoded = []) {
   const result = [];
-  for (const attachment of (attachments || [])) {
+  for (const [index, attachment] of (attachments || []).entries()) {
+    const content = decoded[index] ?? Buffer.from(attachment.data, 'base64');
     // Yield to event loop between attachments to avoid blocking on large files
-    if (attachment.data && attachment.data.length > 1_000_000) await new Promise(resolve => setImmediate(resolve));
+    if (content.length > 1_000_000) await new Promise(resolve => setImmediate(resolve));
     result.push({
       name: attachment.name,
       mimeType: attachment.mimeType,
-      decodedSha256: createHash('sha256')
-        .update(Buffer.from(attachment.data, 'base64'))
-        .digest('hex'),
+      decodedSha256: createHash('sha256').update(content).digest('hex'),
     });
   }
   return result;
@@ -308,7 +308,7 @@ function preflight() {
   let codexBin = process.env.CODEX_BIN || '';
   if (!codexBin) {
     try {
-      codexBin = execSync('which codex', { encoding: 'utf8' }).trim();
+      codexBin = execFileSync('which', ['codex'], { encoding: 'utf8' }).trim();
     } catch {
       fail('未找到 codex 命令。请先安装 Codex CLI，或在 .env 中用 CODEX_BIN 指定路径');
     }
@@ -319,7 +319,7 @@ function preflight() {
     fail(`CODEX_BIN 指向的文件不存在：${codexBin}`);
   }
   try {
-    versions.codex = execSync(`"${codexBin}" --version`, { encoding: 'utf8' }).trim();
+    versions.codex = execFileSync(codexBin, ['--version'], { encoding: 'utf8' }).trim();
   } catch { /* 非致命 */ }
 
   console.log(`\n✅ Codex Chat Mobile 启动`);
@@ -1328,7 +1328,8 @@ export function reclaimIdleAgents(now = Date.now()) {
 function on(socket, event, handler) {
   socket.on(event, async (...args) => {
     try {
-      if (socket.deviceApproved === false) {
+      // fail-closed：只有明确批准过的设备才放行，未赋值一律当作未批准。
+      if (socket.deviceApproved !== true) {
         console.warn(`[devices] 丢弃未授权设备事件: ${event}`);
         return;
       }
@@ -1386,6 +1387,12 @@ function ensureControlAgent(cwd = WORK_DIR, socket = null) {
   socket.data.controlInstanceId = ai.instanceId;
   socket.join(instanceRoom(ai.instanceId));
   return ai;
+}
+
+// Number.isInteger 通过即透传会把负数和巨值原样送进 app-server。
+function clampThreadListLimit(value) {
+  if (!Number.isInteger(value)) return 50;
+  return Math.min(Math.max(value, 1), THREAD_LIST_LIMIT_MAX);
 }
 
 function normalizeThread(thread, { archived = false } = {}) {
@@ -1749,8 +1756,9 @@ io.on('connection', socket => {
       return;
     }
 
-    // 校验附件
-    const attachErr = validateAttachments(attachments);
+    // 校验附件：解码一次，后面的指纹与落盘都复用这批 buffer。
+    const decodedAttachments = decodeAttachments(attachments);
+    const attachErr = decodedAttachments.error ?? null;
     if (attachErr) {
       sysTo(socket, attachErr, true);
       if (typeof ack === 'function') {
@@ -1823,7 +1831,7 @@ io.on('connection', socket => {
     }
     const clientIdentity = deviceToken ? `device:${deviceToken}` : `socket:${socket.id}`;
     const attachmentFingerprints = clientRequestId
-      ? await canonicalAttachmentFingerprints(attachments)
+      ? await canonicalAttachmentFingerprints(attachments, decodedAttachments.decoded)
       : [];
     const turnOverrides = sanitizeTurnOverrides(payload?.turn);
     const requestFingerprint = clientRequestId
@@ -1917,7 +1925,7 @@ io.on('connection', socket => {
       let savedAttachments;
       if (attachments?.length) {
         try {
-          savedAttachments = await saveAttachments(ai.cwd || WORK_DIR, attachments);
+          savedAttachments = await saveAttachments(ai.cwd || WORK_DIR, attachments, decodedAttachments.decoded);
         } catch (err) {
           const error = `附件保存失败：${err.message}`;
           sysTo(socket, error, true);
@@ -2161,7 +2169,7 @@ io.on('connection', socket => {
       const response = await ai.listThreads({
         cwd,
         archived: payload?.archived === true,
-        limit: Number.isInteger(payload?.limit) ? payload.limit : 50,
+        limit: clampThreadListLimit(payload?.limit),
         cursor: payload?.cursor,
         searchTerm: typeof payload?.searchTerm === 'string' ? payload.searchTerm : undefined,
       });

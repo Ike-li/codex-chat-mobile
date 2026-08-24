@@ -4856,3 +4856,29 @@ test('stopServer terminates the codex app-server subprocess', async () => {
     'stopServer 之后 codex 子进程不应残留',
   );
 });
+
+test('thread:list clamps an out-of-range limit before forwarding it', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ccm-thread-list-limit-test-'));
+  const rpcLog = join(root, 'rpc.jsonl');
+  const codexBin = createFakeCodexBin(root);
+  const fixture = await startIsolatedServer({ codexBin, rpcLog });
+  try {
+    const socket = await connectSocket(fixture.url, fixture.authToken);
+    try {
+      await waitForAgentEvent(socket, 'init');
+      await emitWithAck(socket, 'thread:list', { cwd: fixture.workDir, limit: 999_999 });
+      await emitWithAck(socket, 'thread:list', { cwd: fixture.workDir, limit: -5 });
+      const forwarded = readFileSync(rpcLog, 'utf8').trim().split('\n')
+        .filter(Boolean)
+        .map(line => JSON.parse(line))
+        .filter(message => message.method === 'thread/list')
+        .map(message => message.params?.limit);
+      assert.deepEqual(forwarded, [200, 1], 'Number.isInteger 通过即透传会把负数和巨值送进 app-server');
+    } finally {
+      socket.disconnect();
+    }
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

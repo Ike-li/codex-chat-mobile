@@ -1580,6 +1580,8 @@ export class ThreadRuntime {
   dispose() {
     this.disposed = true;
     clearInterval(this.idleTimer); this.idleTimer = null;
+    // 趁 child 还在，把未决审批回掉，否则 app-server 侧那个 turn 永远等不到响应。
+    this.approvalBroker.declinePending();
     this.clearQueue('dispose', false);
     this.clearBackpressureRetries(new Error('disposed'));
     if (this.host) {

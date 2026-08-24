@@ -15,7 +15,10 @@ function fileKind(change) {
   return (change?.kind && change.kind.type) || change?.kind || 'modify';
 }
 
-export function normalizeThreadHistoryMessages(thread) {
+// 前端只渲染 slice(-30)，网关没必要把整条 thread 都序列化推给手机。
+export const MAX_HISTORY_MESSAGES = 200;
+
+export function normalizeThreadHistoryMessages(thread, { limit = MAX_HISTORY_MESSAGES } = {}) {
   const messages = [];
   const turns = Array.isArray(thread?.turns) ? thread.turns : [];
   for (const turn of turns) {
@@ -95,5 +98,5 @@ export function normalizeThreadHistoryMessages(thread) {
       }
     }
   }
-  return messages;
+  return messages.length > limit ? messages.slice(-limit) : messages;
 }

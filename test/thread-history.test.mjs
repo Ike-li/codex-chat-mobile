@@ -84,3 +84,21 @@ test('unknown completed items stay visible as raw cards', () => {
   assert.equal(messages[0].kind, 'raw');
   assert.equal(messages[0].item.type, 'mysteryBox');
 });
+
+test('历史消息在服务端就截断，只推最近的一段', () => {
+  // 前端 renderHistoryMessages 只渲染 slice(-30)，但网关此前把整条 thread 都序列化
+  // 并推过去——对一个面向手机的网关，这是实打实的带宽和内存成本。
+  const items = Array.from({ length: 500 }, (_, index) => ({
+    type: 'agentMessage',
+    text: `message-${index}`,
+  }));
+  const messages = normalizeThreadHistoryMessages({ turns: [{ items }] });
+  assert.equal(messages.length, 200);
+  assert.equal(messages.at(-1).content, 'message-499', '保留的应是最近的一段');
+  assert.equal(messages[0].content, 'message-300');
+});
+
+test('未超过上限时历史保持完整', () => {
+  const items = Array.from({ length: 5 }, (_, index) => ({ type: 'agentMessage', text: `m${index}` }));
+  assert.equal(normalizeThreadHistoryMessages({ turns: [{ items }] }).length, 5);
+});

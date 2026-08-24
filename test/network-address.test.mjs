@@ -31,3 +31,11 @@ test('public IP classification rejects non-global IPv4 and IPv6 ranges', () => {
   assert.equal(isPublicIpAddress('8.8.8.8'), true);
   assert.equal(isPublicIpAddress('2606:4700:4700::1111'), true);
 });
+
+test('public IP classification rejects the well-known NAT64 prefix', () => {
+  // 64:ff9b::/96 把 IPv4 映射进 IPv6。此前只挡了 64:ff9b:1::/48（local-use），
+  // 于是 64:ff9b::7f00:1 —— 也就是 127.0.0.1 —— 会被当作公网地址放行。
+  for (const address of ['64:ff9b::7f00:1', '64:ff9b::a00:1', '64:ff9b::c0a8:101']) {
+    assert.equal(isPublicIpAddress(address), false, `${address} 不应被当作公网地址`);
+  }
+});

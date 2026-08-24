@@ -1,4 +1,4 @@
-import { readdirSync } from 'node:fs';
+import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -49,14 +49,16 @@ async function gitLsFiles(cwd, { execFile, timeoutMs = FILE_SEARCH_TIMEOUT_MS } 
   }
 }
 
-function walkFiles(root) {
+// 用异步 readdir：最坏要走 5000 个候选 × 深度 6，同步版本会把整个事件循环钉住，
+// 而这条路径正是非 git 工作区里打 '@' 时走的。
+async function walkFiles(root) {
   const out = [];
   const stack = [{ dir: root, rel: '', depth: 0 }];
   while (stack.length && out.length < FILE_SEARCH_MAX_CANDIDATES) {
     const { dir, rel, depth } = stack.pop();
     let entries;
     try {
-      entries = readdirSync(dir, { withFileTypes: true });
+      entries = await readdir(dir, { withFileTypes: true });
     } catch {
       continue;
     }
@@ -84,7 +86,7 @@ async function listCandidatePaths(cwd, opts = {}) {
   if (typeof opts.listCandidates === 'function') return opts.listCandidates(cwd);
   const cached = candidateCache.get(cwd);
   if (cached && Date.now() - cached.ts < FILE_SEARCH_CACHE_TTL_MS) return cached.paths;
-  const paths = (await gitLsFiles(cwd, opts)) ?? walkFiles(cwd);
+  const paths = (await gitLsFiles(cwd, opts)) ?? await walkFiles(cwd);
   candidateCache.set(cwd, { ts: Date.now(), paths });
   return paths;
 }

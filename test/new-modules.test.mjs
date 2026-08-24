@@ -6,7 +6,7 @@ import { chmodSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, statSync, rea
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 // ---- uploads.js ----
-import { validateAttachments, saveAttachments, toEventMeta, pruneExpiredUploads } from '../uploads.js';
+import { decodeAttachments, validateAttachments, saveAttachments, toEventMeta, pruneExpiredUploads } from '../uploads.js';
 
 test('validateAttachments: null/empty passes', () => {
   assert.equal(validateAttachments(undefined), null);
@@ -322,4 +322,21 @@ test('frontend: history browsing uses only app-server thread/read', () => {
   assert.doesNotMatch(allContent, /function loadHistory/, 'legacy JSONL loader is removed');
   assert.doesNotMatch(allContent, /codexSessions/, 'legacy JSONL session state is removed');
   assert.doesNotMatch(allContent, /session:history/, 'legacy JSONL event is not used');
+});
+
+test('decodeAttachments 校验的同时交出可复用的 buffer', () => {
+  // 同一份 base64 此前被解码三次（校验、指纹、落盘各一次），每次都要额外分配一份。
+  const data = Buffer.from('hello attachment').toString('base64');
+  const result = decodeAttachments([{ name: 'a.txt', mimeType: 'text/plain', data }]);
+  assert.equal(result.error, undefined);
+  assert.equal(result.decoded.length, 1);
+  assert.equal(result.decoded[0].toString(), 'hello attachment');
+});
+
+test('decodeAttachments 的错误与 validateAttachments 保持一致', () => {
+  const bad = [{ name: 'a.txt', mimeType: 'text/plain', data: '!!!not base64!!!' }];
+  assert.match(decodeAttachments(bad).error, /base64/);
+  assert.equal(validateAttachments(bad), decodeAttachments(bad).error);
+  assert.equal(validateAttachments([]), null);
+  assert.equal(validateAttachments(undefined), null);
 });

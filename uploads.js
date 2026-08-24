@@ -46,35 +46,44 @@ function sanitizeName(name) {
   return safe || 'file';
 }
 
-// 纯校验（零 IO），返回错误字符串或 null（通过）
-export function validateAttachments(attachments) {
-  if (attachments === undefined || attachments === null) return null;
-  if (!Array.isArray(attachments)) return '附件必须是数组';
-  if (attachments.length === 0) return null;
+// 校验（零 IO）并交出解码后的 buffer 供复用。同一份 base64 此前会被解码三次——
+// 校验、指纹、落盘各一次——每次都额外分配一个完整副本。
+export function decodeAttachments(attachments) {
+  if (attachments === undefined || attachments === null) return { decoded: [] };
+  if (!Array.isArray(attachments)) return { error: '附件必须是数组' };
+  if (attachments.length === 0) return { decoded: [] };
   if (attachments.length > MAX_FILES) {
-    return `附件过多（${attachments.length}，上限 ${MAX_FILES}）`;
+    return { error: `附件过多（${attachments.length}，上限 ${MAX_FILES}）` };
   }
+  const decoded = [];
   let total = 0;
   for (const a of attachments) {
-    if (!a || typeof a.data !== 'string' || !a.data) return '附件缺少数据';
-    if (typeof a.name !== 'string' || typeof a.mimeType !== 'string') return '附件缺少 name/mimeType';
-    const decoded = decodeBase64Strict(a.data);
-    if (!decoded) return `附件「${a.name}」数据不是合法 base64`;
-    const bytes = decoded.length;
-    if (bytes > MAX_FILE_BYTES) {
-      return `附件「${a.name}」过大（${(bytes / 1048576).toFixed(1)}MB，单文件上限 10MB）`;
+    if (!a || typeof a.data !== 'string' || !a.data) return { error: '附件缺少数据' };
+    if (typeof a.name !== 'string' || typeof a.mimeType !== 'string') {
+      return { error: '附件缺少 name/mimeType' };
     }
-    total += bytes;
+    const content = decodeBase64Strict(a.data);
+    if (!content) return { error: `附件「${a.name}」数据不是合法 base64` };
+    if (content.length > MAX_FILE_BYTES) {
+      return { error: `附件「${a.name}」过大（${(content.length / 1048576).toFixed(1)}MB，单文件上限 10MB）` };
+    }
+    total += content.length;
+    decoded.push(content);
   }
   if (total > MAX_TOTAL_BYTES) {
-    return `附件总量过大（${(total / 1048576).toFixed(1)}MB，上限 20MB）`;
+    return { error: `附件总量过大（${(total / 1048576).toFixed(1)}MB，上限 20MB）` };
   }
-  return null;
+  return { decoded };
+}
+
+// 兼容既有调用：只要错误字符串。
+export function validateAttachments(attachments) {
+  return decodeAttachments(attachments).error ?? null;
 }
 
 // 落盘：写 WORK_DIR/.ccm-uploads/<ts>-<rand>-<safeName>
 // 返回 [{ absPath, name, mimeType, size }]
-export async function saveAttachments(workDir, attachments) {
+export async function saveAttachments(workDir, attachments, decoded = []) {
   const dir = join(workDir, UPLOAD_DIR);
   let symlink = rejectableSymlinkComponent(dir);
   if (symlink) throw new Error(`上传目录路径包含可疑符号链接: ${symlink}`);
@@ -90,8 +99,8 @@ export async function saveAttachments(workDir, attachments) {
   const dirResolved = resolve(dir);
   const saved = [];
 
-  for (const a of attachments) {
-    const content = decodeBase64Strict(a.data);
+  for (const [index, a] of attachments.entries()) {
+    const content = decoded[index] ?? decodeBase64Strict(a.data);
     if (!content) throw new Error(`附件「${a.name}」数据不是合法 base64`);
     const detectedMimeType = detectImageMimeType(content);
     const fname = `${Date.now()}-${randomBytes(4).toString('hex')}-${sanitizeName(a.name)}`;

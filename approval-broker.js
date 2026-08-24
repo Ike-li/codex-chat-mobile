@@ -106,6 +106,22 @@ export class ApprovalBroker {
     this.items.clear();
   }
 
+  // dispose 时调用：未决的 server request 若没有响应，app-server 侧那个 turn 会
+  // 永久等下去。clearPending 只清集合、不回包，所以另立一个。
+  declinePending() {
+    for (const approvalId of [...this.pendingApprovals]) {
+      const record = this.pending.get(approvalId);
+      const method = record?.method || 'item/commandExecution/requestApproval';
+      this.pendingApprovals.delete(approvalId);
+      this.pending.delete(approvalId);
+      try {
+        this.respond(approvalId, this.resultFor(method, record?.params, 'decline'));
+      } catch {
+        // 单个回包失败不应挡住其余的
+      }
+    }
+  }
+
   clearPending() {
     this.pendingApprovals.clear();
     this.pending.clear();
