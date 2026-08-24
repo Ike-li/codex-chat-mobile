@@ -4810,3 +4810,49 @@ test('a reclaimed thread can be selected again', async () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test('stopServer terminates the codex app-server subprocess', async () => {
+  // shutdown() 走 stopServer 的前提就是这条：stopServer 里 appServerHost.dispose()
+  // 排在 httpServer.close() 之前，所以即便有连接吊住 close，子进程也已经收到 SIGTERM。
+  const root = mkdtempSync(join(tmpdir(), 'ccm-shutdown-child-test-'));
+  const spawnLog = join(root, 'spawn.jsonl');
+  const codexBin = createFakeCodexBin(root);
+  const fixture = await startIsolatedServer({ codexBin, spawnLog });
+  let childPid = null;
+  try {
+    const socket = await connectSocket(fixture.url, fixture.authToken);
+    try {
+      await waitForAgentEvent(socket, 'init');
+      await emitWithAck(socket, 'session:new', { cwd: fixture.workDir });
+      socket.emit('user:message', { text: 'spawn the app-server' });
+      await waitForAgentEventMatching(
+        socket,
+        'status',
+        event => event.payload?.reason === 'turn_submitted',
+      );
+      const spawns = readFileSync(spawnLog, 'utf8').trim().split('\n').filter(Boolean);
+      childPid = JSON.parse(spawns[0]).pid;
+      assert.ok(Number.isInteger(childPid), '应记录到 app-server 子进程的 pid');
+      assert.equal(isProcessAlive(childPid), true, '子进程此时应在运行');
+    } finally {
+      socket.disconnect();
+    }
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+
+  await waitForCondition(
+    () => !isProcessAlive(childPid),
+    'stopServer 之后 codex 子进程不应残留',
+  );
+});

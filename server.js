@@ -2960,8 +2960,20 @@ if (shouldStartServer) startServer();
 // 优雅退出
 function shutdown() {
   console.log('\n[server] 正在关闭...');
+  // 走 stopServer 的同步部分：它会 dispose AppServerHost，给 codex app-server 子进程
+  // 发 SIGTERM。信号本身到不了子进程——SIGTERM 不像终端 Ctrl-C 的 SIGINT 会发给整个
+  // 前台进程组——它此前只能靠 stdin 读到 EOF 自行退出，而那是观察到的行为、不是协议
+  // 保证，也不给它保存状态的机会。
+  // httpServer.close 是异步的，这里刻意不等：Socket.IO 的长连接会让它迟迟不回调，
+  // 而我们要的清理在 close 之前就已经同步做完了。
+  try {
+    stopServer();
+  } catch (err) {
+    console.error('[server] 关闭时出错:', err.message);
+  }
   process.exit(0);
 }
+
 if (shouldStartServer) {
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
