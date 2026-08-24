@@ -2,11 +2,11 @@
 // 生产环境由 AppServerHost/AppServerTransport 共享一个 stdio JSON-RPC 子进程；
 // 本类负责 start/resume/turn、队列、中断、事件映射和审批。
 // CodexAppServerSession 仅保留为迁移期兼容导出名。
-import { mkdirSync } from 'node:fs';
+import { appendFileSync, closeSync, constants, mkdirSync, openSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { AppServerTransport } from './app-server-transport.js';
 import { ApprovalBroker } from './approval-broker.js';
-import { appendOwnerOnlyFile } from './file-security.js';
+import { fixPermissions } from './file-security.js';
 import { sanitize, sanitizePath } from './sanitizer.js';
 import { buildUserInputs } from './user-inputs.js';
 import { truncate } from './text-utils.js';
@@ -27,6 +27,7 @@ const DEFAULT_BACKPRESSURE_RETRIES = 5;
 const DEFAULT_BACKPRESSURE_BASE_MS = 250;
 const MAX_BACKPRESSURE_DELAY_MS = 5000;
 const RPC_SUMMARY_CAP = 240;
+const DEFAULT_RPC_LOG_MAX_BYTES = 8 * 1024 * 1024;
 // 进入脱敏正则的扫描窗口。输出本就截到 RPC_SUMMARY_CAP，落在窗口之外的内容
 // 无论如何都会被丢弃，所以限制窗口不改变输出，只是不让正则去扫它。
 const RPC_SCAN_LIMIT = RPC_SUMMARY_CAP * 8;
@@ -50,7 +51,7 @@ function nextEpoch() {
 }
 
 export class ThreadRuntime {
-  constructor({ instanceId, resumeId, cwd, codexBin, idleTimeoutMs, onEvent, onSessionId, onExit, rpcLogPath, experimentalApi = false, transportFactory, host }) {
+  constructor({ instanceId, resumeId, cwd, codexBin, idleTimeoutMs, onEvent, onSessionId, onExit, rpcLogPath, rpcLogMaxBytes, experimentalApi = false, transportFactory, host }) {
     this.instanceId = instanceId;
     this.cwd = cwd;
     this.codexBin = codexBin || 'codex';
@@ -79,7 +80,16 @@ export class ThreadRuntime {
 
     this.rpcId = 0;
     this.pending = new Map(); // id -> { resolve, reject }
-    this.rpcLogPath = rpcLogPath || join(this.cwd, '.codex-chat-rpc.jsonl');
+    // 观测日志默认开启（既有契约，protocol-adaptation 的 R1.2 断言该文件存在）；
+    // CODEX_RPC_LOG=0 可以整体关掉。
+    this.rpcLogPath = process.env.CODEX_RPC_LOG === '0'
+      ? null
+      : (rpcLogPath || join(this.cwd, '.codex-chat-rpc.jsonl'));
+    this.rpcLogMaxBytes = Number.isInteger(rpcLogMaxBytes) && rpcLogMaxBytes > 0
+      ? rpcLogMaxBytes
+      : numberFromEnv('CODEX_RPC_LOG_MAX_BYTES', DEFAULT_RPC_LOG_MAX_BYTES);
+    this.rpcLogReady = false;
+    this.rpcLogBytes = 0;
     this.rpcStats = {
       clientRequests: 0,
       clientResponses: 0,
@@ -1673,11 +1683,42 @@ export class ThreadRuntime {
   appendRpcLog(entry) {
     if (!this.rpcLogPath) return;
     try {
-      mkdirSync(dirname(this.rpcLogPath), { recursive: true, mode: 0o700 });
-      appendOwnerOnlyFile(this.rpcLogPath, JSON.stringify(entry) + '\n');
+      const line = JSON.stringify(entry) + '\n';
+      const bytes = Buffer.byteLength(line);
+      this.ensureRpcLogReady();
+      // 用计数器而不是每帧 statSync：写入量由我们自己产生，没必要问文件系统。
+      if (this.rpcLogBytes > 0 && this.rpcLogBytes + bytes > this.rpcLogMaxBytes) {
+        this.rotateRpcLog();
+      }
+      appendFileSync(this.rpcLogPath, line);
+      this.rpcLogBytes += bytes;
     } catch {
       // Observability must not interfere with JSON-RPC protocol progress.
     }
+  }
+
+  // 目录与权限只在首次落一次。这里刻意不像 audit-log 那样每条 fsync——RPC 日志是可观测
+  // 数据而非安全审计，而流式回复的每个 delta 都是一帧，逐帧 fsync 会直接阻塞事件循环。
+  ensureRpcLogReady() {
+    if (this.rpcLogReady) return;
+    mkdirSync(dirname(this.rpcLogPath), { recursive: true, mode: 0o700 });
+    closeSync(openSync(
+      this.rpcLogPath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND,
+      0o600,
+    ));
+    fixPermissions(this.rpcLogPath, false);
+    this.rpcLogBytes = statSync(this.rpcLogPath).size;
+    this.rpcLogReady = true;
+  }
+
+  rotateRpcLog() {
+    const rotated = `${this.rpcLogPath}.1`;
+    rmSync(rotated, { force: true });
+    renameSync(this.rpcLogPath, rotated);
+    fixPermissions(rotated, false);
+    this.rpcLogReady = false;
+    this.ensureRpcLogReady();
   }
 }
 

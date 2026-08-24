@@ -4,7 +4,7 @@
 // 失败恢复、resume vs 新建、队列满、进程死亡、附件路径不外泄等。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CodexAppServerSession } from '../agent-appserver.js';
@@ -810,5 +810,53 @@ test('LOG_STDERR: 开启时 ensureReady 记录日志(不影响会话结果)', as
     console.error = origErr;
     if (prev === undefined) delete process.env.LOG_STDERR;
     else process.env.LOG_STDERR = prev;
+  }
+});
+
+// ---- rpc 日志的体积与开关 ----
+
+test('rpc observability: rotates instead of growing without bound', () => {
+  // 日志此前没有任何上限：本仓库根目录的 .codex-chat-rpc.jsonl 已累积 4.4MB / 10928 行，
+  // 其中 7609 行（70%）来自流式 delta——每个 token 增量一行。
+  const dir = mkdtempSync(join(tmpdir(), 'ccm-rpc-rotate-'));
+  const rpcLogPath = join(dir, 'rpc-rotate.jsonl');
+  try {
+    const { session } = makeSession({ cwd: dir, rpcLogPath, rpcLogMaxBytes: 8 * 1024 });
+    const { child } = fakeChild();
+    session.child = child;
+
+    for (let index = 0; index < 400; index += 1) {
+      session.handleLine(JSON.stringify({
+        method: 'item/agentMessage/delta',
+        params: { threadId: 'thr_1', turnId: 'turn_1', delta: `chunk-${index}` },
+      }));
+    }
+
+    assert.deepEqual(readdirSync(dir).sort(), ['rpc-rotate.jsonl', 'rpc-rotate.jsonl.1']);
+    assert.ok(
+      statSync(rpcLogPath).size <= 8 * 1024,
+      `轮转后当前文件应回到上限内，实际 ${statSync(rpcLogPath).size}`,
+    );
+    assert.equal(statSync(rpcLogPath).mode & 0o777, 0o600, '轮转后新文件仍须 owner-only');
+    assert.equal(statSync(`${rpcLogPath}.1`).mode & 0o777, 0o600, '轮转出去的文件同样须 owner-only');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('rpc observability: CODEX_RPC_LOG=0 turns the log off entirely', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ccm-rpc-off-'));
+  const previous = process.env.CODEX_RPC_LOG;
+  process.env.CODEX_RPC_LOG = '0';
+  try {
+    const { session } = makeSession({ cwd: dir });
+    const { child } = fakeChild();
+    session.child = child;
+    session.handleLine(JSON.stringify({ method: 'thread/compacted', params: { threadId: 'thr_1' } }));
+    assert.deepEqual(readdirSync(dir), [], '关掉观测时不应在工作区落任何文件');
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_RPC_LOG;
+    else process.env.CODEX_RPC_LOG = previous;
+    rmSync(dir, { recursive: true, force: true });
   }
 });
