@@ -4047,7 +4047,7 @@ async function startIsolatedServer({ codexBin, rpcLog, spawnLog, adminEnabled = 
     altWorkDir,
     dataDir,
     authToken: process.env.AUTH_TOKEN,
-    reclaimIdleAgents: () => serverModule.reclaimIdleAgents(),
+    reclaimIdleAgents: now => serverModule.reclaimIdleAgents(now),
     async close() {
       await new Promise(resolve => serverModule.stopServer(resolve));
       restoreEnv(previous);
@@ -4748,19 +4748,19 @@ test('idle agents are reclaimed once no socket is viewing them', async () => {
   // 「新建会话」都会留下一个常驻 runtime，各自持有 500 条事件环形缓冲。
   const root = mkdtempSync(join(tmpdir(), 'ccm-agent-reclaim-test-'));
   const codexBin = createFakeCodexBin(root);
-  const fixture = await startIsolatedServer({ codexBin, agentIdleTtlMs: 0 });
+  const fixture = await startIsolatedServer({ codexBin });
   try {
     const socket = await connectSocket(fixture.url, fixture.authToken);
     try {
       await waitForAgentEvent(socket, 'init');
       const created = await emitWithAck(socket, 'session:new', { cwd: fixture.workDir });
       assert.equal(created.ok, true);
-      assert.equal(fixture.reclaimIdleAgents(), 0, '正被 socket 查看的实例不能回收');
+      assert.equal(fixture.reclaimIdleAgents(Date.now() + 3_600_000), 0, '正被 socket 查看的实例不能回收');
     } finally {
       socket.disconnect();
     }
     await waitForCondition(
-      () => fixture.reclaimIdleAgents() === 1,
+      () => fixture.reclaimIdleAgents(Date.now() + 3_600_000) === 1,
       '断开后无人查看的空闲实例应被回收',
     );
   } finally {
@@ -4774,7 +4774,7 @@ test('a reclaimed thread can be selected again', async () => {
   // 「断线重连找回原会话」必须不受影响。
   const root = mkdtempSync(join(tmpdir(), 'ccm-agent-reclaim-resume-test-'));
   const codexBin = createFakeCodexBin(root);
-  const fixture = await startIsolatedServer({ codexBin, agentIdleTtlMs: 0 });
+  const fixture = await startIsolatedServer({ codexBin });
   const threadId = 'thr_reclaim_probe';
   try {
     let firstInstanceId = null;
@@ -4790,7 +4790,7 @@ test('a reclaimed thread can be selected again', async () => {
     }
 
     await waitForCondition(
-      () => fixture.reclaimIdleAgents() >= 1,
+      () => fixture.reclaimIdleAgents(Date.now() + 3_600_000) >= 1,
       '断开后空闲实例应被回收',
     );
 
@@ -4877,6 +4877,32 @@ test('thread:list clamps an out-of-range limit before forwarding it', async () =
     } finally {
       socket.disconnect();
     }
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('an out-of-range idle TTL falls back to the default instead of reclaiming everything', async () => {
+  // 曾经为了测试方便接受 >= 0，于是 CODEX_AGENT_IDLE_TTL_MS=0 会让任何一个断开连接
+  // 的会话在下一个 5 分钟 tick 里立刻被回收。测试现在注入时钟，不再需要这个口子。
+  const root = mkdtempSync(join(tmpdir(), 'ccm-idle-ttl-floor-test-'));
+  const codexBin = createFakeCodexBin(root);
+  const fixture = await startIsolatedServer({ codexBin, agentIdleTtlMs: 0 });
+  try {
+    const socket = await connectSocket(fixture.url, fixture.authToken);
+    try {
+      await waitForAgentEvent(socket, 'init');
+      await emitWithAck(socket, 'session:new', { cwd: fixture.workDir });
+    } finally {
+      socket.disconnect();
+    }
+    await new Promise(resolve => setTimeout(resolve, 150));
+
+    // 用真实时钟：TTL=0 若被采纳，刚建的实例立刻就满足空闲条件。
+    assert.equal(fixture.reclaimIdleAgents(), 0, 'TTL=0 应被当作非法值忽略，回落默认值');
+    // 对照：把时钟拨到未来证明它本来就是可回收的——上面的 0 不是因为 socket 还连着。
+    assert.equal(fixture.reclaimIdleAgents(Date.now() + 3_600_000), 1, '拨到未来后应可回收');
   } finally {
     await fixture.close();
     rmSync(root, { recursive: true, force: true });

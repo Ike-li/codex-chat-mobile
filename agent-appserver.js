@@ -111,6 +111,9 @@ export class ThreadRuntime {
     this.interruptTimeoutMs = numberFromEnv('CODEX_INTERRUPT_TIMEOUT_MS', DEFAULT_INTERRUPT_TIMEOUT_MS);
     this.currentTurnId = null;
     this.threadStatus = null;
+    // command/exec 起的进程。它们不置 busy、不产生 turn，所以必须单独记账，
+    // 否则一个跑着长命令的 runtime 在 isReclaimable 眼里完全空闲。
+    this.activeProcesses = new Set();
     this.drainScheduled = false;
     this.experimentalApi = experimentalApi === true;
     // 审批/沙箱（仅 app-server 后端）：默认 on-request + workspace-write，可经环境变量覆盖。
@@ -798,6 +801,7 @@ export class ThreadRuntime {
         this.handleTerminalOutputDelta(params, 'processHandle');
         break;
       case 'process/exited':
+        this.activeProcesses.delete(params.processHandle || params.processId);
         this.emit('term_exit', {
           processId: params.processHandle || params.processId || null,
           exitCode: params.exitCode ?? null,
@@ -1139,6 +1143,7 @@ export class ThreadRuntime {
       && !this.busy
       && this.pendingApprovals.size === 0
       && this.inputQueue.length === 0
+      && this.activeProcesses.size === 0
       && this.lastActivity <= idleSince;
   }
 
@@ -1500,7 +1505,7 @@ export class ThreadRuntime {
     await this.ensureInitialized();
     const processId = requireString(options.processId, 'processId');
     if (!Array.isArray(options.command) || options.command.length === 0) throw new Error('terminal command is required');
-    return this.request('command/exec', definedParams({
+    const response = await this.request('command/exec', definedParams({
       processId,
       command: options.command.map((part, index) => requireString(part, `command[${index}]`)),
       tty: true,
@@ -1515,6 +1520,8 @@ export class ThreadRuntime {
       disableOutputCap: options.disableOutputCap,
       sandboxPolicy: options.sandboxPolicy,
     }));
+    this.activeProcesses.add(processId);
+    return response;
   }
 
   async writeTerminal(processId, text, options = {}) {
@@ -1539,7 +1546,12 @@ export class ThreadRuntime {
 
   async terminateTerminal(processId) {
     await this.ensureInitialized();
-    return this.request('command/exec/terminate', { processId: requireString(processId, 'processId') });
+    const id = requireString(processId, 'processId');
+    try {
+      return await this.request('command/exec/terminate', { processId: id });
+    } finally {
+      this.activeProcesses.delete(id);
+    }
   }
 
   async listThreadTurns(options = {}) {

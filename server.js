@@ -116,7 +116,10 @@ const PENDING_DEVICE_LIMIT = Number.isInteger(rawPendingDeviceLimit) && rawPendi
   ? rawPendingDeviceLimit
   : 32;
 const rawAgentIdleTtlMs = Number(process.env.CODEX_AGENT_IDLE_TTL_MS);
-const AGENT_IDLE_TTL_MS = Number.isInteger(rawAgentIdleTtlMs) && rawAgentIdleTtlMs >= 0
+// 下界一分钟。曾经接受 0 只是为了测试方便，但那意味着误配成 0 时，任何一个断开
+// 连接的会话都会在下一个 5 分钟 tick 里被立刻回收。测试改用注入时钟，不再需要这个口子。
+const MIN_AGENT_IDLE_TTL_MS = 60_000;
+const AGENT_IDLE_TTL_MS = Number.isInteger(rawAgentIdleTtlMs) && rawAgentIdleTtlMs >= MIN_AGENT_IDLE_TTL_MS
   ? rawAgentIdleTtlMs
   : 30 * 60 * 1000;
 const THREAD_LIST_LIMIT_MAX = 200;

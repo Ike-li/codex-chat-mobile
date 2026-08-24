@@ -1502,3 +1502,22 @@ test('a disposed runtime is not re-attached by a late response', { timeout: 3000
   assert.equal(host.runtimes.has(session), false, '已 dispose 的 runtime 不应被重新 attach');
   host.dispose();
 });
+
+test('isReclaimable refuses while an app-server process is still running', () => {
+  // command/exec 不置 busy、不产生 turn，所以一个跑着 `npm run dev` 的终端在
+  // isReclaimable 眼里完全空闲。回收之后进程仍在 app-server 里跑，网关这边没有
+  // 属主：输出和退出事件全部 unrouted，也再没有路径能 terminate 它。
+  const { session } = makeSession();
+  session.lastActivity = 1_000;
+  const idleSince = 5_000;
+  assert.equal(session.isReclaimable(idleSince), true);
+
+  session.activeProcesses.add('term_1');
+  assert.equal(session.isReclaimable(idleSince), false, '仍有 command/exec 进程时不能回收');
+
+  session.handleNotification('process/exited', { processHandle: 'term_1', exitCode: 0 });
+  // 通知本身会刷新 lastActivity（这是对的），这里只验证进程集合已经清空。
+  session.lastActivity = 1_000;
+  assert.equal(session.isReclaimable(idleSince), true, '进程退出后应重新可回收');
+  session.dispose();
+});
