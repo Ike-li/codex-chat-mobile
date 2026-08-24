@@ -1,10 +1,24 @@
 import { createHash } from 'node:crypto';
 
+// 终态记录仍要短暂保留，重开同一 need 才能判出 duplicate / conflict；但不能永久保留，
+// 否则 trackNeedsYou 每个 result / error 都要扫的这张表会单调增长。
+const RECLAIMABLE_STATES = new Set(['resolved', 'revoked', 'expired']);
+const DEFAULT_TTL_MS = 60 * 60 * 1000;
+
 export class NeedsYouRegistry {
   #records = new Map();
+  #byInstance = new Map(); // instanceId -> Set<needId>，避免按 instance 关单时全表扫描
   #revision = 0;
+  #ttlMs;
+  #now;
 
-  open({ kind, target, payload = {}, createdAt = Date.now() } = {}) {
+  constructor({ ttlMs, now } = {}) {
+    this.#ttlMs = Number.isFinite(ttlMs) && ttlMs >= 0 ? ttlMs : DEFAULT_TTL_MS;
+    this.#now = typeof now === 'function' ? now : () => Date.now();
+  }
+
+  open({ kind, target, payload = {}, createdAt = this.#now() } = {}) {
+    this.prune();
     const normalizedTarget = normalizeTarget(target);
     const normalizedKind = kind === 'question' ? 'question' : 'approval';
     const needId = needIdFor(normalizedKind, normalizedTarget);
@@ -32,8 +46,10 @@ export class NeedsYouRegistry {
       resolvedAt: null,
       openFingerprint: fingerprint,
       resolutionFingerprint: null,
+      terminalAt: null,
     };
     this.#records.set(needId, record);
+    this.#index(record);
     return { kind: 'opened', changed: true, revision, need: toDto(record) };
   }
 
@@ -69,24 +85,26 @@ export class NeedsYouRegistry {
     }
 
     record.state = 'resolving';
-    record.updatedAt = Date.now();
+    record.updatedAt = this.#now();
     try {
       const accepted = await responder(toDto(record));
       if (accepted !== true) {
         record.state = 'revoked';
-        record.updatedAt = Date.now();
+        record.updatedAt = this.#now();
+        record.terminalAt = record.updatedAt;
         record.revision = ++this.#revision;
         return { kind: 'stale', changed: true, revision: this.#revision, need: toDto(record) };
       }
       record.state = 'resolved';
       record.resolutionFingerprint = resolutionFingerprint;
-      record.resolvedAt = Date.now();
+      record.resolvedAt = this.#now();
       record.updatedAt = record.resolvedAt;
+      record.terminalAt = record.resolvedAt;
       record.revision = ++this.#revision;
       return { kind: 'resolved', changed: true, revision: this.#revision, need: toDto(record) };
     } catch (error) {
       record.state = 'unknown';
-      record.updatedAt = Date.now();
+      record.updatedAt = this.#now();
       record.revision = ++this.#revision;
       return {
         kind: 'unknown',
@@ -100,11 +118,12 @@ export class NeedsYouRegistry {
 
   close(query, { state = 'revoked', reason = null } = {}) {
     const closed = [];
-    for (const record of this.#records.values()) {
+    for (const record of this.#candidates(query)) {
       if (!queryMatches(record.target, query)) continue;
       if (!['pending', 'resolving', 'unknown'].includes(record.state)) continue;
       record.state = state === 'expired' ? 'expired' : 'revoked';
-      record.updatedAt = Date.now();
+      record.updatedAt = this.#now();
+      record.terminalAt = record.updatedAt;
       record.payload = { ...record.payload, ...(reason ? { closeReason: String(reason) } : {}) };
       record.revision = ++this.#revision;
       closed.push(toDto(record));
@@ -112,15 +131,56 @@ export class NeedsYouRegistry {
     return { changed: closed.length > 0, revision: this.#revision, needs: closed };
   }
 
+  prune() {
+    const cutoff = this.#now() - this.#ttlMs;
+    for (const record of this.#records.values()) {
+      if (!RECLAIMABLE_STATES.has(record.state)) continue;
+      if (record.terminalAt === null || record.terminalAt > cutoff) continue;
+      this.#remove(record);
+    }
+  }
+
+  stats() {
+    return { size: this.#records.size };
+  }
+
   clear() {
     this.#records.clear();
+    this.#byInstance.clear();
     this.#revision = 0;
   }
 
   #find(query = {}) {
     if (typeof query.needId === 'string' && query.needId) return this.#records.get(query.needId) ?? null;
-    const matches = [...this.#records.values()].filter(record => queryMatches(record.target, query));
+    const matches = this.#candidates(query).filter(record => queryMatches(record.target, query));
     return matches.length === 1 ? matches[0] : null;
+  }
+
+  // 带 instanceId 的查询走索引；其余情况才退回全表。
+  #candidates(query = {}) {
+    const instanceId = query?.instanceId;
+    if (typeof instanceId !== 'string' || !instanceId) return [...this.#records.values()];
+    const needIds = this.#byInstance.get(instanceId);
+    if (!needIds) return [];
+    return [...needIds].map(needId => this.#records.get(needId)).filter(Boolean);
+  }
+
+  #index(record) {
+    const key = record.target.instanceId;
+    let needIds = this.#byInstance.get(key);
+    if (!needIds) {
+      needIds = new Set();
+      this.#byInstance.set(key, needIds);
+    }
+    needIds.add(record.needId);
+  }
+
+  #remove(record) {
+    this.#records.delete(record.needId);
+    const needIds = this.#byInstance.get(record.target.instanceId);
+    if (!needIds) return;
+    needIds.delete(record.needId);
+    if (needIds.size === 0) this.#byInstance.delete(record.target.instanceId);
   }
 }
 
