@@ -4,7 +4,7 @@
 // 失败恢复、resume vs 新建、队列满、进程死亡、附件路径不外泄等。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CodexAppServerSession } from '../agent-appserver.js';
@@ -941,6 +941,26 @@ test('rpc observability: a failing rotation does not silence the log forever', (
 
     const lines = readFileSync(rpcLogPath, 'utf8').trim().split('\n').filter(Boolean).length;
     assert.ok(lines > 20, `轮转失败后日志被永久静默，只写进 ${lines} 行`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('rpc observability: refuses to write through a symlinked log path', () => {
+  // uploads.js 对上传目录做了 symlink 守卫，rpc 日志没有——openSync 少了 O_NOFOLLOW，
+  // 会顺着链接写穿到目标文件，还把目标 chmod 成 600。
+  const dir = mkdtempSync(join(tmpdir(), 'ccm-rpc-symlink-'));
+  const target = join(dir, 'innocent.txt');
+  const linked = join(dir, 'rpc-linked.jsonl');
+  try {
+    writeFileSync(target, 'original contents\n');
+    symlinkSync(target, linked);
+
+    const { session } = makeSession({ cwd: dir, rpcLogPath: linked });
+    session.appendRpcLog({ frame: 'should not land' });
+
+    assert.equal(readFileSync(target, 'utf8'), 'original contents\n', '不应写穿符号链接');
+    assert.equal(session.rpcLogPath, null, '遇到符号链接应停用日志而不是每帧重试');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

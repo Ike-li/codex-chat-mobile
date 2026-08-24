@@ -23,6 +23,8 @@ for (const [address, prefix] of [
 blocked.addAddress('::', 'ipv6');
 blocked.addAddress('::1', 'ipv6');
 for (const [address, prefix] of [
+  ['::', 96],         // IPv4-compatible（RFC 4291 已废弃）：::7f00:1 就是 127.0.0.1
+  ['::ffff:0:0:0', 96], // IPv4-translated（RFC 2765）：::ffff:0:7f00:1
   ['64:ff9b::', 96],   // well-known NAT64：64:ff9b::7f00:1 就是 127.0.0.1
   ['64:ff9b:1::', 48],
   ['100::', 64],

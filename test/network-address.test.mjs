@@ -39,3 +39,18 @@ test('public IP classification rejects the well-known NAT64 prefix', () => {
     assert.equal(isPublicIpAddress(address), false, `${address} 不应被当作公网地址`);
   }
 });
+
+test('public IP classification rejects IPv4-compatible and IPv4-translated forms', () => {
+  // ::/96 与 ::ffff:0:0/96 都把 IPv4 塞进 IPv6 地址。已被废弃（RFC 4291 / RFC 2765），
+  // 主流内核也不做自动隧道，但这个谓词是 push-sender 和 input-parts 两处 SSRF 防线的
+  // 共同基础，不该依赖「内核大概不会路由它」这种前提。
+  for (const address of ['::7f00:1', '::a00:1', '::c0a8:101', '::ffff:0:7f00:1', '::ffff:0:a00:1']) {
+    assert.equal(isPublicIpAddress(address), false, `${address} 不应被当作公网地址`);
+  }
+});
+
+test('public IP classification still accepts genuine global IPv6', () => {
+  for (const address of ['2606:4700:4700::1111', '2400:cb00::1']) {
+    assert.equal(isPublicIpAddress(address), true, `${address} 是公网地址`);
+  }
+});

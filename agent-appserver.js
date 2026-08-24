@@ -1721,8 +1721,11 @@ export class ThreadRuntime {
       } finally {
         if (fd !== null) closeSync(fd);
       }
-    } catch {
+    } catch (error) {
       // Observability must not interfere with JSON-RPC protocol progress.
+      // 路径是符号链接（O_NOFOLLOW → ELOOP）说明有人把日志指向了别处：停用它，
+      // 既不写穿过去、也不用每帧重试一次注定失败的 open。
+      if (error?.code === 'ELOOP') this.rpcLogPath = null;
     }
   }
 
@@ -1732,7 +1735,7 @@ export class ThreadRuntime {
   openRpcLog() {
     return openSync(
       this.rpcLogPath,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | (constants.O_NOFOLLOW || 0),
       0o600,
     );
   }
