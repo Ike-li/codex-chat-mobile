@@ -131,7 +131,7 @@ This is a control plane for a real development machine — treat any remote expo
 - [docs/PROTOCOL.md](docs/PROTOCOL.md) — Codex app-server protocol reference (methods, events, coverage)
 - [docs/API.md](docs/API.md) — interface reference (HTTP routes + Socket.IO events with signatures)
 - [docs/TESTING.md](docs/TESTING.md) — test gates, acceptance matrix, and manual smoke checklist
-- [docs/SMOKE_MATRIX.md](docs/SMOKE_MATRIX.md) — per-feature minimal browser smoke checks with machine-checkable pass criteria
+- [docs/SMOKE_MATRIX.md](docs/SMOKE_MATRIX.md) — 71 visual acceptance cases covering 123 of 131 interface and cross-layer test points; judged by what is visible on screen, so a person and a browser agent run the same document
 - [docs/PROTOCOL_UPGRADE.md](docs/PROTOCOL_UPGRADE.md) — Codex app-server protocol upgrade runbook
 - [ROADMAP.md](ROADMAP.md) — shipped / in progress / candidates
 

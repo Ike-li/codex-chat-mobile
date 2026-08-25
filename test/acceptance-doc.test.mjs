@@ -230,39 +230,51 @@ test('web user documentation provides a complete learning and reference path', (
   }
 });
 
-test('browser smoke matrix maps every reachable feature unit to an executable check', () => {
-  const smoke = readDoc('../docs/SMOKE_MATRIX.md');
+test('the visual acceptance doc stays executable by both a person and a browser agent', () => {
+  const doc = readDoc('../docs/SMOKE_MATRIX.md');
 
-  for (const heading of ['# 最小浏览器冒烟', '## 怎么用', '## 判据约定', '## 功能单元矩阵',
-    '## 非用户可达', '## 最近一次实测']) {
-    assert.match(smoke, new RegExp(`^${heading}$`, 'm'), `SMOKE_MATRIX.md missing heading ${heading}`);
+  for (const heading of ['# 可视化验收用例', '## 怎么用这份文档', '## 一条用例怎么读',
+    '## 第 0 幕 · 打开与连接', '## 第 1 幕 · 发一条消息', '## 第 2 幕 · 调设置',
+    '## 第 3 幕 · 命令执行与审批', '## 第 4 幕 · 看结果', '## 第 5 幕 · 管理会话与工作区',
+    '## 第 6 幕 · 异常与恢复', '## 第 7 幕 · 多设备', '## 条件可达与不可达',
+    '## 附录 A · 覆盖矩阵', '## 附录 B · 无法纯视觉验证的点', '## 附录 C · 上游限制']) {
+    assert.match(doc, new RegExp(`^${heading}$`, 'm'), `SMOKE_MATRIX.md missing heading ${heading}`);
   }
 
-  // 十个功能分组各自成节，缺一节就说明盘点漏了一块功能面。
-  for (const group of ['### A. 入口与连接', '### B. Composer 与发送', '### C. 会话设置',
-    '### D. 抽屉与 Thread', '### E. 顶栏与工作区', '### F. 转录渲染',
-    '### G. 审批与 needs-you', '### H. 可靠投递', '### I. 通用对话框', '### J. 条件可达']) {
-    assert.match(smoke, new RegExp(`^${group}`, 'm'), `SMOKE_MATRIX.md missing group ${group}`);
+  const ids = [...doc.matchAll(/^#### (VC-[A-K]\d{2}) · /gm)].map(m => m[1]);
+  assert.ok(ids.length >= 55, `only ${ids.length} visual cases`);
+  assert.equal(new Set(ids).size, ids.length, 'duplicate case ids');
+
+  // 每条用例四件套齐全，缺一条就不能被照着执行。
+  const blocks = doc.split(/^#### VC-/m).slice(1);
+  for (const block of blocks) {
+    const id = block.slice(0, 6);
+    for (const field of ['**覆盖点**', '**前置**', '**步骤**', '**看到什么**', '**判定**', '**定位参考**']) {
+      assert.ok(block.includes(field), `VC-${id} missing ${field}`);
+    }
   }
 
-  // 每条用例必须有编号、可机器判定的判据、以及和 Playwright 的重叠标注；
-  // 少了任何一列，这份文档就退化成又一份散文清单。编号只在矩阵区段里统计——
-  // 文末的实测结果表会复述部分编号，把它算进去会误报重复。
-  const matrixStart = smoke.indexOf('## 功能单元矩阵');
-  const matrixEnd = smoke.indexOf('## 非用户可达');
-  assert.ok(matrixStart >= 0 && matrixEnd > matrixStart, 'SMOKE_MATRIX.md matrix section is missing');
-  const matrix = smoke.slice(matrixStart, matrixEnd);
-  const rows = [...matrix.matchAll(/^\| (SM-[A-J]\d+) \|/gm)].map(match => match[1]);
-  assert.ok(rows.length >= 30, `SMOKE_MATRIX.md only has ${rows.length} numbered cases`);
-  assert.equal(new Set(rows).size, rows.length, 'SMOKE_MATRIX.md has duplicate case ids');
-  assert.match(smoke, /通过判据/);
-  assert.match(smoke, /E2E 重叠/);
+  // 纯视觉的硬约束：判据段里不许出现只有开发者工具才看得见的东西。
+  // selector 只允许待在「定位参考」那一行，供自动化定位用，不能当判据。
+  for (const block of blocks) {
+    const id = block.slice(0, 6);
+    const seen = block.indexOf('**看到什么**');
+    const anchor = block.indexOf('**定位参考**');
+    assert.ok(seen >= 0 && anchor > seen, `VC-${id} 段落顺序不对`);
+    const verdict = block.slice(seen, anchor);
+    for (const banned of ['localStorage', 'querySelector', 'getComputedStyle', 'IndexedDB',
+      'offsetParent', 'classList', 'dataset.']) {
+      assert.ok(!verdict.includes(banned),
+        `VC-${id} 的判据里出现了 ${banned}——判据必须是肉眼可见的画面，不是 DOM 检查`);
+    }
+  }
 
-  // 降级过的步骤必须自报家门——JS 点击验证不了遮挡与 hit-testing。
-  assert.match(smoke, /JS 降级/);
-
-  // 不可达的入口要写明，避免后来者把 dispatchEvent 的绿灯当成用户可用。
-  assert.match(smoke, /#drawer-tools/);
+  // 覆盖矩阵必须把全部测试点逐一映射到用例号，否则无从追溯漏了什么。
+  // 实跑发现沙箱是 4 档而非 3 档（多一档「绕过批准和沙箱」），组合数因此从 12 升到 16，
+  // 总点数 131 → 135。
+  assert.match(doc, /131 个测试点/);
+  assert.match(doc, /审批 4 档 × 沙箱 3 档/);
+  assert.match(doc, /^\| 接口层/m);
 
   for (const readmePath of ['../README.md', '../README.zh-CN.md']) {
     assert.match(readDoc(readmePath), /docs\/SMOKE_MATRIX\.md/,

@@ -115,7 +115,7 @@ npm run test:ci
 - [docs/PROTOCOL.md](docs/PROTOCOL.md)：Codex app-server 协议参考（方法、事件、覆盖）。
 - [docs/API.md](docs/API.md)：接口参考（HTTP 路由 + Socket.IO 事件签名）。
 - [docs/TESTING.md](docs/TESTING.md)：测试门禁、验收矩阵和手工冒烟清单。
-- [docs/SMOKE_MATRIX.md](docs/SMOKE_MATRIX.md)：逐功能的最小浏览器冒烟步骤与可机器判定的通过判据。
+- [docs/SMOKE_MATRIX.md](docs/SMOKE_MATRIX.md)：71 条可视化验收用例，覆盖 131 个接口与跨层测试点中的 123 个；判据是肉眼可见的画面，人和浏览器智能体照同一份执行。
 - [docs/PROTOCOL_UPGRADE.md](docs/PROTOCOL_UPGRADE.md)：Codex app-server 协议升级流程。
 - [ROADMAP.md](ROADMAP.md)：已完成 / 进行中 / 候选。
 

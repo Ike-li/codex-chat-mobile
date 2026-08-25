@@ -39,7 +39,7 @@ npm run test:e2e
 - `docs/PROTOCOL.md`：Codex app-server 协议参考。
 - `docs/API.md`：接口参考（HTTP + Socket.IO 事件签名）。
 - `docs/TESTING.md`：测试门禁、验收矩阵和手工冒烟清单。
-- `docs/SMOKE_MATRIX.md`：逐功能的最小浏览器冒烟步骤与通过判据。
+- `docs/SMOKE_MATRIX.md`：71 条可视化验收用例（判据为可见画面，人与浏览器智能体通用）。
 - `docs/PROTOCOL_UPGRADE.md`：Codex app-server 协议升级流程。
 - `docs/archive/`：历史存档，不再维护，不作为事实来源。
 
