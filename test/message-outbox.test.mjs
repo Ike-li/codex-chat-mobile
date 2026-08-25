@@ -916,3 +916,104 @@ test('message outbox records a rejected runtime transition for a queued request'
     resultUnknown: false,
   });
 });
+
+function createMemoryStore() {
+  const records = new Map();
+  return {
+    async put(record) { records.set(record.clientRequestId, structuredClone(record)); },
+    async list() {
+      return [...records.values()]
+        .map(record => structuredClone(record))
+        .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+    },
+    async delete(clientRequestId) { records.delete(clientRequestId); },
+  };
+}
+
+test('a rejected head of queue can be discarded instead of wedging every later message', async () => {
+  const store = createMemoryStore();
+  // 网关明确拒绝过的一条消息，排在同一 thread 的队首。
+  await store.put({
+    ...createMessageRequest({
+      text: 'rejected head', target: { threadId: 'thr-wedge' },
+    }, { createId: () => 'req-rejected-head', now: () => 1 }),
+    state: 'rejected',
+    attempts: 1,
+    lastError: { code: 'request_rejected', message: 'runtime refused', resultUnknown: false },
+  });
+  // 用户之后又发的一条，本该能发出去。
+  await store.put(createMessageRequest({
+    text: 'blocked tail', target: { threadId: 'thr-wedge' },
+  }, { createId: () => 'req-blocked-tail', now: () => 2 }));
+
+  const sent = [];
+  const outbox = createMessageOutbox({
+    store,
+    isConnected: () => true,
+    async transport(payload) {
+      sent.push(payload.clientRequestId);
+      return { ok: true, receipt: { clientRequestId: payload.clientRequestId, state: 'submitted' } };
+    },
+  });
+
+  // 顺序保证要求队首失败时停下，所以队尾此刻发不出去——这本身是对的。
+  await outbox.drain();
+  assert.deepEqual(sent, []);
+
+  // 但终态记录必须有出口，否则整条队列永远堵死。
+  assert.equal(await outbox.discard('req-rejected-head'), true);
+  const remaining = await store.list();
+  assert.deepEqual(remaining.map(record => record.clientRequestId), ['req-blocked-tail']);
+
+  await outbox.drain();
+  assert.deepEqual(sent, ['req-blocked-tail']);
+});
+
+test('an attempted request whose provisional target died can be discarded by the user', async () => {
+  const store = createMemoryStore();
+  // 发过一次就断线的消息：目标是 provisional instance，网关重启后该 instance 已不存在。
+  await store.put({
+    ...createMessageRequest({
+      text: '排查当前项目里的问题和失败，并给出修复', target: { instanceId: 'inst-dead' },
+    }, { createId: () => 'req-unreachable', now: () => 1 }),
+    state: 'retryable',
+    attempts: 1,
+    attemptedGatewayEpoch: 'epoch-old',
+    lastError: { code: 'runtime_unavailable', message: 'gateway restarted', resultUnknown: false },
+  });
+
+  const outbox = createMessageOutbox({
+    store,
+    isConnected: () => true,
+    async transport() { assert.fail('an unreachable request must never be dispatched automatically'); },
+    async reconcileTransport() { return { ok: false, errorCode: 'unknown_request' }; },
+  });
+
+  // 三条自动出路都不适用：不能重绑（尝试过）、不能重发（目标不匹配当前视图）、
+  // reconcile 的状态白名单也不含 retryable。
+  assert.equal(await outbox.rebindUnattempted('req-unreachable', { threadId: 'thr-current' }), null);
+  await outbox.drain({ shouldSend: request => request.payload?.instanceId === 'inst-live' });
+  const summary = await outbox.reconcile({ shouldReconcile: () => true });
+  assert.equal(summary.checked, 0);
+  assert.equal((await store.list()).length, 1);
+
+  // 所以用户必须能手动丢弃，否则这条气泡每次连接都重现且无法消除。
+  assert.equal(await outbox.discard('req-unreachable'), true);
+  assert.deepEqual(await store.list(), []);
+});
+
+test('discarding an unknown or already-cleared request is a no-op', async () => {
+  const store = createMemoryStore();
+  await store.put(createMessageRequest({
+    text: 'keep me', target: { threadId: 'thr-keep' },
+  }, { createId: () => 'req-keep', now: () => 1 }));
+  const outbox = createMessageOutbox({
+    store,
+    isConnected: () => true,
+    async transport() { assert.fail('discard must not dispatch'); },
+  });
+
+  assert.equal(await outbox.discard('req-never-existed'), false);
+  assert.equal(await outbox.discard(''), false);
+  assert.deepEqual((await store.list()).map(record => record.clientRequestId), ['req-keep']);
+});

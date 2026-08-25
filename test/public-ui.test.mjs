@@ -1042,3 +1042,40 @@ test('client exposes P3 experimental labs controls and isolated event renderers'
   assert.match(allContent, /function handleP3RemoteControl/);
   assert.match(allContent, /\$\('native-p3-btn'\)\.onclick = openP3Panel/);
 });
+
+test('a stuck outbox record tells the truth and offers the user a way out', () => {
+  assert.match(appJs, /requiresManualDisposal/);
+  assert.match(appJs, /from '\/js\/outbox-recovery\.js'/);
+
+  const start = appJs.indexOf('function appendOfflineBubble(');
+  const end = appJs.indexOf('function promoteOfflineBubble(', start);
+  const bubble = appJs.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+
+  // 「连接后将恢复到当前会话」只能对真的会被 rebindUnattempted 接回的记录说。
+  assert.match(bubble, /连接后将恢复到当前会话/);
+  assert.match(bubble, /requiresManualDisposal|manualDisposal/);
+  assert.doesNotMatch(
+    bubble,
+    /unboundRecovery\s*\?\s*\(needsReconcile[\s\S]{0,120}连接后将恢复到当前会话'\)\s*\n\s*:\s*\(needsReconcile/,
+    '不能只按 needsReconcile 二分——尝试过的孤儿记录永远不会被恢复',
+  );
+
+  // 卡死的记录必须能被丢弃，且丢弃前要确认（可能已经在服务端执行过）。
+  assert.match(bubble, /outbox-discard-btn/);
+  assert.match(bubble, /confirmDialog\.confirm\(/);
+  assert.match(bubble, /messageOutbox\.discard\(/);
+  assert.match(bubble, /renderedOutboxIds\.delete\(/);
+  assert.match(bubble, /el\.remove\(\)/);
+
+  assert.match(css, /\.outbox-discard-btn\s*\{/);
+});
+
+test('the outbox view passes each record its own disposal verdict', () => {
+  const start = appJs.indexOf('async function syncOutboxViewOnce()');
+  const end = appJs.indexOf('syncVisualViewport();', start);
+  const syncBody = appJs.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  assert.match(syncBody, /requiresManualDisposal\(request, \{ orphaned: unboundRecovery \}\)/);
+  assert.match(syncBody, /manualDisposal/);
+});

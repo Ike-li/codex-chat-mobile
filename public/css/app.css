@@ -910,6 +910,21 @@ body {
   font-weight: 700;
   cursor: pointer;
 }
+.outbox-discard-btn {
+  display: inline-flex;
+  margin-top: 6px;
+  margin-left: 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 9px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  opacity: .75;
+  cursor: pointer;
+}
 
 /* Tool and Output Cards */
 .tool-card {

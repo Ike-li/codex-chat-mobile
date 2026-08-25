@@ -215,6 +215,18 @@ export function createMessageOutbox({
         return rebound;
       });
     },
+    discard(clientRequestId) {
+      return runExclusive(async () => {
+        if (typeof clientRequestId !== 'string' || !clientRequestId) return false;
+        if (typeof store.delete !== 'function') {
+          throw new Error('Message outbox cannot discard without delete support');
+        }
+        const requests = await store.list();
+        if (!requests.some(item => item.clientRequestId === clientRequestId)) return false;
+        await store.delete(clientRequestId);
+        return true;
+      });
+    },
     acceptReceipt(receipt) {
       return runExclusive(() => acceptReceipt(receipt));
     },

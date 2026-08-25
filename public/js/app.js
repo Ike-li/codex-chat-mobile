@@ -4,7 +4,7 @@ import { bufferRecoveryEvent, completeRecovery, createRecoveryState } from '/js/
 import { createMessageRequest, messageWirePayload } from '/js/message-request.js';
 import { createMessageOutbox } from '/js/message-outbox.js';
 import { createIndexedDbMessageStore } from '/js/indexeddb-outbox.js';
-import { isDefinitelyUnattempted, isProvisionalInstanceOrphan } from '/js/outbox-recovery.js';
+import { isDefinitelyUnattempted, isProvisionalInstanceOrphan, requiresManualDisposal } from '/js/outbox-recovery.js';
 import { emitWithAck } from '/js/socket-ack.js';
 import {
   applyThreadStatus,
@@ -544,6 +544,7 @@ import {
           appendOfflineBubble(payload, {
             needsReconcile: request.state === 'needs_reconcile',
             unboundRecovery,
+            manualDisposal: requiresManualDisposal(request, { orphaned: unboundRecovery }),
           });
         }
       }
@@ -2563,7 +2564,7 @@ import {
     checkEmptyState();
   }
 
-  function appendOfflineBubble(payload, { needsReconcile = false, unboundRecovery = false } = {}) {
+  function appendOfflineBubble(payload, { needsReconcile = false, unboundRecovery = false, manualDisposal = false } = {}) {
     const text = payload.text || '';
     const clientRequestId = payload.clientRequestId || '';
     if (clientRequestId && renderedOutboxIds.has(clientRequestId)) return;
@@ -2581,10 +2582,14 @@ import {
     const deliveryLabel = unboundRecovery
       ? (needsReconcile
         ? '⚠️ 原会话目标已失效，正在按请求 ID 核对；不会自动重发'
-        : '⏳ 原会话目标已失效，连接后将恢复到当前会话')
+        : (manualDisposal
+          ? '⚠️ 原会话目标已失效且已尝试发送；不会自动重发，也不会自动恢复'
+          : '⏳ 原会话目标已失效，连接后将恢复到当前会话'))
       : (needsReconcile
         ? '⚠️ 结果未知，正在核对；不会自动重发'
-        : '⏳ 弱网等待同步 (Offline Queue)');
+        : (manualDisposal
+          ? '⚠️ 已被运行时拒绝；丢弃后这条会话的队列才会继续'
+          : '⏳ 弱网等待同步 (Offline Queue)'));
     html += `${escHtml(text || (payload.parts?.length ? '(结构化引用)' : '(附件)'))}<span class="offline-label">${deliveryLabel}</span></div>`;
     el.innerHTML = html;
     if (needsReconcile && clientRequestId) {
@@ -2620,6 +2625,36 @@ import {
         }
       };
       el.querySelector('.bubble')?.appendChild(retryButton);
+    }
+    if (manualDisposal && clientRequestId) {
+      const discardButton = document.createElement('button');
+      discardButton.className = 'outbox-discard-btn';
+      discardButton.type = 'button';
+      discardButton.textContent = '丢弃';
+      discardButton.onclick = async () => {
+        const accepted = await confirmDialog.confirm({
+          title: '丢弃这条消息',
+          body: '无法确认它是否已在服务端执行过；丢弃后本地不再保留，也不会再重试。',
+          danger: true,
+        });
+        if (!accepted) return;
+        try {
+          await messageOutbox.discard(clientRequestId);
+        } catch (error) {
+          appendSystem(`丢弃失败：${error.message}`, true);
+          return;
+        }
+        const bubbleIndex = offlineUserBubbles.findIndex(item => item.clientRequestId === clientRequestId);
+        if (bubbleIndex >= 0) offlineUserBubbles.splice(bubbleIndex, 1);
+        renderedOutboxIds.delete(clientRequestId);
+        el.remove();
+        checkEmptyState();
+        // 被拒绝的队首会让 drain 停下，丢弃后要立刻推一次，后面的消息才能继续。
+        await drainMessageOutbox({
+          shouldSend: outboxRequestMatchesView,
+        });
+      };
+      el.querySelector('.bubble')?.appendChild(discardButton);
     }
     messagesEl.appendChild(el);
     if (clientRequestId) renderedOutboxIds.add(clientRequestId);
