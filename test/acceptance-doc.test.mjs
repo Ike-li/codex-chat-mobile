@@ -229,3 +229,43 @@ test('web user documentation provides a complete learning and reference path', (
     }
   }
 });
+
+test('browser smoke matrix maps every reachable feature unit to an executable check', () => {
+  const smoke = readDoc('../docs/SMOKE_MATRIX.md');
+
+  for (const heading of ['# 最小浏览器冒烟', '## 怎么用', '## 判据约定', '## 功能单元矩阵',
+    '## 非用户可达', '## 最近一次实测']) {
+    assert.match(smoke, new RegExp(`^${heading}$`, 'm'), `SMOKE_MATRIX.md missing heading ${heading}`);
+  }
+
+  // 十个功能分组各自成节，缺一节就说明盘点漏了一块功能面。
+  for (const group of ['### A. 入口与连接', '### B. Composer 与发送', '### C. 会话设置',
+    '### D. 抽屉与 Thread', '### E. 顶栏与工作区', '### F. 转录渲染',
+    '### G. 审批与 needs-you', '### H. 可靠投递', '### I. 通用对话框', '### J. 条件可达']) {
+    assert.match(smoke, new RegExp(`^${group}`, 'm'), `SMOKE_MATRIX.md missing group ${group}`);
+  }
+
+  // 每条用例必须有编号、可机器判定的判据、以及和 Playwright 的重叠标注；
+  // 少了任何一列，这份文档就退化成又一份散文清单。编号只在矩阵区段里统计——
+  // 文末的实测结果表会复述部分编号，把它算进去会误报重复。
+  const matrixStart = smoke.indexOf('## 功能单元矩阵');
+  const matrixEnd = smoke.indexOf('## 非用户可达');
+  assert.ok(matrixStart >= 0 && matrixEnd > matrixStart, 'SMOKE_MATRIX.md matrix section is missing');
+  const matrix = smoke.slice(matrixStart, matrixEnd);
+  const rows = [...matrix.matchAll(/^\| (SM-[A-J]\d+) \|/gm)].map(match => match[1]);
+  assert.ok(rows.length >= 30, `SMOKE_MATRIX.md only has ${rows.length} numbered cases`);
+  assert.equal(new Set(rows).size, rows.length, 'SMOKE_MATRIX.md has duplicate case ids');
+  assert.match(smoke, /通过判据/);
+  assert.match(smoke, /E2E 重叠/);
+
+  // 降级过的步骤必须自报家门——JS 点击验证不了遮挡与 hit-testing。
+  assert.match(smoke, /JS 降级/);
+
+  // 不可达的入口要写明，避免后来者把 dispatchEvent 的绿灯当成用户可用。
+  assert.match(smoke, /#drawer-tools/);
+
+  for (const readmePath of ['../README.md', '../README.zh-CN.md']) {
+    assert.match(readDoc(readmePath), /docs\/SMOKE_MATRIX\.md/,
+      `${readmePath} missing link to docs/SMOKE_MATRIX.md`);
+  }
+});

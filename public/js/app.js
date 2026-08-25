@@ -28,6 +28,7 @@ import {
   SANDBOX_OPTIONS,
   clampEffortForModel,
   clampServiceTierForModel,
+  effectiveComposerSettings,
   formatModelBadge,
   formatPermissionBadge,
   formatComposerPermission,
@@ -680,6 +681,15 @@ import {
     });
   }
 
+  // currentTurnSettings 只保留用户显式选过的值（持久化用它，避免把服务端默认固化进
+  // localStorage）；显示与发送一律走这个补齐过的版本，两边才不会各说各话。
+  function effectiveTurnSettings() {
+    return effectiveComposerSettings(currentTurnSettings(), {
+      status: sessionStatus,
+      models: availableModels,
+    });
+  }
+
   function persistComposerSettings() {
     saveCliSettings(localStorage, currentTurnSettings());
     if (miInput) miInput.value = selectedModel;
@@ -723,8 +733,9 @@ import {
 
   function renderCliSettingsPopovers() {
     const modelRecord = currentModelRecord();
-    renderPopoverItems($('approval-list'), APPROVAL_OPTIONS, 'approval', selectedApproval);
-    renderPopoverItems($('sandbox-list'), SANDBOX_OPTIONS, 'sandbox', selectedSandbox);
+    const effective = effectiveTurnSettings();
+    renderPopoverItems($('approval-list'), APPROVAL_OPTIONS, 'approval', effective.approvalPolicy);
+    renderPopoverItems($('sandbox-list'), SANDBOX_OPTIONS, 'sandbox', effective.sandbox);
     renderPopoverItems(
       $('model-list'),
       modelsForPicker().map(model => ({
@@ -3478,7 +3489,7 @@ import {
     const parts = hasParts
       ? currentInputParts.map(part => ({ ...part }))
       : undefined;
-    const turn = currentTurnSettings();
+    const turn = effectiveTurnSettings();
     const request = createMessageRequest({ text, attachments, parts, target, turn });
     try {
       if (!await outboxReady) throw new Error('IndexedDB outbox unavailable');
@@ -3622,6 +3633,9 @@ import {
 
   function renderAttachTray() {
     if (currentAttachments.length === 0 && currentInputParts.length === 0) {
+      // 先清空再隐藏：只隐藏的话最后一个 chip 会连同它那个指向旧下标的 onclick 闭包
+      // 一起留在 DOM 里。
+      attachTray.innerHTML = '';
       attachTray.hidden = true;
       applyComposerMode();
       return;

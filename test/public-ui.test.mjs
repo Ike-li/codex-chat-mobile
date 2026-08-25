@@ -1079,3 +1079,47 @@ test('the outbox view passes each record its own disposal verdict', () => {
   assert.match(syncBody, /requiresManualDisposal\(request, \{ orphaned: unboundRecovery \}\)/);
   assert.match(syncBody, /manualDisposal/);
 });
+
+test('composer shows and sends the same effective settings', () => {
+  // 必须真的从模块导入——只断言「文中出现过这个名字」会漏掉忘记 import 的情况，
+  // 那样运行时才会炸。
+  const importBlock = appJs.slice(0, appJs.indexOf("from '/js/cli-settings.js'"));
+  assert.match(importBlock, /^\s*effectiveComposerSettings,$/m);
+
+  // 有效设置必须集中在一处算出来，供显示与发送共用。
+  assert.match(appJs, /function effectiveTurnSettings\(\)/);
+  assert.match(appJs, /effectiveComposerSettings\(currentTurnSettings\(\), \{[\s\S]{0,120}\}\)/);
+
+  // 发送路径：不能再用裸的 currentTurnSettings()，否则用户没选过模型时
+  // turn/start 不带 model，app-server 会回落到自己的默认模型并报 400。
+  const sendStart = appJs.indexOf('async function sendMessage(');
+  const sendBody = appJs.slice(sendStart, sendStart + 6000);
+  assert.ok(sendStart >= 0);
+  assert.match(sendBody, /const turn = effectiveTurnSettings\(\)/);
+  assert.doesNotMatch(sendBody, /const turn = currentTurnSettings\(\)/);
+
+  // 列表选中态必须走同一份有效设置，否则审批/沙箱列表会一项 .selected 都没有，
+  // 而胶囊却已经显示了服务端默认值。
+  const renderStart = appJs.indexOf('function renderCliSettingsPopovers()');
+  const renderEnd = appJs.indexOf('function ', renderStart + 40);
+  const renderBody = appJs.slice(renderStart, renderEnd);
+  assert.ok(renderStart >= 0 && renderEnd > renderStart);
+  assert.match(renderBody, /effectiveTurnSettings\(\)/);
+  assert.doesNotMatch(renderBody, /'approval', selectedApproval\)/);
+  assert.doesNotMatch(renderBody, /'sandbox', selectedSandbox\)/);
+
+  // 持久化仍然只存用户显式选过的值——把服务端默认固化进 localStorage 会让
+  // 之后服务端改了默认也跟不上。
+  assert.match(appJs, /saveCliSettings\(localStorage, currentTurnSettings\(\)\)/);
+});
+
+test('attachment tray clears its DOM when the last chip is removed', () => {
+  const start = appJs.indexOf('function renderAttachTray()');
+  const end = appJs.indexOf('function ', start + 40);
+  const body = appJs.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  // 空态分支早返回前必须清空容器，否则移除最后一个附件后 .attach-chip 仍留在 DOM 里，
+  // 且残留 chip 的 onclick 闭包还指着旧的数组下标。
+  const emptyBranch = body.slice(0, body.indexOf('attachTray.hidden = false'));
+  assert.match(emptyBranch, /attachTray\.innerHTML = ''/);
+});

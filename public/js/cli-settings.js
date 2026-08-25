@@ -269,7 +269,13 @@ export function isUnsupportedCollaborationModeError(error) {
   if (!error) return false;
   if (error.code === -32601) return true;
   const message = String(error.message || error);
-  return /experimentalApi/i.test(message) || /thread\/settings\/update/i.test(message);
+  if (/experimentalApi/i.test(message) || /thread\/settings\/update/i.test(message)) return true;
+  // thread/settings/update 不在 stable v2 里，仓库也没有它的 params 契约。实测
+  // codex-cli 0.142.5 要的是完整 ThreadSettings，而 thread/read 不返回 settings，
+  // 我们构造不出来——它只会回 `Invalid request: missing field \`model\``。把这种
+  // 「参数形态不被接受」判成不支持，走 deferred 降级；其余 Invalid request 仍然抛出，
+  // 免得把真正的调用错误一起吞掉。
+  return error.code === -32600 && /missing field/i.test(message);
 }
 
 export function parseCollaborationModeSlash(text) {
@@ -380,6 +386,25 @@ export function saveCliSettings(storage, settings) {
   storage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(sanitizeTurnOverrides(settings)));
 }
 
+// 把「存下来的选择」补齐成「当前真正生效的设置」：用户没选过的项回落到服务端 status
+// 与模型列表里的权威值。显示层（胶囊、列表选中态）和发送层（turn override）都必须走这里，
+// 否则会重演那个缺陷——界面显示 GPT-5.5，turn/start 却不带 model，app-server 用自己的默认
+// 模型并回 400；审批/沙箱列表则一项选中都没有。
+// status 缺席（还没连上）时不编造值：留空，让服务端沿用自己的默认。
+export function effectiveComposerSettings(stored = {}, { status = null, models = [] } = {}) {
+  const source = stored && typeof stored === 'object' ? stored : {};
+  return {
+    ...source,
+    model: resolveSelectedModel(source.model || '', models),
+    approvalPolicy: normalizeApprovalPolicy(source.approvalPolicy)
+      || normalizeApprovalPolicy(status?.approvalPolicy)
+      || '',
+    sandbox: normalizeSandbox(source.sandbox)
+      || normalizeSandbox(status?.sandbox)
+      || '',
+  };
+}
+
 export function buildTurnStartOverrides(settings = {}) {
   const clean = sanitizeTurnOverrides(settings);
   const out = {};
@@ -389,7 +414,9 @@ export function buildTurnStartOverrides(settings = {}) {
   if (clean.serviceTier) out.serviceTier = clean.serviceTier;
   const sandboxPolicy = sandboxPolicyFromMode(clean.sandbox);
   if (sandboxPolicy) out.sandboxPolicy = sandboxPolicy;
-  const collaborationMode = collaborationModePayload(clean.collaborationMode);
-  if (collaborationMode) out.collaborationMode = collaborationMode;
+  // collaborationMode 刻意不进这里。它属于 ThreadSettings，只能经 thread/settings/update
+  // 下发；TurnStartParams 的契约里没有这个字段，多带一个未知字段会让 app-server 整体
+  // 反序列化失败，并回报一个指向别处的 `missing field \`model\``——即使 model 就在同一
+  // 个 params 里。调用方仍可从 sanitizeTurnOverrides 的结果里读到它。
   return out;
 }

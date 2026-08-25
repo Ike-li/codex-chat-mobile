@@ -1521,3 +1521,55 @@ test('isReclaimable refuses while an app-server process is still running', () =>
   assert.equal(session.isReclaimable(idleSince), true, '进程退出后应重新可回收');
   session.dispose();
 });
+
+// 真实 app-server（0.142.5）不发 item/reasoning/* 通知——它把 reasoning 作为一个 item
+// 经 item/started|completed 送出：{type:"reasoning", id:"rs_...", summary:[...], content:[...]}。
+// 之前 handleItem 不认这个 type，162 次 reasoning 全部掉进 raw_item 兜底，界面上显示成
+// 「🧾 Raw」而不是 reasoning 卡。
+test('item/completed: reasoning item 渲染成 reasoning 而不是 raw 兜底', () => {
+  const { session, events } = makeSession();
+  session.handleNotification('item/completed', {
+    threadId: 'thr-1',
+    turnId: 'turn-1',
+    item: {
+      type: 'reasoning',
+      id: 'rs_1',
+      summary: [{ type: 'summary_text', text: '先读协议契约' }],
+      content: [],
+    },
+  });
+  assert.equal(byType(events, 'raw_item').length, 0, 'reasoning 不该落进 raw_item 兜底');
+  const reasoning = byType(events, 'reasoning');
+  assert.equal(reasoning.length, 1);
+  assert.match(reasoning[0].payload.text, /先读协议契约/);
+  assert.equal(reasoning[0].payload.channel, 'summary');
+  assert.equal(reasoning[0].payload.itemId, 'rs_1');
+});
+
+test('reasoning item 的 summary 兼容纯字符串与 content 回退', () => {
+  const { session, events } = makeSession();
+  session.handleNotification('item/completed', {
+    item: { type: 'reasoning', id: 'rs_2', summary: ['直接是字符串'] },
+  });
+  session.handleNotification('item/completed', {
+    item: { type: 'reasoning', id: 'rs_3', summary: [], content: [{ text: '只有 content' }] },
+  });
+  const texts = byType(events, 'reasoning').map(e => e.payload.text);
+  assert.equal(texts.length, 2);
+  assert.match(texts[0], /直接是字符串/);
+  assert.match(texts[1], /只有 content/);
+  assert.equal(byType(events, 'raw_item').length, 0);
+});
+
+test('reasoning 的 item/started 不重复发，completed 时才出正文', () => {
+  const { session, events } = makeSession();
+  session.handleNotification('item/started', {
+    item: { type: 'reasoning', id: 'rs_4', summary: [], content: [] },
+  });
+  assert.equal(byType(events, 'reasoning').length, 0, 'started 阶段还没有正文，不该发空 reasoning');
+  assert.equal(byType(events, 'raw_item').length, 0, 'started 阶段也不该落进 raw 兜底');
+  session.handleNotification('item/completed', {
+    item: { type: 'reasoning', id: 'rs_4', summary: [{ text: '结论' }], content: [] },
+  });
+  assert.equal(byType(events, 'reasoning').length, 1);
+});

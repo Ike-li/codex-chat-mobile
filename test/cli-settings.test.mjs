@@ -26,6 +26,7 @@ import {
   sanitizeTurnOverrides,
   sandboxPolicyFromMode,
   buildTurnStartOverrides,
+  effectiveComposerSettings,
   loadCliSettings,
   saveCliSettings,
   SETTINGS_STORAGE_KEY,
@@ -256,11 +257,15 @@ test('collaboration mode uses protocol ids and is applied as a turn override, no
   assert.deepEqual(sanitizeTurnOverrides({ collaborationMode: '/plan' }), { collaborationMode: 'plan' });
   assert.deepEqual(sanitizeTurnOverrides({ collaborationMode: 'default' }), { collaborationMode: 'default' });
   assert.equal(sanitizeTurnOverrides({ collaborationMode: 'pair' }).collaborationMode, undefined);
-  assert.deepEqual(buildTurnStartOverrides({ collaborationMode: 'plan' }).collaborationMode, {
-    mode: 'plan',
-    settings: { developer_instructions: null },
-  });
-  assert.equal(buildTurnStartOverrides({}).collaborationMode, undefined);
+  // collaborationMode 属于 ThreadSettings，走 thread/settings/update；TurnStartParams
+  // 的协议契约（.protocol/stable/v2/TurnStartParams.ts）里没有这个字段。带上它会让
+  // app-server 整体反序列化失败，并回报一个指向别处的 `missing field \`model\``。
+  assert.equal(buildTurnStartOverrides({ collaborationMode: 'plan' }).collaborationMode, undefined);
+  assert.ok(!('collaborationMode' in buildTurnStartOverrides({ collaborationMode: 'plan' })));
+  // 仍要保留在 sanitize 结果里：网关用它记住当前模式并发 thread/settings/update。
+  assert.equal(sanitizeTurnOverrides({ collaborationMode: 'plan' }).collaborationMode, 'plan');
+  // 其余 override 不受影响，model 必须照常带出去。
+  assert.equal(buildTurnStartOverrides({ model: 'gpt-5.4', collaborationMode: 'plan' }).model, 'gpt-5.4');
   assert.deepEqual(collaborationModePayload('plan'), {
     mode: 'plan',
     settings: { developer_instructions: null },
@@ -311,4 +316,81 @@ test('browser settings migrate old slash-label keys into CLI protocol ids', () =
     approvalPolicy: 'never',
     sandbox: 'danger-full-access',
   });
+});
+
+// 曾经的缺陷：胶囊文案和模型列表都带服务端 fallback（`selectedApproval || sessionStatus?.approvalPolicy`、
+// `selectedModel || resolveSelectedModel(...)`），但列表选中态和真正发出去的 turn override 用的是
+// 裸的 selected*。于是界面显示「GPT-5.5 · 按请求 · 可写」，turn/start 却一个字段都不带，
+// app-server 回落到自己的默认模型并回 400；审批/沙箱列表则一项 .selected 都没有。
+// 这个函数是唯一事实源：显示什么，就发什么。
+test('effective composer settings fill server defaults so the UI and the wire agree', () => {
+  const models = [
+    { model: 'gpt-5.5', isDefault: true },
+    { model: 'gpt-5.4' },
+  ];
+  const status = { approvalPolicy: 'on-request', sandbox: 'workspace-write' };
+
+  // 用户一次都没选过：三项都必须回落到服务端/模型列表的权威值，不能是空串。
+  const fresh = effectiveComposerSettings({}, { status, models });
+  assert.equal(fresh.model, 'gpt-5.5');
+  assert.equal(fresh.approvalPolicy, 'on-request');
+  assert.equal(fresh.sandbox, 'workspace-write');
+
+  // 这份有效设置直接喂给 turn override，必须带出 model——这正是 400 的成因。
+  assert.equal(buildTurnStartOverrides(fresh).model, 'gpt-5.5');
+  assert.equal(buildTurnStartOverrides(fresh).approvalPolicy, 'on-request');
+
+  // 用户显式选过就以用户为准，不被服务端默认覆盖。
+  const picked = effectiveComposerSettings(
+    { model: 'gpt-5.4', approvalPolicy: 'never', sandbox: 'read-only' },
+    { status, models },
+  );
+  assert.equal(picked.model, 'gpt-5.4');
+  assert.equal(picked.approvalPolicy, 'never');
+  assert.equal(picked.sandbox, 'read-only');
+
+  // 非法存值不能污染结果，回落到服务端值。
+  const dirty = effectiveComposerSettings({ approvalPolicy: 'bogus', sandbox: 'nope' }, { status, models });
+  assert.equal(dirty.approvalPolicy, 'on-request');
+  assert.equal(dirty.sandbox, 'workspace-write');
+
+  // 没有 status（还没连上）时不编造值，留空让服务端用自己的默认。
+  const offline = effectiveComposerSettings({}, { status: null, models: [] });
+  assert.equal(offline.approvalPolicy, '');
+  assert.equal(offline.sandbox, '');
+  assert.equal(offline.model, '');
+
+  // effort / serviceTier / collaborationMode 原样透传，不被这层动。
+  const passthrough = effectiveComposerSettings(
+    { effort: 'high', serviceTier: 'priority', collaborationMode: 'plan' },
+    { status, models },
+  );
+  assert.equal(passthrough.effort, 'high');
+  assert.equal(passthrough.serviceTier, 'priority');
+  assert.equal(passthrough.collaborationMode, 'plan');
+});
+
+// thread/settings/update 不在 stable v2 协议里（protocol:check 把它列在实验白名单），
+// 仓库里也没有它的 params 契约。实测 codex-cli 0.142.5 上，我们发的
+// {threadId, collaborationMode} 一律被拒：`Invalid request: missing field \`model\``——
+// 它要的是完整的 ThreadSettings，而 thread/read 并不返回 settings，我们无从构造。
+// 这条路径因此必须走 deferred 降级，而不是把红错误抛给用户。
+test('a partial thread/settings/update rejection counts as unsupported, not a hard failure', () => {
+  assert.equal(isUnsupportedCollaborationModeError({
+    code: -32600,
+    message: 'Invalid request: missing field `model`',
+  }), true);
+  assert.equal(isUnsupportedCollaborationModeError({
+    code: -32600,
+    message: 'Invalid request: missing field `modelProvider`',
+  }), true);
+
+  // 既有的两种识别方式不能退化。
+  assert.equal(isUnsupportedCollaborationModeError({ code: -32601 }), true);
+  assert.equal(isUnsupportedCollaborationModeError({ message: 'experimentalApi required' }), true);
+
+  // 不能把无关失败一并吞掉：只有 Invalid request(-32600) + 缺字段 才算形态不被接受。
+  assert.equal(isUnsupportedCollaborationModeError({ code: -32000, message: 'runtime exploded' }), false);
+  assert.equal(isUnsupportedCollaborationModeError({ code: -32600, message: 'Invalid request: bad cwd' }), false);
+  assert.equal(isUnsupportedCollaborationModeError(null), false);
 });

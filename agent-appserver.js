@@ -1090,6 +1090,22 @@ export class ThreadRuntime {
           });
         }
         break;
+      case 'reasoning':
+        // 真实 app-server 不发 item/reasoning/* 通知，reasoning 是经 item/started|completed
+        // 送出的一个 item。started 阶段 summary/content 还是空的，等 completed 再出正文，
+        // 否则会先画一张空卡。
+        if (completed) {
+          const text = reasoningItemText(item);
+          if (text) {
+            this.emit('reasoning', {
+              text,
+              channel: 'summary',
+              kind: 'item_completed',
+              itemId: item.id,
+            });
+          }
+        }
+        break;
       case 'fileChange':
         if (completed) {
           this.emit('file_change', {
@@ -1933,6 +1949,27 @@ function protocolErrorMessage(source, fallback) {
   return source?.error?.message
     || source?.message
     || fallback;
+}
+
+// reasoning item 的 summary/content 形态不固定：可能是纯字符串、{text} 或 {content}。
+// 取 summary 优先（那是给人看的摘要），为空再回退 content。
+function reasoningItemText(item) {
+  for (const key of ['summary', 'content']) {
+    const parts = item?.[key];
+    if (!Array.isArray(parts) || !parts.length) continue;
+    const text = parts
+      .map(part => {
+        if (typeof part === 'string') return part;
+        if (typeof part?.text === 'string') return part.text;
+        if (typeof part?.content === 'string') return part.content;
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+    if (text) return truncate(text, TOOL_SUMMARY_CAP);
+  }
+  return '';
 }
 
 function reasoningPayload(params, { text, channel, kind, indexKey }) {
