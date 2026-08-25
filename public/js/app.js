@@ -4,12 +4,18 @@ import { bufferRecoveryEvent, completeRecovery, createRecoveryState } from '/js/
 import { createMessageRequest, messageWirePayload } from '/js/message-request.js';
 import { createMessageOutbox } from '/js/message-outbox.js';
 import { createIndexedDbMessageStore } from '/js/indexeddb-outbox.js';
-import { isDefinitelyUnattempted, isProvisionalInstanceOrphan, requiresManualDisposal } from '/js/outbox-recovery.js';
+import {
+  isDefinitelyUnattempted,
+  isProvisionalInstanceOrphan,
+  requiresManualDisposal,
+  shouldSurfaceInOutboxView,
+} from '/js/outbox-recovery.js';
 import { emitWithAck } from '/js/socket-ack.js';
 import {
   applyThreadStatus,
   mergeThreadList,
   threadStatusPresentation,
+  needResolutionLabel,
 } from '/js/thread-status.js';
 import { resolveComposerPrimaryMode } from '/js/composer-mode.js';
 import { projectLabel } from '/js/project-label.js';
@@ -174,9 +180,13 @@ import {
   let currentInputParts = []; // server-validated mention / skill / imageUrl descriptors
   let instanceList = [];
   let instanceSnapshotReceived = false;
+  let lastConnectErrorNotice = '';
   let currentViewingId = null;
   let offlineUserBubbles = []; // [{text, el}]
-  let renderedOutboxIds = new Set();
+  // 记「这条记录上次是以什么状态画出来的」。只记 id 的话，记录从 pending 变成
+  // needs_reconcile / rejected 后气泡不会重绘——文案停在「弱网等待同步」，重试和
+  // 丢弃按钮也长不出来，用户只有刷新才看得到真实状态。
+  let renderedOutboxStates = new Map();
   let restoringThreadId = null;
   let activeRecovery = null;
   let targetSetupPromise = null;
@@ -532,20 +542,28 @@ import {
         }
       }
       const orphanedRequestIds = new Set(orphanedRequests.map(request => request.clientRequestId));
-      const displayRequests = requests.filter(request => (
-        outboxRequestMatchesView(request) || orphanedRequestIds.has(request.clientRequestId)
-      ));
+      const displayRequests = requests.filter(request => shouldSurfaceInOutboxView(request, {
+        matchesView: outboxRequestMatchesView(request),
+        orphaned: orphanedRequestIds.has(request.clientRequestId),
+      }));
       for (const request of displayRequests) {
-        if (renderedOutboxIds.has(request.clientRequestId)) continue;
+        const renderedState = renderedOutboxStates.get(request.clientRequestId);
+        if (renderedState === request.state) continue;
+        if (renderedState !== undefined) dropRenderedOutboxBubble(request.clientRequestId);
         const payload = messageWirePayload(request);
         const unboundRecovery = orphanedRequestIds.has(request.clientRequestId);
+        // 已失败但属于别的会话的记录也会浮到这里来（否则它会被永久藏起来）。
+        // 标出来，免得用户以为是当前会话发的。
+        const foreignThread = !outboxRequestMatchesView(request) && !unboundRecovery;
         if (request.state === 'queued' && !unboundRecovery) {
-          appendQueuedBubble({ ...payload, ...(request.receipt || {}) });
+          appendQueuedBubble({ ...payload, ...(request.receipt || {}) }, request.state);
         } else {
           appendOfflineBubble(payload, {
             needsReconcile: request.state === 'needs_reconcile',
             unboundRecovery,
             manualDisposal: requiresManualDisposal(request, { orphaned: unboundRecovery }),
+            foreignThread,
+            recordState: request.state,
           });
         }
       }
@@ -565,6 +583,7 @@ import {
 
   socket.on('connect', () => {
     setConnectionPhase('online');
+    lastConnectErrorNotice = '';
     renderConnectionState();
     requestCatchUp();
     startRttMonitor();
@@ -587,7 +606,14 @@ import {
       showAuthPrompt('会话已失效，请重新输入访问口令。');
       return;
     }
-    appendSystem(`连接失败：${err?.message || 'unknown'}`, true);
+    // Socket.IO 断线后会一直重连，每次失败都触发一次 connect_error。逐条往消息区堆
+    // 红条会把真实对话挤出视野（实测断线 53 秒堆了 9 条），而横幅已经在显示「自动
+    // 重连中」并计时——那才是这件事该待的地方。同一个错误只报一次，连上后复位，
+    // 下次断线仍会提示。
+    const message = err?.message || 'unknown';
+    if (message === lastConnectErrorNotice) return;
+    lastConnectErrorNotice = message;
+    appendSystem(`连接失败：${message}`, true);
   });
 
   window.addEventListener('offline', () => {
@@ -751,10 +777,10 @@ import {
       $('reasoning-list'),
       reasoningOptionsForModel(modelRecord).map(option => ({
         ...option,
-        icon: option.id === selectedReasoning ? '●' : '○',
+        icon: option.id === effective.effort ? '●' : '○',
       })),
       'reasoning',
-      selectedReasoning,
+      effective.effort,
     );
     const tiers = serviceTiersForModel(modelRecord);
     const speedLabel = $('speed-section-label');
@@ -771,7 +797,7 @@ import {
           icon: /fast|priority/i.test(`${tier.id} ${tier.name}`) ? '⚡' : '⚪',
         })),
         'speed',
-        selectedServiceTier,
+        effective.serviceTier,
       );
     }
     const bypassList = $('bypass-list');
@@ -1368,7 +1394,11 @@ import {
       if (card) {
         delete pendingApprovalCards[need.needId];
         const actions = card.querySelector('.approval-btns:last-child');
-        if (actions) actions.innerHTML = '<span class="tool-output tool-ok" style="background:transparent;padding:0;">已在其他设备处理</span>';
+        // 按真实原因写文案：超时与被撤销都不是「在其他设备处理」，那句话会把用户
+        // 支使到另一台设备上去找根本不存在的操作记录。
+        if (actions) {
+          actions.innerHTML = `<span class="tool-output tool-ok" style="background:transparent;padding:0;">${escHtml(needResolutionLabel(need.state))}</span>`;
+        }
       }
     }
     renderNeedsYouPanel();
@@ -2516,7 +2546,7 @@ import {
     messagesEl.appendChild(el);
   }
 
-  function appendQueuedBubble(payload) {
+  function appendQueuedBubble(payload, recordState = 'queued') {
     const text = payload.text || '';
     const clientRequestId = payload.clientRequestId || '';
     const offlineIndex = clientRequestId
@@ -2540,7 +2570,7 @@ import {
     if (clientRequestId) el.dataset.clientRequestId = clientRequestId;
     el.innerHTML = `<div class="bubble">${escHtml(text)}<span class="queued-label">Queued #${payload.position || payload.queueLength || 1}</span></div>`;
     messagesEl.appendChild(el);
-    if (clientRequestId) renderedOutboxIds.add(clientRequestId);
+    if (clientRequestId) renderedOutboxStates.set(clientRequestId, recordState);
     queuedUserBubbles.push({ clientRequestId, text, el });
     scrollBottom();
     checkEmptyState();
@@ -2575,10 +2605,10 @@ import {
     checkEmptyState();
   }
 
-  function appendOfflineBubble(payload, { needsReconcile = false, unboundRecovery = false, manualDisposal = false } = {}) {
+  function appendOfflineBubble(payload, { needsReconcile = false, unboundRecovery = false, manualDisposal = false, foreignThread = false, recordState = 'pending' } = {}) {
     const text = payload.text || '';
     const clientRequestId = payload.clientRequestId || '';
-    if (clientRequestId && renderedOutboxIds.has(clientRequestId)) return;
+    if (clientRequestId && renderedOutboxStates.has(clientRequestId)) return;
     const el = document.createElement('div');
     el.className = 'msg user offline';
     el.dataset.text = text;
@@ -2601,7 +2631,8 @@ import {
         : (manualDisposal
           ? '⚠️ 已被运行时拒绝；丢弃后这条会话的队列才会继续'
           : '⏳ 弱网等待同步 (Offline Queue)'));
-    html += `${escHtml(text || (payload.parts?.length ? '(结构化引用)' : '(附件)'))}<span class="offline-label">${deliveryLabel}</span></div>`;
+    const foreignHint = foreignThread ? '<span class="offline-label">↪ 来自其他会话</span>' : '';
+    html += `${escHtml(text || (payload.parts?.length ? '(结构化引用)' : '(附件)'))}${foreignHint}<span class="offline-label">${deliveryLabel}</span></div>`;
     el.innerHTML = html;
     if (needsReconcile && clientRequestId) {
       const retryButton = document.createElement('button');
@@ -2621,9 +2652,9 @@ import {
           if (!replacement) return;
           const bubbleIndex = offlineUserBubbles.findIndex(item => item.clientRequestId === clientRequestId);
           if (bubbleIndex >= 0) offlineUserBubbles.splice(bubbleIndex, 1);
-          renderedOutboxIds.delete(clientRequestId);
+          renderedOutboxStates.delete(clientRequestId);
           el.dataset.clientRequestId = replacement.clientRequestId;
-          renderedOutboxIds.add(replacement.clientRequestId);
+          renderedOutboxStates.set(replacement.clientRequestId, 'pending');
           offlineUserBubbles.push({ clientRequestId: replacement.clientRequestId, text, el });
           const label = el.querySelector('.offline-label');
           if (label) label.textContent = '⏳ 已确认重试，等待发送';
@@ -2657,7 +2688,7 @@ import {
         }
         const bubbleIndex = offlineUserBubbles.findIndex(item => item.clientRequestId === clientRequestId);
         if (bubbleIndex >= 0) offlineUserBubbles.splice(bubbleIndex, 1);
-        renderedOutboxIds.delete(clientRequestId);
+        renderedOutboxStates.delete(clientRequestId);
         el.remove();
         checkEmptyState();
         // 被拒绝的队首会让 drain 停下，丢弃后要立刻推一次，后面的消息才能继续。
@@ -2668,10 +2699,23 @@ import {
       el.querySelector('.bubble')?.appendChild(discardButton);
     }
     messagesEl.appendChild(el);
-    if (clientRequestId) renderedOutboxIds.add(clientRequestId);
+    if (clientRequestId) renderedOutboxStates.set(clientRequestId, recordState);
     offlineUserBubbles.push({ clientRequestId, text, el });
     scrollBottom();
     checkEmptyState();
+  }
+
+  // 状态变了要重画，先把上一版气泡连同它的登记一起拆掉。
+  function dropRenderedOutboxBubble(clientRequestId) {
+    if (!clientRequestId) return;
+    for (const list of [offlineUserBubbles, queuedUserBubbles]) {
+      const idx = list.findIndex(item => item.clientRequestId === clientRequestId);
+      if (idx >= 0) {
+        list[idx].el?.remove();
+        list.splice(idx, 1);
+      }
+    }
+    renderedOutboxStates.delete(clientRequestId);
   }
 
   function promoteOfflineBubble(clientRequestId) {
@@ -3242,7 +3286,7 @@ import {
     pendingApprovalCards = {};
     queuedUserBubbles = [];
     offlineUserBubbles = [];
-    renderedOutboxIds = new Set();
+    renderedOutboxStates = new Map();
     followTranscript = true;
     jumpToLatestBtn.hidden = true;
     setBusy(false);
@@ -3508,10 +3552,14 @@ import {
     if (hasParts) currentInputParts = [];
     renderAttachTray();
     applyComposerMode();
-    appendOfflineBubble(messageWirePayload(request));
+    appendOfflineBubble(messageWirePayload(request), { recordState: request.state });
+    // drain 里可能把这条记录改成 needs_reconcile / rejected（比如 ACK 超时、被运行时
+    // 拒绝）。状态变了必须回来重画一次，否则气泡会一直停在「弱网等待同步」，重试和
+    // 丢弃按钮也长不出来——用户只有刷新才看得到真实状态。
+    // 这个调用点在 syncOutboxViewOnce 之外，不会和它末尾的 drain 递归。
     drainMessageOutbox({
       shouldSend: outboxRequestMatchesView,
-    });
+    }).then(() => syncOutboxView());
   }
 
   function fallbackCopyText(text) {

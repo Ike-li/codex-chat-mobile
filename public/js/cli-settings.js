@@ -393,15 +393,21 @@ export function saveCliSettings(storage, settings) {
 // status 缺席（还没连上）时不编造值：留空，让服务端沿用自己的默认。
 export function effectiveComposerSettings(stored = {}, { status = null, models = [] } = {}) {
   const source = stored && typeof stored === 'object' ? stored : {};
+  const model = resolveSelectedModel(source.model || '', models);
+  // 拿到模型档案才知道它支持哪些思考强度与服务档位；拿不到就不补，留空让服务端用自己的
+  // 默认——和 approvalPolicy / sandbox 的处理保持一致，绝不编造界面上的选中态。
+  const record = visibleModels(models).find(item => modelId(item) === model) || null;
   return {
     ...source,
-    model: resolveSelectedModel(source.model || '', models),
+    model,
     approvalPolicy: normalizeApprovalPolicy(source.approvalPolicy)
       || normalizeApprovalPolicy(status?.approvalPolicy)
       || '',
     sandbox: normalizeSandbox(source.sandbox)
       || normalizeSandbox(status?.sandbox)
       || '',
+    effort: record ? clampEffortForModel(source.effort, record) : '',
+    serviceTier: record ? clampServiceTierForModel(source.serviceTier, record) : '',
   };
 }
 

@@ -5,6 +5,7 @@ import {
   isDefinitelyUnattempted,
   isProvisionalInstanceOrphan,
   requiresManualDisposal,
+  shouldSurfaceInOutboxView,
 } from '../public/js/outbox-recovery.js';
 
 test('provisional outbox targets become orphans only after an authoritative instance snapshot', () => {
@@ -77,4 +78,38 @@ test('an unattempted orphan is the only unbound record whose recovery promise is
   assert.equal(isDefinitelyUnattempted(unattempted) && !requiresManualDisposal(unattempted, { orphaned: true }), true);
   assert.equal(isDefinitelyUnattempted(attempted), false);
   assert.equal(requiresManualDisposal(attempted, { orphaned: true }), true);
+});
+
+// 真实场景复现：离线时在 thread A 发一条消息 → 服务器重启（thread A 随之消失）→
+// 重连后这条消息被拒。此时它既不匹配当前视图（threadId 对不上），也不是
+// provisional 孤儿（isProvisionalInstanceOrphan 见到 threadId 就直接 false），
+// 于是两个渲染条件都不满足——气泡根本不画出来。用户不知道消息没发出去，
+// 也没有任何办法清掉它，而它还留在 outbox 里占位。
+test('a failed record stays visible even when it belongs to another thread', () => {
+  const rejected = { state: 'rejected', attempts: 1, payload: { threadId: 'thr-gone', text: 'x' } };
+  const unknown = { state: 'needs_reconcile', attempts: 1, payload: { threadId: 'thr-gone', text: 'x' } };
+  const waiting = { state: 'pending', payload: { threadId: 'thr-gone', text: 'x' } };
+
+  // 不匹配当前视图、也不是 provisional 孤儿，但已经失败——必须浮出来给用户处置。
+  assert.equal(shouldSurfaceInOutboxView(rejected, { matchesView: false, orphaned: false }), true);
+  assert.equal(shouldSurfaceInOutboxView(unknown, { matchesView: false, orphaned: false }), true);
+
+  // 还在正常排队的记录不属于当前视图就不打扰用户，它会自己发出去。
+  assert.equal(shouldSurfaceInOutboxView(waiting, { matchesView: false, orphaned: false }), false);
+
+  // 属于当前视图的一律显示，不管什么状态。
+  assert.equal(shouldSurfaceInOutboxView(waiting, { matchesView: true, orphaned: false }), true);
+  assert.equal(shouldSurfaceInOutboxView(rejected, { matchesView: true, orphaned: false }), true);
+
+  // 既有的 provisional 孤儿路径不能退化。
+  assert.equal(shouldSurfaceInOutboxView(waiting, { matchesView: false, orphaned: true }), true);
+
+  assert.equal(shouldSurfaceInOutboxView(null, { matchesView: false, orphaned: false }), false);
+
+  // provisional 记录（只有 instanceId、没有 threadId）不能靠这条规则抢先渲染：
+  // 它的归属要等实例快照到达后才判得出来，提前画会被误标成「来自其他会话」，
+  // 而正确的文案应该是「原会话目标已失效」。这类记录交给孤儿判定负责。
+  const provisional = { state: 'needs_reconcile', attempts: 1, payload: { instanceId: 'inst-old', text: 'x' } };
+  assert.equal(shouldSurfaceInOutboxView(provisional, { matchesView: false, orphaned: false }), false);
+  assert.equal(shouldSurfaceInOutboxView(provisional, { matchesView: false, orphaned: true }), true);
 });

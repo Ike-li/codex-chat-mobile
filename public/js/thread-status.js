@@ -54,3 +54,14 @@ export function threadStatusPresentation(status) {
   }
   return { kind: 'idle', label: 'idle', active: false };
 }
+
+// 一张挂着的审批卡为什么不再 pending，原因有三种（取值见 needs-you-registry.js）。
+// 此前界面一律写「已在其他设备处理」，但超时和被撤销时这句话是假的——用户会跑去另一台
+// 设备找根本不存在的操作记录。未知状态只陈述结果，不编造原因。
+export function needResolutionLabel(state) {
+  if (state === 'pending') return '';
+  if (state === 'resolved') return '已在其他设备处理';
+  if (state === 'expired') return '已超时失效';
+  if (state === 'revoked') return '已被撤销';
+  return '已失效';
+}

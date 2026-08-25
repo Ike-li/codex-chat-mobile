@@ -886,7 +886,7 @@ test('confirmed unknown retries bind a fresh request to the current view lane', 
   assert.ok(start >= 0 && end > start);
   assert.match(handler, /const target = await ensureViewTarget\(\)/);
   assert.match(handler, /retryAfterConfirmation\(clientRequestId, \{ target \}\)/);
-  assert.match(handler, /renderedOutboxIds\.delete\(clientRequestId\)/);
+  assert.match(handler, /renderedOutboxStates\.delete\(clientRequestId\)/);
   assert.match(handler, /dataset\.clientRequestId = replacement\.clientRequestId/);
   assert.match(handler, /offlineUserBubbles\.splice\(/);
   assert.match(handler, /shouldSend: outboxRequestMatchesView/);
@@ -1065,7 +1065,7 @@ test('a stuck outbox record tells the truth and offers the user a way out', () =
   assert.match(bubble, /outbox-discard-btn/);
   assert.match(bubble, /confirmDialog\.confirm\(/);
   assert.match(bubble, /messageOutbox\.discard\(/);
-  assert.match(bubble, /renderedOutboxIds\.delete\(/);
+  assert.match(bubble, /renderedOutboxStates\.delete\(/);
   assert.match(bubble, /el\.remove\(\)/);
 
   assert.match(css, /\.outbox-discard-btn\s*\{/);
@@ -1107,10 +1107,80 @@ test('composer shows and sends the same effective settings', () => {
   assert.match(renderBody, /effectiveTurnSettings\(\)/);
   assert.doesNotMatch(renderBody, /'approval', selectedApproval\)/);
   assert.doesNotMatch(renderBody, /'sandbox', selectedSandbox\)/);
+  // 五组必须一视同仁。当初只接了 approval/sandbox，漏掉思考强度与服务档位，
+  // 结果面板里前三组有勾、后两组一个选中都没有。
+  assert.doesNotMatch(renderBody, /'reasoning',\s*selectedReasoning,/);
+  assert.doesNotMatch(renderBody, /'speed',\s*selectedServiceTier,/);
+  assert.match(renderBody, /'reasoning',\s*effective\.effort,/);
+  assert.match(renderBody, /'speed',\s*effective\.serviceTier,/);
+  assert.doesNotMatch(renderBody, /option\.id === selectedReasoning/);
 
   // 持久化仍然只存用户显式选过的值——把服务端默认固化进 localStorage 会让
   // 之后服务端改了默认也跟不上。
   assert.match(appJs, /saveCliSettings\(localStorage, currentTurnSettings\(\)\)/);
+});
+
+test('an outbox bubble is redrawn when its state changes', () => {
+  const start = appJs.indexOf('async function syncOutboxViewOnce()');
+  const end = appJs.indexOf('syncVisualViewport();', start);
+  const body = appJs.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+
+  // 旧写法只按 id 去重，记录从 pending 变成 needs_reconcile / rejected 后气泡不会重绘：
+  // 文案停在「弱网等待同步」，重试与丢弃按钮也长不出来，用户只能靠刷新才看得到真实状态。
+  assert.doesNotMatch(body, /if \(renderedOutboxStates\.has\(request\.clientRequestId\)\) continue;/);
+  // 去重键必须带上状态，状态变了就重画。
+  assert.match(appJs, /renderedOutboxStates/);
+  assert.match(body, /renderedOutboxStates\.get\(/);
+  assert.match(body, /dropRenderedOutboxBubble\(/);
+
+  // 光有状态比对不够：状态是在 drain 内部变的，得有人触发重新渲染。
+  const sendStart = appJs.indexOf('async function sendMessage(');
+  const sendBody = appJs.slice(sendStart, sendStart + 6000);
+  assert.match(sendBody, /drainMessageOutbox\([\s\S]{0,80}\)\.then\(\(\) => syncOutboxView\(\)\)/);
+});
+
+test('reconnect attempts do not spam the transcript with error rows', () => {
+  const start = appJs.indexOf("socket.on('connect_error'");
+  const end = appJs.indexOf("window.addEventListener('offline'", start);
+  const body = appJs.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+
+  // Socket.IO 断线后会持续重连，每次失败都触发一次 connect_error。逐条往消息区堆红条
+  // 会把真实对话挤出视野（实测断线 53 秒堆了 9 条），而横幅已经在显示「自动重连中」并计时。
+  assert.match(body, /lastConnectErrorNotice/);
+  assert.match(body, /if \(message === lastConnectErrorNotice\) return;/);
+  // unauthorized 仍要立刻打断并要求重新登录，不能被去重逻辑吞掉。
+  assert.ok(body.indexOf("unauthorized") < body.indexOf('lastConnectErrorNotice'),
+    'unauthorized 分支必须排在去重之前');
+
+  // 重连成功后要复位，否则下次断线就再也不提示了。
+  assert.match(appJs, /lastConnectErrorNotice = ''/);
+});
+
+test('a failed outbox record is never hidden just because the view moved on', () => {
+  assert.match(appJs, /shouldSurfaceInOutboxView/);
+  const start = appJs.indexOf('async function syncOutboxViewOnce()');
+  const end = appJs.indexOf('syncVisualViewport();', start);
+  const body = appJs.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  // 旧的两条件过滤会把「带 threadId 但 thread 已消失」的失败记录整个藏起来，
+  // 用户既看不到消息没发出去，也没有入口清掉它。
+  assert.doesNotMatch(body, /outboxRequestMatchesView\(request\) \|\| orphanedRequestIds\.has\(request\.clientRequestId\)\s*\)\);/);
+  assert.match(body, /shouldSurfaceInOutboxView\(request, \{/);
+  // 浮出来的外来记录必须标明它不属于当前会话，否则用户会以为是本会话发的。
+  assert.match(body, /foreignThread/);
+});
+
+test('a stale approval card states the real reason it went away', () => {
+  assert.match(appJs, /needResolutionLabel/);
+  const start = appJs.indexOf('function handleNeedsYouChanged(');
+  const end = appJs.indexOf('function openPendingNeedsYouDeepLink(', start);
+  const body = appJs.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  // 不能再对所有非 pending 状态一律写死「已在其他设备处理」：超时和撤销时那是假话。
+  assert.doesNotMatch(body, /已在其他设备处理/);
+  assert.match(body, /needResolutionLabel\(need\.state\)/);
 });
 
 test('attachment tray clears its DOM when the last chip is removed', () => {

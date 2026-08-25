@@ -360,14 +360,16 @@ test('effective composer settings fill server defaults so the UI and the wire ag
   assert.equal(offline.sandbox, '');
   assert.equal(offline.model, '');
 
-  // effort / serviceTier / collaborationMode 原样透传，不被这层动。
+  // collaborationMode 原样透传，不被这层动。
+  // effort / serviceTier 则按所选模型的能力收敛：这两个 fixture 模型没声明任何服务档位，
+  // 所以 'priority' 不该被透传出去——否则界面会显示一个该模型根本不存在的档位。
   const passthrough = effectiveComposerSettings(
     { effort: 'high', serviceTier: 'priority', collaborationMode: 'plan' },
     { status, models },
   );
-  assert.equal(passthrough.effort, 'high');
-  assert.equal(passthrough.serviceTier, 'priority');
   assert.equal(passthrough.collaborationMode, 'plan');
+  assert.equal(passthrough.effort, 'high', '模型未声明支持列表时回落到通用档位，high 合法');
+  assert.equal(passthrough.serviceTier, '', '模型不支持任何服务档位，不能透传非法值');
 });
 
 // thread/settings/update 不在 stable v2 协议里（protocol:check 把它列在实验白名单），
@@ -393,4 +395,43 @@ test('a partial thread/settings/update rejection counts as unsupported, not a ha
   assert.equal(isUnsupportedCollaborationModeError({ code: -32000, message: 'runtime exploded' }), false);
   assert.equal(isUnsupportedCollaborationModeError({ code: -32600, message: 'Invalid request: bad cwd' }), false);
   assert.equal(isUnsupportedCollaborationModeError(null), false);
+});
+
+// 同一个缺陷的第二半：effectiveComposerSettings 当初只补了 model / approvalPolicy /
+// sandbox，漏了 effort 与 serviceTier。结果设置面板里前三组都有勾，思考强度和服务档位
+// 却一个选中都没有——和修复前的 approval/sandbox 一模一样。
+test('effective settings also fill reasoning effort and service tier', () => {
+  const models = [{
+    model: 'gpt-5.6',
+    isDefault: true,
+    defaultReasoningEffort: 'medium',
+    supportedReasoningEfforts: [
+      { reasoningEffort: 'low' }, { reasoningEffort: 'medium' }, { reasoningEffort: 'high' },
+    ],
+    serviceTiers: [{ id: 'standard', name: 'Standard' }, { id: 'fast', name: 'Fast' }],
+  }];
+  const status = { approvalPolicy: 'on-request', sandbox: 'read-only' };
+
+  // 没选过：回落到该模型自己的默认档，而不是留空让界面一个勾都没有。
+  const fresh = effectiveComposerSettings({}, { status, models });
+  assert.equal(fresh.effort, 'medium');
+
+  // 选过就以用户为准。
+  assert.equal(effectiveComposerSettings({ effort: 'high' }, { status, models }).effort, 'high');
+
+  // 选了该模型不支持的档位，要收敛回合法值，不能把非法值透传给界面。
+  assert.equal(effectiveComposerSettings({ effort: 'xhigh' }, { status, models }).effort, 'medium');
+
+  // 服务档位：模型支持时才可能有值；用户选过且合法就保留。
+  assert.equal(effectiveComposerSettings({ serviceTier: 'fast' }, { status, models }).serviceTier, 'fast');
+  assert.equal(effectiveComposerSettings({ serviceTier: 'bogus' }, { status, models }).serviceTier, '');
+
+  // 模型不支持服务档位时，不能凭空造一个出来。
+  const noTiers = [{ model: 'gpt-5.4', isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: 'low' }] }];
+  assert.equal(effectiveComposerSettings({}, { status, models: noTiers }).serviceTier, '');
+
+  // 还没连上、拿不到模型列表时不编造——与 approvalPolicy / sandbox 的处理保持一致。
+  const offline = effectiveComposerSettings({}, { status: null, models: [] });
+  assert.equal(offline.effort, '');
+  assert.equal(offline.serviceTier, '');
 });
