@@ -222,7 +222,8 @@ test('service tier labels fall back to upstream text when the id or wording is u
 test('empty settings do not invent CLI overrides that would clobber config.toml', () => {
   assert.deepEqual(sanitizeTurnOverrides({}), {});
   assert.deepEqual(buildTurnStartOverrides({}), {});
-  assert.equal(formatPermissionBadge({}), '🛡 配置默认');
+  // badge 保持纯字符串:图标只出现在 popover/消息流 SVG 槽,不塞进文本节点。
+  assert.equal(formatPermissionBadge({}), '配置默认');
   assert.equal(formatModelBadge({}), '');
 });
 
@@ -233,15 +234,15 @@ test('badges show CLI-faithful model, effort, approval and sandbox labels', () =
   );
   assert.equal(
     formatModelBadge({ model: 'gpt-5.4-mini', effort: 'high', serviceTier: 'fast' }),
-    '5.4-mini 高 · ⚡',
+    '5.4-mini 高 · 加速',
   );
   assert.equal(
     formatPermissionBadge({ approvalPolicy: 'on-request', sandbox: 'workspace-write' }),
-    '🖐️ 按请求批准 · 工作区可写',
+    '按请求批准 · 工作区可写',
   );
   assert.equal(
     formatPermissionBadge({ approvalPolicy: 'never', sandbox: 'danger-full-access' }),
-    '⚠️ 从不询问 · 完全访问',
+    '从不询问 · 完全访问',
   );
 });
 

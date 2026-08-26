@@ -1,4 +1,5 @@
 import { diffLineModels } from '/js/diff-lines.js';
+import { icon } from '/js/icons.js';
 
 function decodeBase64Text(data) {
   try {
@@ -88,7 +89,7 @@ export function createWorkspacePanel({
           ? ''
           : `<span class="workspace-row-action" data-mention="${escHtml(child)}">引用</span>`;
         return `<div class="workspace-row" data-kind="${kind}" data-path="${escHtml(child)}">
-          <span>${entry.isDirectory ? '📁' : '📄'} ${escHtml(entry.fileName)}</span>
+          <span class="workspace-entry-label">${entry.isDirectory ? icon('folder') : icon('file')} ${escHtml(entry.fileName)}</span>
           ${mention}
         </div>`;
       }).join('');

@@ -723,9 +723,10 @@ test('hover affordances are gated behind (hover: hover) and touch targets keep a
 
   // 陷阱 B:.popover-item.selected 与 .popover-item:hover 同特异度(0,2,0)且在其后,
   // 导致悬停一个已选中项反而比未选中更浅。用 0,3,0 的独立规则修掉,与源序无关。
-  assert.match(css, /\.popover-item\.selected\s*\{[^}]*background:\s*rgba\(0,0,0,0\.02\)/s);
-  assert.match(hoverBlock, /\.popover-item:hover\s*\{[^}]*background:\s*rgba\(0,0,0,0\.03\)/s);
-  assert.match(hoverBlock, /\.popover-item\.selected:hover\s*\{[^}]*background:\s*rgba\(0,0,0,0\.06\)/s);
+  // wash 必须走 token:深色下 rgba(0,0,0,…) 几乎看不见。
+  assert.match(css, /\.popover-item\.selected\s*\{[^}]*background:\s*var\(--hover-wash\)/s);
+  assert.match(hoverBlock, /\.popover-item:hover\s*\{[^}]*background:\s*var\(--hover-wash-hover\)/s);
+  assert.match(hoverBlock, /\.popover-item\.selected:hover\s*\{[^}]*background:\s*var\(--hover-wash-strong\)/s);
 
   // 陷阱 C:这 5 个宿主原本只有 hover 一种反馈,门控后在移动端会变成零点按反馈。
   for (const selector of [
@@ -1217,4 +1218,120 @@ test('attachment tray clears its DOM when the last chip is removed', () => {
   // 且残留 chip 的 onclick 闭包还指着旧的数组下标。
   const emptyBranch = body.slice(0, body.indexOf('attachTray.hidden = false'));
   assert.match(emptyBranch, /attachTray\.innerHTML = ''/);
+});
+
+test('dark-mode hard-coded washes and on-fill colours live in theme tokens', () => {
+  // 组件层禁止再开 prefers-color-scheme:深浅差异全部收敛到 :root token。
+  // 这些 token 修的是已知在深色下发亮/不可读的硬编码残留。
+  const supportsAt = css.indexOf('@supports (color: color-mix(');
+  const darkStart = css.indexOf('@media (prefers-color-scheme: dark)');
+  assert.ok(darkStart >= 0 && supportsAt > darkStart);
+  const lightRoot = css.slice(0, darkStart);
+  const darkRoot = css.slice(darkStart, supportsAt);
+  const componentCss = css.slice(css.indexOf('* { box-sizing'));
+
+  for (const [token, light, dark] of [
+    ['--on-accent', /#fff(?:fff)?/i, /#0d0d0d/i],
+    ['--on-accent-text', /#fff(?:fff)?/i, /#fff(?:fff)?/i],
+    ['--on-error', /#fff(?:fff)?/i, /#fff(?:fff)?/i],
+    ['--glass', /rgba\(\s*255\s*,\s*255\s*,\s*255/i, /rgba\(\s*(?:28|255)/i],
+    ['--glass-soft', /rgba\(\s*255\s*,\s*255\s*,\s*255/i, /rgba\(\s*(?:28|255)/i],
+    ['--scrollbar-thumb', /rgba\(\s*0\s*,\s*0\s*,\s*0/i, /rgba\(\s*255\s*,\s*255\s*,\s*255/i],
+    ['--spinner-track', /rgba\(\s*0\s*,\s*0\s*,\s*0/i, /rgba\(\s*255\s*,\s*255\s*,\s*255/i],
+    ['--error-surface', /#fdf0f0/i, /#[0-9a-f]{3,8}/i],
+    ['--error-border', /#f[0-9a-f]{5}/i, /#[0-9a-f]{3,8}/i],
+    // 深色文字档必须比基色 #df1c1c 更亮:后者 on --error-surface #3a1a1a 只有 3.22:1。
+    ['--error-text', /#df1c1c/i, /#ff8888/i],
+    ['--hover-wash', /rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\.02\s*\)/i, /rgba\(\s*255\s*,\s*255\s*,\s*255/i],
+    ['--hover-wash-hover', /rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\.03\s*\)/i, /rgba\(\s*255\s*,\s*255\s*,\s*255/i],
+    ['--hover-wash-strong', /rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\.06\s*\)/i, /rgba\(\s*255\s*,\s*255\s*,\s*255/i],
+  ]) {
+    assert.match(lightRoot, new RegExp(`${token}:\\s*${light.source}`, 'i'), `${token} 浅色档`);
+    assert.match(darkRoot, new RegExp(`${token}:\\s*${dark.source}`, 'i'), `${token} 深色档`);
+  }
+
+  // 组件只引用 token,不再写死白玻璃 / 白字 / 浅粉面 / 死黑 FAB / 黑拇指。
+  assert.match(componentCss, /\.slash-popup\s*\{[^}]*background:\s*var\(--glass\)/s);
+  assert.match(componentCss, /#attach-tray\s*\{[^}]*background:\s*var\(--glass-soft\)/s);
+  assert.match(componentCss, /#confirm-ok\s*\{[^}]*color:\s*var\(--on-accent\)/s);
+  assert.match(componentCss, /#confirm-ok\[data-danger="true"\]\s*\{[^}]*color:\s*var\(--on-error\)/s);
+  assert.match(componentCss, /\.approve-btn\s*\{[^}]*color:\s*var\(--on-accent-text\)/s);
+  assert.match(componentCss, /\.drawer-fab\s*\{[^}]*background:\s*var\(--accent\)/s);
+  assert.match(componentCss, /\.drawer-fab\s*\{[^}]*color:\s*var\(--on-accent\)/s);
+  assert.match(componentCss, /\.mini-spinner\s*\{[^}]*border:\s*2px\s+solid\s+var\(--spinner-track\)/s);
+  assert.match(componentCss, /\.error-msg \.bubble\s*\{[^}]*background:\s*var\(--error-surface\)/s);
+  assert.match(componentCss, /\.error-msg \.bubble\s*\{[^}]*color:\s*var\(--error-text\)/s);
+  assert.match(componentCss, /\.error-msg \.bubble\s*\{[^}]*border:\s*1px\s+solid\s+var\(--error-border\)/s);
+  assert.match(componentCss, /\.deny-btn\s*\{[^}]*color:\s*var\(--error-text\)/s);
+  assert.match(componentCss, /\.deny-btn\s*\{[^}]*border-color:\s*var\(--error-border\)/s);
+  assert.match(componentCss, /\.deny-btn:active\s*\{[^}]*background:\s*var\(--error-surface\)/s);
+  assert.match(componentCss, /\.native-danger\s*\{[^}]*border-color:\s*var\(--error-border\)/s);
+  assert.match(componentCss, /\.command-card\[data-ok="true"\]\s*\{[^}]*border-color:\s*var\(--success-border\)/s);
+  assert.match(componentCss, /\.command-card\[data-ok="false"\]\s*\{[^}]*border-color:\s*var\(--error-border\)/s);
+
+  // 滚动条拇指提到 :root,组件只消费变量(局部再声明会盖掉深色档)。
+  assert.match(lightRoot, /--scrollbar-thumb:/);
+  assert.doesNotMatch(
+    componentCss,
+    /#messages,\s*\.tool-output\s*\{[^}]*--scrollbar-thumb:\s*rgba\(\s*0/s,
+    'scrollbar-thumb 不应在组件规则里写死浅色 rgba',
+  );
+
+  // 防回潮:这些字面量曾是深色事故源。
+  for (const literal of [
+    'rgba(255, 255, 255, 0.9)',
+    'rgba(255,255,255,0.6)',
+    'rgba(0, 0, 0, 0.1)', // mini-spinner 旧轨道
+  ]) {
+    assert.ok(!componentCss.includes(literal), `组件规则不应再含 ${literal}`);
+  }
+  assert.doesNotMatch(componentCss, /\.slash-popup\s*\{[^}]*background:\s*rgba\(255/s);
+  assert.doesNotMatch(componentCss, /#confirm-ok\s*\{[^}]*color:\s*#fff/s);
+  assert.doesNotMatch(componentCss, /\.drawer-fab\s*\{[^}]*background:\s*#0d0d0d/s);
+});
+
+
+test('type and space scales live in :root tokens and chrome prefers them', () => {
+  const rootBlock = css.slice(0, css.indexOf('@media (prefers-color-scheme: dark)'));
+  for (const [token, px] of [
+    ['--font-2xs', '10px'],
+    ['--font-xs', '11px'],
+    ['--font-sm', '12px'],
+    ['--font-md', '13px'],
+    ['--font-body', '14px'],
+    ['--font-user', '15px'],
+    ['--font-lg', '16px'],
+    ['--space-1', '4px'],
+    ['--space-2', '6px'],
+    ['--space-3', '8px'],
+    ['--space-4', '10px'],
+    ['--space-5', '12px'],
+    ['--space-6', '14px'],
+    ['--space-7', '16px'],
+    ['--space-8', '20px'],
+    ['--space-9', '24px'],
+  ]) {
+    assert.match(rootBlock, new RegExp(`${token}:\\s*${px}`), `${token} 应声明为 ${px}`);
+  }
+
+  // 等价值迁移后,10–16px 字号应几乎全部走 token;白名单留给极少数装饰/几何例外。
+  const bare = [...css.matchAll(/font-size:\s*(10|11|12|13|14|15|16)px/g)];
+  assert.ok(
+    bare.length <= 3,
+    `10–16px 裸 font-size 应 ≤3(实际 ${bare.length})——请改用 var(--font-*)`,
+  );
+  assert.match(css, /font-size:\s*var\(--font-user\)/);
+  assert.match(css, /font-size:\s*var\(--font-sm\)/);
+  assert.match(css, /font-size:\s*var\(--font-xs\)/);
+});
+
+test('ui-icon is an inline 1em glyph so mixed text does not wrap or blow up', () => {
+  // display:block 会让非 flex 宿主(error bubble / plan step / attach chip / push 钮)
+  // 把 SVG 单独占一行;没有默认宽高时,未进白名单的宿主(设备授权标题)会落到 UA 的 300×150。
+  const componentCss = css.slice(css.indexOf('* { box-sizing'));
+  const uiIcon = componentCss.match(/^\.ui-icon\s*\{[^}]*\}/m)?.[0] || '';
+  assert.match(uiIcon, /display:\s*inline-block/, '.ui-icon 默认必须是 inline-block');
+  assert.match(uiIcon, /width:\s*1em/, '.ui-icon 默认宽 1em,跟随宿主字号');
+  assert.match(uiIcon, /height:\s*1em/, '.ui-icon 默认高 1em');
+  assert.doesNotMatch(uiIcon, /display:\s*block/, '.ui-icon 不得默认 display:block');
 });

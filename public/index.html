@@ -32,7 +32,7 @@
 
 <!-- Device auth waiting screen -->
 <div id="device-auth">
-  <h2>⏳ 等待设备授权</h2>
+  <h2><span data-icon="hourglass"></span> 等待设备授权</h2>
   <p>请在服务器端按<strong>回车键</strong>批准此设备，或运行：</p>
   <div id="device-id-display"></div>
   <p style="font-size:12px;color:var(--text-muted)">node scripts/device.js approve &lt;ID&gt;</p>
@@ -52,7 +52,7 @@
     <div id="drawer-projects"></div>
   </div>
   <div id="drawer-tools" hidden>
-    <div class="drawer-section-label">🛠 工具面板</div>
+    <div class="drawer-section-label"><span class="drawer-section-icon" data-icon="tools"></span> 工具面板</div>
     <div id="native-controls">
       <button id="native-thread-refresh" class="native-control-btn" title="刷新原生会话">Threads</button>
       <button id="native-compact-btn" class="native-control-btn" title="压缩当前上下文">Compact</button>
@@ -69,7 +69,7 @@
   </div>
   <!-- Floating FAB inside drawer -->
   <button id="drawer-fab-new" class="drawer-fab">
-    <span class="fab-icon">📝</span>
+    <span class="fab-icon" data-icon="plus"></span>
     <span class="fab-text">新会话</span>
   </button>
   <button id="push-subscribe-btn" type="button" hidden>开启推送通知</button>
@@ -130,7 +130,7 @@
 </div>
 
 <div id="conn-banner" hidden role="status" data-testid="conn-banner">
-  <span id="conn-banner-spinner" hidden aria-hidden="true">⚙</span>
+  <span id="conn-banner-spinner" hidden aria-hidden="true" data-icon="gear"></span>
   <span id="conn-banner-text"></span>
   <span id="conn-banner-detail"></span>
   <button type="button" id="conn-banner-retry" hidden>立即重试</button>
@@ -155,19 +155,19 @@
   <p id="empty-project" class="empty-project" hidden></p>
   <div class="suggestions-grid">
     <button type="button" class="suggestion-card" data-prompt="探索并理解当前项目的结构和关键文件">
-      <span class="suggestion-icon">⌕</span>
+      <span class="suggestion-icon" data-icon="search"></span>
       <span class="suggestion-text">探索并理解代码</span>
     </button>
     <button type="button" class="suggestion-card" data-prompt="在当前项目里构建一个新功能、应用或工具">
-      <span class="suggestion-icon">⚒</span>
+      <span class="suggestion-icon" data-icon="hammer"></span>
       <span class="suggestion-text">构建新功能、应用或工具</span>
     </button>
     <button type="button" class="suggestion-card" data-prompt="审查当前代码并提出具体的修改建议">
-      <span class="suggestion-icon">✎</span>
+      <span class="suggestion-icon" data-icon="pencil"></span>
       <span class="suggestion-text">审查代码并提出修改建议</span>
     </button>
     <button type="button" class="suggestion-card" data-prompt="排查当前项目里的问题和失败，并给出修复">
-      <span class="suggestion-icon">⚠</span>
+      <span class="suggestion-icon" data-icon="warning"></span>
       <span class="suggestion-text">修复问题和失败</span>
     </button>
   </div>
@@ -178,49 +178,49 @@
 <!-- Slash Autocomplete Popup -->
 <div id="slash-popup" class="slash-popup">
   <div class="slash-item" data-cmd="/help">
-    <span class="slash-icon">🧭</span>
+    <span class="slash-icon" data-icon="compass"></span>
     <div class="slash-details">
       <span class="slash-name">/help</span>
       <span class="slash-desc">显示远程编排器的命令和说明</span>
     </div>
   </div>
   <div class="slash-item" data-cmd="/status">
-    <span class="slash-icon">📊</span>
+    <span class="slash-icon" data-icon="chart"></span>
     <div class="slash-details">
       <span class="slash-name">/status</span>
       <span class="slash-desc">显示会话、目录及上下文使用情况</span>
     </div>
   </div>
   <div class="slash-item" data-cmd="/plan">
-    <span class="slash-icon">📋</span>
+    <span class="slash-icon" data-icon="clipboard"></span>
     <div class="slash-details">
       <span class="slash-name">/plan</span>
       <span class="slash-desc">切换到计划模式，不发送消息</span>
     </div>
   </div>
   <div class="slash-item" data-cmd="/diff">
-    <span class="slash-icon">🔍</span>
+    <span class="slash-icon" data-icon="search"></span>
     <div class="slash-details">
       <span class="slash-name">/diff</span>
       <span class="slash-desc">查看当前工作目录下的文件差异</span>
     </div>
   </div>
   <div class="slash-item" data-cmd="/review">
-    <span class="slash-icon">📝</span>
+    <span class="slash-icon" data-icon="notepad"></span>
     <div class="slash-details">
       <span class="slash-name">/review</span>
       <span class="slash-desc">启动代码库的代码审查和提出建议</span>
     </div>
   </div>
   <div class="slash-item" data-cmd="/compact">
-    <span class="slash-icon">🧹</span>
+    <span class="slash-icon" data-icon="broom"></span>
     <div class="slash-details">
       <span class="slash-name">/compact</span>
       <span class="slash-desc">清空上下文以释放 Token 空间</span>
     </div>
   </div>
   <div class="slash-item" data-cmd="/permissions">
-    <span class="slash-icon">🛡️</span>
+    <span class="slash-icon" data-icon="shield"></span>
     <div class="slash-details">
       <span class="slash-name">/permissions</span>
       <span class="slash-desc">查看或修改当前的安全权限设定</span>
@@ -290,7 +290,7 @@
       <div class="popover-section-label">会话模式</div>
       <div class="popover-list" id="mode-list">
         <div class="popover-item selected" data-mode="default">
-          <span class="popover-item-icon">💬</span>
+          <span class="popover-item-icon" data-icon="chat"></span>
           <div class="popover-item-details">
             <span class="popover-item-title">对话模式 (Chat)</span>
             <span class="popover-item-desc">常规双向问答与代码编写交互</span>
@@ -298,7 +298,7 @@
           <span class="popover-item-check">✓</span>
         </div>
         <div class="popover-item" data-mode="plan">
-          <span class="popover-item-icon">📋</span>
+          <span class="popover-item-icon" data-icon="clipboard"></span>
           <div class="popover-item-details">
             <span class="popover-item-title">计划模式 (Plan)</span>
             <span class="popover-item-desc">只规划、提问，不改代码或执行命令</span>

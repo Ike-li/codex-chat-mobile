@@ -51,6 +51,7 @@ import {
   serviceTiersForModel,
   visibleModels,
 } from '/js/cli-settings.js';
+import { icon, hydrateIcons } from '/js/icons.js';
 
 (function() {
   const $ = id => document.getElementById(id);
@@ -577,6 +578,7 @@ import {
   }
 
   syncVisualViewport();
+  hydrateIcons();
   window.addEventListener('resize', syncVisualViewport);
   window.visualViewport?.addEventListener('resize', syncVisualViewport);
   window.visualViewport?.addEventListener('scroll', syncVisualViewport);
@@ -743,11 +745,18 @@ import {
     });
   }
 
+  function popoverIconHtml(item) {
+    if (item.iconName) return icon(item.iconName);
+    // 几何符(●○✓⚪)保留为文本;其余未知字符串转义后显示,避免 XSS。
+    if (item.icon) return escHtml(item.icon);
+    return '';
+  }
+
   function renderPopoverItems(container, items, dataAttr, selectedId) {
     if (!container) return;
     container.innerHTML = items.map(item => `
       <div class="popover-item${item.id === selectedId ? ' selected' : ''}" data-${dataAttr}="${escHtml(item.id)}">
-        <span class="popover-item-icon">${item.icon || ''}</span>
+        <span class="popover-item-icon">${popoverIconHtml(item)}</span>
         <div class="popover-item-details">
           <span class="popover-item-title">${escHtml(item.title)}</span>
           ${item.desc ? `<span class="popover-item-desc">${escHtml(item.desc)}</span>` : ''}
@@ -768,7 +777,7 @@ import {
         id: model.model || model.id,
         title: model.displayName || model.model || model.id,
         desc: model.model || model.id,
-        icon: model.isDefault ? '⭐' : '🤖',
+        iconName: model.isDefault ? 'star' : 'bot',
       })),
       'model',
       displayModelId(),
@@ -794,7 +803,7 @@ import {
           id: tier.id,
           title: tier.name || tier.id,
           desc: tier.description || '',
-          icon: /fast|priority/i.test(`${tier.id} ${tier.name}`) ? '⚡' : '⚪',
+          iconName: /fast|priority/i.test(`${tier.id} ${tier.name}`) ? 'zap' : 'circle',
         })),
         'speed',
         effective.serviceTier,
@@ -805,7 +814,7 @@ import {
       const active = selectedApproval === 'never' && selectedSandbox === 'danger-full-access';
       bypassList.innerHTML = `
         <div class="popover-item${active ? ' selected' : ''}" data-bypass="1">
-          <span class="popover-item-icon">☠️</span>
+          <span class="popover-item-icon">${icon('skull')}</span>
           <div class="popover-item-details">
             <span class="popover-item-title">绕过批准和沙箱</span>
             <span class="popover-item-desc">对应 --dangerously-bypass-approvals-and-sandbox</span>
@@ -1578,7 +1587,7 @@ import {
       block.className = 'drawer-project-block' + (current ? ' current' : '') + (expanded ? ' expanded' : '');
       block.innerHTML = `<div class="drawer-project-item${current ? ' active' : ''}" title="${escHtml(dir)}">`
         + `<button type="button" class="dir-toggle" data-cwd="${escHtml(dir)}">`
-        + `<span class="project-icon">${expanded ? '📂' : '📁'}</span>`
+        + `<span class="project-icon">${icon(expanded ? 'folderOpen' : 'folder')}</span>`
         + `<span class="dir-arrow${expanded ? ' rotated' : ''}">▶</span>`
         + `<span class="dir-name">${escHtml(name)}</span>`
         + `</button>`
@@ -1708,8 +1717,9 @@ import {
       return;
     }
     const parts = [];
-    if (payload.project) parts.push(`📁 ${escHtml(payload.project)}`);
-    if (payload.sandbox) parts.push(`🛡 ${escHtml(payload.sandbox)}`);
+    // statusDetail 走 textContent,不能塞 SVG;去掉 emoji,几何符可留。
+    if (payload.project) parts.push(escHtml(payload.project));
+    if (payload.sandbox) parts.push(escHtml(payload.sandbox));
     if (payload.approvalPolicy) parts.push(`✓ ${escHtml(payload.approvalPolicy)}`);
     if (payload.git) {
       const g = payload.git;
@@ -1721,13 +1731,13 @@ import {
       parts.push(gitStr);
     }
     if (payload.ctx) {
-      parts.push(`📐 ${(payload.ctx.totalInputTokens / 1000).toFixed(1)}k`);
+      parts.push(`${(payload.ctx.totalInputTokens / 1000).toFixed(1)}k`);
     }
     if (payload.sessionId) {
       parts.push(`${(payload.sessionId || '').slice(0, 8)}`);
     }
     if (payload.state) {
-      parts.push(payload.busy ? '⚡' : '○');
+      parts.push(payload.busy ? '●' : '○');
     }
     if (payload.queueLength > 0) {
       parts.push(`q:${payload.queueLength}`);
@@ -2491,7 +2501,7 @@ import {
       appendSystem('该会话无历史消息', false);
       return;
     }
-    appendSystem(`📋 ${title || '历史会话'}（${msgs.length} 条消息）`, false);
+    appendSystem(`${title || '历史会话'}（${msgs.length} 条消息）`, false);
     for (const m of msgs.slice(-30)) {
       if (m.kind === 'command') {
         appendRaw(renderCommandCard(commandCard(m)), 'codex');
@@ -2615,22 +2625,22 @@ import {
     if (clientRequestId) el.dataset.clientRequestId = clientRequestId;
     let html = `<div class="bubble">`;
     if (payload.attachments?.length) {
-      html += `<div style="font-size:11px;opacity:.8;margin-bottom:4px;">📎 ${payload.attachments.map(a => escHtml(a.name)).join(', ')}</div>`;
+      html += `<div style="font-size:11px;opacity:.8;margin-bottom:4px;">${icon('paperclip')} ${payload.attachments.map(a => escHtml(a.name)).join(', ')}</div>`;
     }
     if (payload.parts?.length) {
-      html += `<div style="font-size:11px;opacity:.8;margin-bottom:4px;">📌 ${payload.parts.map(partDisplayName).map(escHtml).join(', ')}</div>`;
+      html += `<div style="font-size:11px;opacity:.8;margin-bottom:4px;">${icon('pin')} ${payload.parts.map(partDisplayName).map(escHtml).join(', ')}</div>`;
     }
     const deliveryLabel = unboundRecovery
       ? (needsReconcile
-        ? '⚠️ 原会话目标已失效，正在按请求 ID 核对；不会自动重发'
+        ? '原会话目标已失效，正在按请求 ID 核对；不会自动重发'
         : (manualDisposal
-          ? '⚠️ 原会话目标已失效且已尝试发送；不会自动重发，也不会自动恢复'
-          : '⏳ 原会话目标已失效，连接后将恢复到当前会话'))
+          ? '原会话目标已失效且已尝试发送；不会自动重发，也不会自动恢复'
+          : '原会话目标已失效，连接后将恢复到当前会话'))
       : (needsReconcile
-        ? '⚠️ 结果未知，正在核对；不会自动重发'
+        ? '结果未知，正在核对；不会自动重发'
         : (manualDisposal
-          ? '⚠️ 已被运行时拒绝；丢弃后这条会话的队列才会继续'
-          : '⏳ 弱网等待同步 (Offline Queue)'));
+          ? '已被运行时拒绝；丢弃后这条会话的队列才会继续'
+          : '弱网等待同步 (Offline Queue)'));
     const foreignHint = foreignThread ? '<span class="offline-label">↪ 来自其他会话</span>' : '';
     html += `${escHtml(text || (payload.parts?.length ? '(结构化引用)' : '(附件)'))}${foreignHint}<span class="offline-label">${deliveryLabel}</span></div>`;
     el.innerHTML = html;
@@ -2657,7 +2667,7 @@ import {
           renderedOutboxStates.set(replacement.clientRequestId, 'pending');
           offlineUserBubbles.push({ clientRequestId: replacement.clientRequestId, text, el });
           const label = el.querySelector('.offline-label');
-          if (label) label.textContent = '⏳ 已确认重试，等待发送';
+          if (label) label.textContent = '已确认重试，等待发送';
           retryButton.remove();
           await drainMessageOutbox({
             shouldSend: outboxRequestMatchesView,
@@ -2836,7 +2846,7 @@ import {
     const sessionDecision = decisions.includes('acceptForSession') ? `<button class="approve-btn" data-d="acceptForSession">本会话批准</button>` : '';
     const card = document.createElement('div');
     card.className = 'tool-card';
-    card.innerHTML = `<div class="tool-name">⚠️ 需要审批</div>`
+    card.innerHTML = `<div class="tool-name">${icon('warning')} 需要审批</div>`
       + `<div class="tool-cmd">${escHtml(payload.command || payload.kind || '需要确认的操作')}</div>`
       + renderApprovalDetails(payload)
       + `<div class="approval-btns">`
@@ -2914,7 +2924,7 @@ import {
     const questions = payload.questions || [];
     const card = document.createElement('div');
     card.className = 'tool-card';
-    card.innerHTML = `<div class="tool-name">❔ 需要回答</div>`
+    card.innerHTML = `<div class="tool-name">${icon('question')} 需要回答</div>`
       + questions.map(q => renderQuestion(q)).join('')
       + (payload.autoResolutionMs ? `<div class="tool-output" style="opacity:.7;background:transparent;color:var(--text-muted);">autoResolutionMs: ${escHtml(String(payload.autoResolutionMs))}</div>` : '')
       + `<div class="approval-btns"><button class="approve-btn answer-submit" type="button">提交</button><button class="deny-btn answer-cancel" type="button">跳过</button></div>`;
@@ -3022,7 +3032,7 @@ import {
     const card = document.createElement('div');
     card.className = 'tool-card';
     const label = payload?.item?.type || payload?.envelopeType || 'raw';
-    card.innerHTML = `<div class="tool-name">🧾 Raw</div>`
+    card.innerHTML = `<div class="tool-name">${icon('receipt')} Raw</div>`
       + `<details><summary class="tool-cmd">${escHtml(label)}</summary><pre class="tool-output">${escHtml(JSON.stringify(payload.item || payload, null, 2))}</pre></details>`;
     appendRaw(card, 'codex');
     scrollBottom();
@@ -3032,11 +3042,16 @@ import {
     finalizeStream();
     const plan = payload.plan || [];
     if (!plan.length) return;
-    const icon = s => ({ completed: '✅', inProgress: '⏳', in_progress: '⏳', pending: '⬜' }[s] || '•');
+    const planStatusIcon = s => ({
+      completed: icon('check'),
+      inProgress: icon('hourglass'),
+      in_progress: icon('hourglass'),
+      pending: icon('square'),
+    }[s] || '•');
     const card = document.createElement('div');
     card.className = 'tool-card';
-    card.innerHTML = `<div class="tool-name">📋 计划</div>`
-      + plan.map(p => `<div class="tool-cmd">${icon(p.status)} ${escHtml(p.step || '')}</div>`).join('');
+    card.innerHTML = `<div class="tool-name">${icon('clipboard')} 计划</div>`
+      + plan.map(p => `<div class="tool-cmd">${planStatusIcon(p.status)} ${escHtml(p.step || '')}</div>`).join('');
     appendRaw(card, 'codex');
     scrollBottom();
   }
@@ -3082,7 +3097,7 @@ import {
     finalizeStream();
     const card = document.createElement('div');
     card.className = 'tool-card';
-    card.innerHTML = `<div class="tool-name">🔧 ${escHtml(payload.serverName)}/${escHtml(payload.toolName)}</div><div class="tool-cmd">${escHtml(payload.inputSummary || '')}</div>`;
+    card.innerHTML = `<div class="tool-name">${icon('tools')} ${escHtml(payload.serverName)}/${escHtml(payload.toolName)}</div><div class="tool-cmd">${escHtml(payload.inputSummary || '')}</div>`;
     appendRaw(card, 'codex');
     pendingMcpCards[payload.toolUseId] = card;
     scrollBottom();
@@ -3107,7 +3122,7 @@ import {
     if (!payload.query && !results.length) return;
     const card = document.createElement('div');
     card.className = 'tool-card';
-    card.innerHTML = `<div class="tool-name">🔍 搜索: ${escHtml(payload.query || '')}</div>`
+    card.innerHTML = `<div class="tool-name">${icon('search')} 搜索: ${escHtml(payload.query || '')}</div>`
       + results.map(r => `<div class="tool-cmd" style="margin-bottom:4px;"><a href="${escHtml(r.url)}" target="_blank" style="color:var(--accent-text);text-decoration:none;font-weight:600;">${escHtml(r.title)}</a><br><span class="tool-output" style="background:transparent;color:var(--text-muted);padding:4px 0 0;">${escHtml(r.snippet || '')}</span></div>`).join('');
     appendRaw(card, 'codex');
     scrollBottom();
@@ -3119,7 +3134,7 @@ import {
     finalizeStream();
     const card = document.createElement('div');
     card.className = 'tool-card';
-    card.innerHTML = `<div class="tool-name">📊 变更摘要</div><pre class="tool-cmd" style="white-space:pre-wrap;font-size:11px;max-height:200px;overflow:auto;">${escHtml(payload.diff)}</pre>`;
+    card.innerHTML = `<div class="tool-name">${icon('chart')} 变更摘要</div><pre class="tool-cmd" style="white-space:pre-wrap;font-size:11px;max-height:200px;overflow:auto;">${escHtml(payload.diff)}</pre>`;
     appendRaw(card, 'codex');
     scrollBottom();
   }
@@ -3191,10 +3206,10 @@ import {
     el.className = 'msg user';
     let html = `<div class="bubble">`;
     if (attachments?.length) {
-      html += `<div style="font-size:11px;opacity:.8;margin-bottom:4px;">📎 ${attachments.map(a => escHtml(a.name)).join(', ')}</div>`;
+      html += `<div style="font-size:11px;opacity:.8;margin-bottom:4px;">${icon('paperclip')} ${attachments.map(a => escHtml(a.name)).join(', ')}</div>`;
     }
     if (parts?.length) {
-      html += `<div style="font-size:11px;opacity:.8;margin-bottom:4px;">📌 ${parts.map(partDisplayName).map(escHtml).join(', ')}</div>`;
+      html += `<div style="font-size:11px;opacity:.8;margin-bottom:4px;">${icon('pin')} ${parts.map(partDisplayName).map(escHtml).join(', ')}</div>`;
     }
     html += `${escHtml(text || (parts?.length ? '(结构化引用)' : '(附件)'))}</div>`;
     el.innerHTML = html;
@@ -3272,7 +3287,7 @@ import {
   function appendError(msg) {
     const el = document.createElement('div');
     el.className = 'msg system-msg error-msg';
-    el.innerHTML = `<div class="bubble">❌ ${escHtml(msg)}</div>`;
+    el.innerHTML = `<div class="bubble">${icon('x')} ${escHtml(msg)}</div>`;
     messagesEl.appendChild(el);
     scrollBottom();
     checkEmptyState();
@@ -3617,7 +3632,7 @@ import {
           const failure = await subscribeResponse.json().catch(() => ({}));
           throw new Error(failure.error || `Push subscription failed (${subscribeResponse.status})`);
         }
-        pushBtn.textContent = '🔕';
+        pushBtn.innerHTML = `${icon('bellOff')} 已订阅`;
         pushBtn.title = '已订阅推送';
         pushBtn.onclick = null;
       } catch (e) {
@@ -3717,7 +3732,9 @@ import {
       const part = currentInputParts[i];
       const chip = document.createElement('span');
       chip.className = 'attach-chip';
-      const prefix = part.kind === 'skill' ? '$' : (part.kind === 'imageUrl' ? '🖼 ' : '@');
+      const prefix = part.kind === 'skill'
+        ? '$'
+        : (part.kind === 'imageUrl' ? `${icon('image')} ` : '@');
       chip.innerHTML = `<span class="attach-chip-name">${prefix}${escHtml(part.name || part.url || part.path || '')}</span>`
         + `<button class="attach-chip-remove" data-part-idx="${i}">✕</button>`;
       chip.querySelector('.attach-chip-remove').onclick = () => {

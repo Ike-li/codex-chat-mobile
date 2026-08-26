@@ -3,25 +3,25 @@ export const APPROVAL_OPTIONS = [
     id: 'untrusted',
     title: '仅信任命令',
     desc: '只有 ls、cat 等信任命令自动执行；其余一律询问',
-    icon: '🛡️',
+    iconName: 'shield',
   },
   {
     id: 'on-failure',
     title: '失败时询问',
     desc: '先尝试执行，失败后再向你确认',
-    icon: '🔁',
+    iconName: 'refresh',
   },
   {
     id: 'on-request',
     title: '按请求批准',
     desc: '模型决定何时向你申请批准',
-    icon: '🖐️',
+    iconName: 'hand',
   },
   {
     id: 'never',
     title: '从不询问',
     desc: '不弹批准；失败立刻返回给模型',
-    icon: '⚠️',
+    iconName: 'warning',
   },
 ];
 
@@ -30,19 +30,19 @@ export const SANDBOX_OPTIONS = [
     id: 'read-only',
     title: '只读',
     desc: '命令不能改文件',
-    icon: '👀',
+    iconName: 'eye',
   },
   {
     id: 'workspace-write',
     title: '工作区可写',
     desc: '只能改当前工作区',
-    icon: '📝',
+    iconName: 'notepad',
   },
   {
     id: 'danger-full-access',
     title: '完全访问',
     desc: '不沙箱，可访问本机任意文件',
-    icon: '☠️',
+    iconName: 'skull',
   },
 ];
 
@@ -238,7 +238,7 @@ export function formatModelBadge({
   if (!displayName && /^gpt-/i.test(name)) name = name.slice(4);
   const effortLabel = optionById(FALLBACK_REASONING_OPTIONS, normalizeReasoningEffort(effort))?.title
     || normalizeReasoningEffort(effort);
-  const speed = serviceTier && serviceTier !== 'standard' ? ' · ⚡' : '';
+  const speed = serviceTier && serviceTier !== 'standard' ? ' · 加速' : '';
   return [name, effortLabel].filter(Boolean).join(' ') + speed;
 }
 
@@ -248,10 +248,11 @@ export function formatPermissionBadge({
 } = {}) {
   const approvalId = normalizeApprovalPolicy(approvalPolicy);
   const sandboxId = normalizeSandbox(sandbox);
-  if (!approvalId && !sandboxId) return '🛡 配置默认';
+  // 纯文案:popover 才用 SVG。字符串里塞 emoji/SVG 都会在文本节点里穿帮。
+  if (!approvalId && !sandboxId) return '配置默认';
   const approval = optionById(APPROVAL_OPTIONS, approvalId);
   const sandboxOption = optionById(SANDBOX_OPTIONS, sandboxId);
-  const left = approval ? `${approval.icon} ${approval.title}` : (approvalPolicy || '审批默认');
+  const left = approval ? approval.title : (approvalPolicy || '审批默认');
   const right = sandboxOption?.title || sandbox || '沙箱默认';
   return `${left} · ${right}`.trim();
 }

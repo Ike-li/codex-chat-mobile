@@ -32,25 +32,25 @@
 
 ## 模型与思考强度
 
-一个弹窗切换本机 `model/list` 返回的模型和该模型支持的思考强度（`low` / `medium` / `high` / `xhigh` / `max` 等），随时调整下一轮的算力投入。
+底栏「会话设置」sheet 切换本机 `model/list` 返回的模型、该模型支持的思考强度（`low` / `medium` / `high` / `xhigh` / `max` 等）以及速度档，随时调整下一轮的算力投入。
 
 ![模型与思考强度切换](assets/showcase/05-model.png)
 
 ## 审批策略与沙箱
 
-在 CLI 审批策略（`untrusted` / `on-failure` / `on-request` / `never`）和沙箱（`read-only` / `workspace-write` / `danger-full-access`）之间切换，控制 Codex 能碰什么——安全边界始终握在你手里。
+同一张会话设置 sheet 里切换 CLI 审批策略（`untrusted` / `on-failure` / `on-request` / `never`）和沙箱（`read-only` / `workspace-write` / `danger-full-access`），控制 Codex 能碰什么——安全边界始终握在你手里。
 
 ![审批策略切换](assets/showcase/06-permissions.png)
 
 ## 多实例标签
 
-用标签并行开多个对话，每个绑定自己的工作区和会话，互不串流；顶部一键新建、切换。
+顶栏新建会话，侧栏按工作区折叠列出历史会话；切换、归档、续聊都在抽屉里完成（多 runtime 实例标签尚未进主 chrome，当前以抽屉多会话承担并行入口）。
 
 ![多实例标签](assets/showcase/07-instances.png)
 
 ## 状态栏
 
-点开头部即见当前工作目录、沙箱模式、审批策略、队列深度、会话与上下文用量——一眼掌握「现在在哪、能干啥」。
+工作区胶囊、往返延迟芯片和连接横幅一起回答「现在在哪、链路是否健康」；更细的沙箱/审批/队列信息在会话设置与抽屉里。
 
 ![状态栏](assets/showcase/08-statusbar.png)
 
