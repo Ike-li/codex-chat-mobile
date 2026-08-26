@@ -1120,6 +1120,31 @@ test('composer shows and sends the same effective settings', () => {
   assert.match(appJs, /saveCliSettings\(localStorage, currentTurnSettings\(\)\)/);
 });
 
+test('the speed group is a plain single-choice list, like every other group', () => {
+  // speed 曾是整个设置面板里唯一的 toggle：选了「快速」之后想回默认，只能再点一次
+  // 同一行——不可发现，而且「标准」这一行当时根本不存在。对齐 Codex 桌面端后
+  // 它就是一组普通单选，默认档是列表里看得见、能点回去的一项。
+  const speedStart = appJs.indexOf("$('speed-list')?.addEventListener('click'");
+  assert.ok(speedStart >= 0);
+  const speedBody = appJs.slice(speedStart, speedStart + 400);
+  assert.doesNotMatch(speedBody, /selectedServiceTier === next \? '' : next/);
+  assert.match(speedBody, /selectedServiceTier = next;/);
+
+  // 标准档的 id 是空串（表示不下发 serviceTier），选中判定不能把空 id 一律当没选。
+  const renderStart = appJs.indexOf('function renderPopoverItems(');
+  assert.ok(renderStart >= 0);
+  const renderBody = appJs.slice(renderStart, renderStart + 700);
+  assert.doesNotMatch(renderBody, /item\.id && item\.id === selectedId/);
+  assert.match(renderBody, /item\.id === selectedId/);
+
+  // 分组标题跟桌面端一致叫「速度」，比协议字段名「服务档位」更接近用户心智。
+  assert.match(html, /id="speed-section-label"[^>]*>速度</);
+
+  // 模型不支持档位时整组要真的消失。.popover-list 的 display:flex 会压过 [hidden]
+  // 自带的 display:none，只藏标题、留一个带 padding 的空容器。
+  assert.match(css, /\.popover-list\[hidden\]\s*\{[^}]*display:\s*none/);
+});
+
 test('an outbox bubble is redrawn when its state changes', () => {
   const start = appJs.indexOf('async function syncOutboxViewOnce()');
   const end = appJs.indexOf('syncVisualViewport();', start);

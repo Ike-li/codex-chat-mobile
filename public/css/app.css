@@ -1411,6 +1411,11 @@ body {
   flex-direction: column;
   gap: 2px;
 }
+/* display:flex 会压过 [hidden] 自带的 display:none——不支持服务档位的模型下，
+   「速度」标题藏了，空的列表容器却还留着自己那圈 padding。 */
+.popover-list[hidden] {
+  display: none;
+}
 
 .popover-item {
   display: flex;

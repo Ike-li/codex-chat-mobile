@@ -39,7 +39,7 @@
 | `needs-you:snapshot` | — | `{ok:true, revision, needs}`，仅含 pending / unknown 项 |
 | `conn:ping` | — | `{ok:true, t}`；无业务副作用，待审批设备也可调用 |
 
-`user:message` 的可选 `turn` 覆盖当前 runtime 的 CLI 对等项，并写入 `turn/start`：`model`、`effort`、`approvalPolicy`（`untrusted` / `on-failure` / `on-request` / `never`）、`sandbox`（`read-only` / `workspace-write` / `danger-full-access`，会转成 `sandboxPolicy`）、`serviceTier`。非法值会被丢掉，消息本身仍会发送。同一 `clientRequestId` 的指纹包含这些覆盖项。
+`user:message` 的可选 `turn` 覆盖当前 runtime 的 CLI 对等项，并写入 `turn/start`：`model`、`effort`、`approvalPolicy`（`untrusted` / `on-failure` / `on-request` / `never`）、`sandbox`（`read-only` / `workspace-write` / `danger-full-access`，会转成 `sandboxPolicy`）、`serviceTier`。非法值会被丢掉，消息本身仍会发送。同一 `clientRequestId` 的指纹包含这些覆盖项。页面上选中「标准」速度档时不带 `serviceTier`——上游通常把标准档表示成未设置态，所以在 wire 上「选了标准」和「没选过」不可区分。
 
 `user:message` 的 `text` 上限为 50,000 字符。`attachments` 只能缺省、为 `null` 或为数组；其他类型立即 ACK `invalid_attachments`。`attachments[]` 每项为 `{name, mimeType, data}`，其中 `data` 是严格 base64；最多 10 个、单个 10 MiB、合计 20 MiB。Socket.IO `maxHttpBufferSize` 为 32 MiB，仅用于容纳最大合法附件的 base64/JSON wire 开销，不改变业务上限。文件先写入 0700 的 `.ccm-uploads/`（文件 0600），再转换为 app-server 结构化 `UserInput`：
 

@@ -65,7 +65,7 @@
 - 一颗摘要胶囊：`模型 · 按请求 · 思考`，整颗点开底部会话设置 sheet（模式 / 审批 / 沙箱 / 模型 / 思考）；
 - 附件和发送钉在右侧；输入为空时发送钮隐藏，有内容或 turn 进行中才出现；
 - 权限入口：CLI 审批策略（`untrusted` / `on-failure` / `on-request` / `never`）和沙箱（`read-only` / `workspace-write` / `danger-full-access`），以及绕过批准和沙箱；
-- 模型/思考强度/服务档位入口：模型来自 `models:read`，思考强度来自该模型的 `supportedReasoningEfforts`；
+- 模型/思考强度/速度入口：模型来自 `models:read`，思考强度来自该模型的 `supportedReasoningEfforts`，速度来自该模型的 `serviceTiers`（上游只列加速档时补一个默认选中的「标准」）；
 - 文本框：普通内容、`/` 命令和 `@` 文件引用（候选来自 `files:search`，选中后加入结构化 mention，不把路径拼进提示词）；
 - 粘贴图片会进入附件托盘；点图片 chip 可预览；
 - 主按钮：空闲且有内容时是发送箭头；turn 进行中变成停止方块，停止过程中禁用并显示「正在停止」。进行中再输入时，左侧多一颗发送箭头（`#followup-btn`），把下一条发给当前 turn（`steered`）或排进该 runtime 队列（`queued`，气泡标 Queued #N）。停止会清掉未执行的队列。回车在有草稿时发送，空草稿且进行中才中断。

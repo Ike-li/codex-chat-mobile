@@ -133,7 +133,7 @@ test('effort is clamped to the selected model and service tiers come from the ca
   assert.deepEqual(serviceTiersForModel({}), []);
 });
 
-test('an unset service tier stays unset instead of inventing Fast', () => {
+test('an unset service tier falls back to the default row instead of inventing Fast', () => {
   const model = {
     serviceTiers: [
       { name: 'Fast', description: '1.5x speed, increased usage', serviceTier: 'priority' },
@@ -142,10 +142,81 @@ test('an unset service tier stays unset instead of inventing Fast', () => {
     defaultServiceTier: 'standard',
   };
   assert.deepEqual(serviceTiersForModel(model).map(tier => tier.id), ['priority', 'standard']);
-  assert.equal(clampServiceTierForModel('', model), '');
-  assert.equal(clampServiceTierForModel('fast', model), '');
+  // 没选过、或选了个这个模型不认的值，都落到它自己声明的默认档——和思考强度一个待遇，
+  // 这样面板里总有一行是勾上的。但绝不能顺手升到收费的加速档。
+  assert.equal(clampServiceTierForModel('', model), 'standard');
+  assert.equal(clampServiceTierForModel('fast', model), 'standard');
   assert.equal(clampServiceTierForModel('priority', model), 'priority');
   assert.equal(clampServiceTierForModel('standard', model), 'standard');
+  // 默认档没声明时退到首项，仍然不是加速档。
+  assert.equal(
+    clampServiceTierForModel('', {
+      serviceTiers: [{ id: 'standard', name: 'Standard' }, { id: 'fast', name: 'Fast' }],
+    }),
+    'standard',
+  );
+});
+
+test('a model that only advertises Fast still gets an explicit default row', () => {
+  // 真实 Codex 的 serviceTiers 里只有 fast，"标准"是隐式的 null 态。照数组直传的话
+  // 面板里就只剩孤零零一个 Fast：看不出自己在哪一档，也没有可见的回退路径。
+  // 对齐桌面端——默认档补成显式一项，排在首位，id 为空表示不下发 serviceTier。
+  const model = {
+    serviceTiers: [{ id: 'fast', name: 'Fast', description: '1.5x speed, increased usage' }],
+    defaultServiceTier: 'standard',
+  };
+  const tiers = serviceTiersForModel(model);
+  assert.deepEqual(tiers.map(tier => tier.id), ['', 'fast']);
+  assert.equal(tiers[0].name, '标准');
+  assert.equal(tiers[0].description, '默认速度');
+  assert.equal(clampServiceTierForModel('', model), '');
+
+  // 上游自己给了默认档就不能再补一条重复的。
+  assert.deepEqual(
+    serviceTiersForModel({
+      serviceTiers: [{ id: 'standard', name: 'Standard' }, { id: 'fast', name: 'Fast' }],
+      defaultServiceTier: 'standard',
+    }).map(tier => tier.id),
+    ['standard', 'fast'],
+  );
+  // defaultServiceTier 缺失时也认 standard 这个约定 id。
+  assert.deepEqual(
+    serviceTiersForModel({
+      serviceTiers: [{ id: 'standard', name: 'Standard' }, { id: 'fast', name: 'Fast' }],
+    }).map(tier => tier.id),
+    ['standard', 'fast'],
+  );
+  // 模型完全不支持档位时整组仍然不显示。
+  assert.deepEqual(serviceTiersForModel({}), []);
+  assert.deepEqual(serviceTiersForModel({ serviceTiers: [] }), []);
+});
+
+test('service tier labels fall back to upstream text when the id or wording is unknown', () => {
+  // 硬编码中文有过期风险：上游哪天把 1.5x 改成 2x，我们不能继续显示旧数字。
+  const tiers = serviceTiersForModel({
+    serviceTiers: [
+      { id: 'standard', name: 'Standard', description: 'Default speed' },
+      { id: 'fast', name: 'Fast', description: '1.5x speed, increased usage' },
+      { id: 'priority', name: 'Priority', description: 'Reserved capacity' },
+    ],
+    defaultServiceTier: 'standard',
+  });
+  assert.equal(tiers[0].name, '标准');
+  assert.equal(tiers[0].description, '默认速度');
+  assert.equal(tiers[1].name, '快速');
+  assert.equal(tiers[1].description, '1.5 倍速度，用量更多');
+  assert.equal(tiers[2].name, 'Priority', '没见过的档位 id 整条透传');
+  assert.equal(tiers[2].description, 'Reserved capacity');
+
+  const reworded = serviceTiersForModel({
+    serviceTiers: [{ id: 'fast', name: 'Fast', description: '2x speed, increased usage' }],
+  });
+  assert.equal(reworded[1].name, '快速');
+  assert.equal(
+    reworded[1].description,
+    '2x speed, increased usage',
+    '没见过的措辞照原文显示，不要拿旧倍数糊弄',
+  );
 });
 
 test('empty settings do not invent CLI overrides that would clobber config.toml', () => {
@@ -424,7 +495,8 @@ test('effective settings also fill reasoning effort and service tier', () => {
 
   // 服务档位：模型支持时才可能有值；用户选过且合法就保留。
   assert.equal(effectiveComposerSettings({ serviceTier: 'fast' }, { status, models }).serviceTier, 'fast');
-  assert.equal(effectiveComposerSettings({ serviceTier: 'bogus' }, { status, models }).serviceTier, '');
+  assert.equal(effectiveComposerSettings({ serviceTier: 'bogus' }, { status, models }).serviceTier, 'standard');
+  assert.equal(effectiveComposerSettings({}, { status, models }).serviceTier, 'standard');
 
   // 模型不支持服务档位时，不能凭空造一个出来。
   const noTiers = [{ model: 'gpt-5.4', isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: 'low' }] }];

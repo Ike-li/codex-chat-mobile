@@ -126,9 +126,32 @@ export function serviceTierId(tier) {
   return '';
 }
 
+// 上游按 en 返回档位文案。只翻译认识的 id 和认识的原句，其余整条透传——
+// 上游哪天把 1.5x 改成别的倍数，宁可显示英文原文，也不能拿旧数字糊弄用户。
+const SERVICE_TIER_NAMES = {
+  standard: '标准',
+  fast: '快速',
+};
+
+const SERVICE_TIER_DESCRIPTIONS = {
+  'default speed': '默认速度',
+  '1.5x speed, increased usage': '1.5 倍速度，用量更多',
+};
+
+const STANDARD_SERVICE_TIER_ID = 'standard';
+
+function localizeServiceTier(tier) {
+  const description = SERVICE_TIER_DESCRIPTIONS[tier.description.trim().toLowerCase()];
+  return {
+    ...tier,
+    name: SERVICE_TIER_NAMES[tier.id] || tier.name,
+    description: description || tier.description,
+  };
+}
+
 export function serviceTiersForModel(model) {
   if (!Array.isArray(model?.serviceTiers)) return [];
-  return model.serviceTiers.flatMap(tier => {
+  const listed = model.serviceTiers.flatMap(tier => {
     if (!tier) return [];
     const id = serviceTierId(tier);
     const name = typeof tier.name === 'string' ? tier.name.trim() : '';
@@ -139,7 +162,17 @@ export function serviceTiersForModel(model) {
       name: name || id,
       description: typeof tier.description === 'string' ? tier.description : '',
     }];
-  });
+  }).map(localizeServiceTier);
+  if (!listed.length) return [];
+  const defaultId = typeof model.defaultServiceTier === 'string' ? model.defaultServiceTier.trim() : '';
+  if (listed.some(tier => tier.id === (defaultId || STANDARD_SERVICE_TIER_ID))) return listed;
+  // 上游只列了加速档时，"标准"是它隐式的未设置态。补成显式一项排在首位，
+  // 否则用户既看不出自己在哪一档，也没有回到默认的入口。空 id = 不下发 serviceTier。
+  return [{
+    id: '',
+    name: SERVICE_TIER_NAMES[STANDARD_SERVICE_TIER_ID],
+    description: SERVICE_TIER_DESCRIPTIONS['default speed'],
+  }, ...listed];
 }
 
 export function normalizeReasoningEffort(value) {
@@ -186,8 +219,13 @@ export function clampServiceTierForModel(tier, model) {
   const tiers = serviceTiersForModel(model);
   if (!tiers.length) return '';
   const normalized = typeof tier === 'string' ? tier.trim() : '';
-  if (normalized && tiers.some(item => item.id === normalized)) return normalized;
-  return '';
+  if (tiers.some(item => item.id === normalized)) return normalized;
+  // 没选过或选了个这个模型不认的值时回落到默认档，跟 clampEffortForModel 一个待遇——
+  // 留空会让「速度」这组一个勾都没有，用户看不出自己在哪一档。默认档一定不是加速档：
+  // serviceTiersForModel 保证了 defaultServiceTier 在列表里，或首项是它补出来的标准档。
+  const defaultId = typeof model?.defaultServiceTier === 'string' ? model.defaultServiceTier.trim() : '';
+  if (defaultId && tiers.some(item => item.id === defaultId)) return defaultId;
+  return tiers[0].id;
 }
 
 export function formatModelBadge({

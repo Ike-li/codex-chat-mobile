@@ -746,7 +746,7 @@ import {
   function renderPopoverItems(container, items, dataAttr, selectedId) {
     if (!container) return;
     container.innerHTML = items.map(item => `
-      <div class="popover-item${item.id && item.id === selectedId ? ' selected' : ''}" data-${dataAttr}="${escHtml(item.id)}">
+      <div class="popover-item${item.id === selectedId ? ' selected' : ''}" data-${dataAttr}="${escHtml(item.id)}">
         <span class="popover-item-icon">${item.icon || ''}</span>
         <div class="popover-item-details">
           <span class="popover-item-title">${escHtml(item.title)}</span>
@@ -949,7 +949,7 @@ import {
     const item = event.target.closest('[data-speed]');
     if (!item) return;
     const next = item.dataset.speed || '';
-    selectedServiceTier = selectedServiceTier === next ? '' : next;
+    selectedServiceTier = next;
     persistComposerSettings();
     renderCliSettingsPopovers();
   });

@@ -92,4 +92,52 @@ test.describe('Popovers And Slash Suggestions', () => {
 
     expectNoForbiddenRuntimeErrors(runtimeErrors);
   });
+
+  // 真机上 Codex 只在 serviceTiers 里返回加速档，"标准"是隐式的未设置态。以前照数组
+  // 直传，面板里就只剩孤零零一个 Fast：没有勾、也没有回到默认的入口，想退回去只能
+  // 再点一次同一行。这条盯的是那个面板长什么样。
+  test('Speed Group Shows A Selectable Default Row', async ({ page }) => {
+    const runtimeErrors = collectRuntimeErrors(page);
+
+    await page.goto('/');
+    await expect(page.locator('#state-label')).not.toHaveText('offline', { timeout: 10000 });
+    await page.locator('[data-testid="composer-defaults"]').click();
+    await expect(page.locator('#session-settings')).toBeVisible();
+
+    const speedList = page.locator('#speed-list');
+    await expect(page.locator('#speed-section-label')).toHaveText('速度');
+    await expect(speedList.locator('.popover-item')).toHaveCount(2, { timeout: 10000 });
+
+    // 标准档的 data-speed 是空串（表示不下发 serviceTier）。CSS 的 [data-speed=""]
+    // 匹配不到它，用它写断言只会拿到一片假绿，所以这里按位置取行、再验属性值。
+    const standard = speedList.locator('.popover-item').first();
+    const fast = speedList.locator('.popover-item[data-speed="fast"]');
+    await expect(standard).toHaveAttribute('data-speed', '');
+    await expect(standard.locator('.popover-item-title')).toHaveText('标准');
+    await expect(standard.locator('.popover-item-desc')).toHaveText('默认速度');
+    await expect(fast.locator('.popover-item-title')).toHaveText('快速');
+    await expect(fast.locator('.popover-item-desc')).toHaveText('1.5 倍速度，用量更多');
+    await expect(standard, '没选过时默认档就该是勾上的那一行').toHaveClass(/selected/);
+
+    // 普通单选：勾能过去，也能点回来。
+    await fast.click();
+    await expect(fast).toHaveClass(/selected/);
+    await expect(standard).not.toHaveClass(/selected/);
+    await standard.click();
+    await expect(standard).toHaveClass(/selected/);
+    await expect(fast).not.toHaveClass(/selected/);
+
+    // 上游自己把默认档列出来的模型，不能再多补一条重复的「标准」。
+    await page.locator('#model-list .popover-item[data-model="gpt-5.4"]').first().click();
+    await expect(speedList.locator('.popover-item')).toHaveCount(2);
+    await expect(speedList.locator('.popover-item').first()).toHaveAttribute('data-speed', 'standard');
+    await expect(speedList.locator('.popover-item[data-speed="standard"]')).toHaveClass(/selected/);
+
+    // 完全不支持档位的模型，整组照旧不显示。
+    await page.locator('#model-list .popover-item[data-model="gpt-5.4-mini"]').first().click();
+    await expect(page.locator('#speed-section-label')).toBeHidden();
+    await expect(speedList).toBeHidden();
+
+    expectNoForbiddenRuntimeErrors(runtimeErrors);
+  });
 });

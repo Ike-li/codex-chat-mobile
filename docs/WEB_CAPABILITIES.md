@@ -79,7 +79,7 @@ Admin、Labs 和远程图片默认关闭，需要服务端显式启用。
 - Chat / Plan：会话设置 sheet 里的模式入口；有 thread 时走 `thread/settings/update`，没有 thread 或方法不可用时记为下一轮 `turn/start.collaborationMode`。都不会把 `/chat` 或 `/plan` 写进对话；
 - 模型选择：读取本机 `model/list`，对应 CLI `-m/--model`；
 - 思考强度：使用该模型的 `supportedReasoningEfforts`（`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`），对应 `model_reasoning_effort`；
-- 服务档位：仅当模型返回 `serviceTiers` 时显示；
+- 速度（服务档位）：仅当模型返回 `serviceTiers` 时显示，是一组普通单选。上游通常只列加速档，此时「标准」会补成显式一项排在首位并默认选中，选它等于不下发 `serviceTier`；
 - 权限：审批策略对应 CLI `-a/--ask-for-approval`（`untrusted` / `on-request` / `never`，另含协议值 `on-failure`）；沙箱对应 `-s/--sandbox`（`read-only` / `workspace-write` / `danger-full-access`）。也可一键对应 `--dangerously-bypass-approvals-and-sandbox`。
 
 这些选择只更新下一条 `user:message` 的 `turn` 覆盖项，不会把 `/model` 或 `/reasoning` 写进对话。没有在页面上选过的项不会发送，因此会继续沿用本机 `config.toml` / 环境变量。

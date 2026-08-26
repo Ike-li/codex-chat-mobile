@@ -514,9 +514,10 @@ rl.on('line', async (line) => {
                 { reasoningEffort: 'xhigh', description: 'Extra high' },
                 { reasoningEffort: 'max', description: 'Maximum' },
               ],
+              // 真实 Codex 只列加速档，"标准"是它隐式的未设置态。以前这里两档都列，
+              // 于是测试永远看不到真机上那个孤零零只有 Fast 的面板。
               serviceTiers: [
-                { id: 'standard', name: 'Standard', description: 'Default speed' },
-                { id: 'fast', name: 'Fast', description: 'Higher usage' },
+                { id: 'fast', name: 'Fast', description: '1.5x speed, increased usage' },
               ],
               defaultServiceTier: 'standard',
               inputModalities: ['text'],
@@ -550,8 +551,12 @@ rl.on('line', async (line) => {
                 { reasoningEffort: 'medium', description: 'Balanced' },
                 { reasoningEffort: 'high', description: 'Deeper' },
               ],
-              serviceTiers: [],
-              defaultServiceTier: null,
+              // 另一条分支：上游自己就把默认档列了出来，这时不能再补一条重复的。
+              serviceTiers: [
+                { id: 'standard', name: 'Standard', description: 'Default speed' },
+                { id: 'fast', name: 'Fast', description: '1.5x speed, increased usage' },
+              ],
+              defaultServiceTier: 'standard',
               inputModalities: ['text'],
             },
             {
