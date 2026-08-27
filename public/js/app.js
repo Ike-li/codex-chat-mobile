@@ -16,6 +16,7 @@ import {
   mergeThreadList,
   threadStatusPresentation,
   needResolutionLabel,
+  resolveThreadTitle,
 } from '/js/thread-status.js';
 import { resolveComposerPrimaryMode } from '/js/composer-mode.js';
 import { projectLabel } from '/js/project-label.js';
@@ -26,6 +27,7 @@ import { commandCard, fileChangeCard } from '/js/tool-cards.js';
 import { resolveConnectionBanner } from '/js/connection-banner.js';
 import { formatRttChip, formatWorkspaceChangeBadge } from '/js/header-chrome.js';
 import { createConfirmController } from '/js/confirm-dialog.js';
+import { threadActionConfirm } from '/js/thread-actions.js';
 import { detectAtMentionQuery, applyAtMentionPick, mentionPartFromSearchHit } from '/js/at-mention.js';
 import { pickPastedImage, attachmentPreview } from '/js/attachments-ui.js';
 import { createWorkspacePanel } from '/js/workspace-panel.js';
@@ -1651,11 +1653,9 @@ import { icon, hydrateIcons } from '/js/icons.js';
   function renderThreadTitle() {
     const titleEl = $('thread-title');
     if (!titleEl) return;
-    const thread = currentSessionId
-      ? appThreads.find(item => item.id === currentSessionId)
-      : null;
-    const name = String(thread?.title || thread?.preview || '').trim();
-    titleEl.textContent = name || '新会话';
+    const name = resolveThreadTitle(appThreads, currentSessionId);
+    if (name === null) return;
+    titleEl.textContent = name;
   }
 
   function goHome() {
@@ -1673,6 +1673,8 @@ import { icon, hydrateIcons } from '/js/icons.js';
 
   function createNewSession(cwd = serverCwd) {
     if (cwd) applyWorkspace(cwd, { clearChat: false });
+    // 停在归档视图里新建会话,新会话不会出现在这份列表中——看起来就像没建成。
+    setArchivedThreadsView(false);
     socket.emit('session:new', { cwd: cwd || serverCwd }, ack => {
       if (!applyTargetAck(ack)) {
         appendSystem(ack?.error || '新建会话失败', true);
@@ -1891,11 +1893,9 @@ import { icon, hydrateIcons } from '/js/icons.js';
       });
       return;
     }
-    if (action === 'delete' && !await confirmDialog.confirm({
-      title: '删除会话',
-      body: '删除后可从 Codex 历史中消失，且不能从本页撤销。',
-      danger: true,
-    })) return;
+    // archive 和 delete 都会让会话从眼前消失,先按同一份契约拦一道确认。
+    const needsConfirm = threadActionConfirm(action);
+    if (needsConfirm && !await confirmDialog.confirm(needsConfirm)) return;
     if (action === 'unarchive') {
       socket.emit('thread:unarchive', { threadId: thread.id, cwd: thread.cwd }, ack => {
         if (!ack?.ok) return appendSystem(ack?.error || 'Unarchive failed', true);
@@ -1940,7 +1940,12 @@ import { icon, hydrateIcons } from '/js/icons.js';
 
   function refreshThreadsForCwd(cwd, { showPanel = false } = {}) {
     if (!cwd) return;
-    socket.emit('thread:list', { cwd, archived: showArchivedThreads }, ack => {
+    // 归档与未归档是两份不同的列表,来回切开关会同时挂起两个请求。响应没有顺序保证,
+    // 晚到的那份若不认领自己属于哪个视图,就会盖掉用户已经切回去的列表——
+    // 开关写着「未归档」,底下却列着归档会话。同 scheduleThreadListRefresh 的 cwd 校验。
+    const requestedArchived = showArchivedThreads;
+    socket.emit('thread:list', { cwd, archived: requestedArchived }, ack => {
+      if (requestedArchived !== showArchivedThreads) return;
       if (!ack?.ok) {
         if (cwd === serverCwd) appendSystem(ack?.error || 'Thread list failed', true);
         return;
@@ -1962,6 +1967,28 @@ import { icon, hydrateIcons } from '/js/icons.js';
     for (const cwd of targets) {
       refreshThreadsForCwd(cwd, { showPanel: showPanel && cwd === serverCwd });
     }
+  }
+
+  function renderArchivedToggle() {
+    const btn = $('drawer-archived-toggle');
+    // 名字固定、只翻 aria-pressed:切换按钮的可访问名一旦跟着状态变,读屏念出的
+    // 「返回未归档,已按下」就分不清「已按下」说的是哪一头。当前视图由点亮态表达。
+    if (btn) btn.setAttribute('aria-pressed', showArchivedThreads ? 'true' : 'false');
+  }
+
+  function setArchivedThreadsView(next) {
+    if (showArchivedThreads === next) return;
+    showArchivedThreads = next;
+    // 两份视图的列表不能混用。refreshNativeThreads 只刷展开着的目录,折叠目录会留着
+    // 上一份视图的行——归档视图里挂着未归档会话,按钮还写着 Archive。清掉等它们各自拉回来。
+    sessionsByCwd.clear();
+    appThreads = [];
+    renderArchivedToggle();
+    refreshNativeThreads();
+  }
+
+  function toggleArchivedThreads() {
+    setArchivedThreadsView(!showArchivedThreads);
   }
 
   function renderNativeThreadList() {
@@ -3765,6 +3792,7 @@ import { icon, hydrateIcons } from '/js/icons.js';
   }
   drawerOverlay.onclick = closeDrawer;
   $('drawer-close').onclick = closeDrawer;
+  $('drawer-archived-toggle').onclick = toggleArchivedThreads;
 
   $('header-context').onclick = () => {
     workspacePanel.open();
@@ -3788,6 +3816,7 @@ import { icon, hydrateIcons } from '/js/icons.js';
   applyComposerMode();
   renderDrawerProject();
   renderDrawerProjects();
+  renderArchivedToggle();
   setConnectionPhase('connecting');
 
   // Helper for push VAPID key

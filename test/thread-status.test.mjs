@@ -6,7 +6,28 @@ import {
   mergeThreadList,
   threadStatusPresentation,
   needResolutionLabel,
+  resolveThreadTitle,
 } from '../public/js/thread-status.js';
+
+test('当前会话不在眼前这份列表里时,标题维持现状而不是回落成新会话', () => {
+  // 切到「已归档」视图后,列表整份被换成归档会话,当前这个未归档会话自然找不到。
+  // 这时把顶栏写成「新会话」,就会和正文里仍挂着的对话互相打脸。
+  assert.equal(resolveThreadTitle([{ id: 'a', title: 'X' }], 'b'), null);
+  assert.equal(resolveThreadTitle([], 'b'), null);
+  // 列表还没拉回来的空窗期同理,不能趁机把标题抹掉。
+  assert.equal(resolveThreadTitle(undefined, 'b'), null);
+});
+
+test('没有当前会话时标题就是新会话', () => {
+  assert.equal(resolveThreadTitle([{ id: 'a', title: 'X' }], null), '新会话');
+  assert.equal(resolveThreadTitle([], undefined), '新会话');
+});
+
+test('找得到会话就用它的名字,未命名才叫新会话', () => {
+  assert.equal(resolveThreadTitle([{ id: 'a', title: '  X  ' }], 'a'), 'X');
+  assert.equal(resolveThreadTitle([{ id: 'a', preview: 'P' }], 'a'), 'P');
+  assert.equal(resolveThreadTitle([{ id: 'a' }], 'a'), '新会话');
+});
 
 test('thread status ignores a host update older than the status already rendered', () => {
   const threads = [{

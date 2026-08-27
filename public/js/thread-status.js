@@ -38,6 +38,16 @@ export function mergeThreadList(currentThreads, refreshedThreads) {
   });
 }
 
+// 顶栏标题取自「当前渲染的这份会话列表」,但列表并不总是包含当前会话:切到已归档视图时
+// 整份列表都被换掉,刷新回来之前还有一段空窗。返回 null 表示「这份列表答不上来,别动标题」——
+// 回落成「新会话」会让顶栏和正文里仍挂着的对话互相打脸。
+export function resolveThreadTitle(threads, currentSessionId) {
+  if (!currentSessionId) return '新会话';
+  const thread = (Array.isArray(threads) ? threads : []).find(item => item?.id === currentSessionId);
+  if (!thread) return null;
+  return String(thread.title || thread.preview || '').trim() || '新会话';
+}
+
 export function threadStatusPresentation(status) {
   if (status?.type === 'active') {
     const flags = Array.isArray(status.activeFlags) ? status.activeFlags : [];

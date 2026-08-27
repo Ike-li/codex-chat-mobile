@@ -9,6 +9,9 @@ let turnCount = 0;
 let activeTurnId = null;
 const pendingApprovals = new Map(); // id → { resolve }
 const threadHistory = new Map();
+// 归档态必须留在 mock 里:thread/list 若忽略 archived 参数,前端「显示已归档」这条
+// 往返链路就无法回归——两份视图会永远返回同一批会话,任何过滤 bug 都测不出来。
+const archivedThreads = new Set();
 
 // marked 开着 gfm: true,真实回复里表格/标题/引用/分隔线都会出现。这份 fixture 刻意让
 // 表格宽到超过 720px 阅读栏,用来守护"宽表格自己横向滚动、不撑破整条消息"。
@@ -418,19 +421,33 @@ rl.on('line', async (line) => {
         break;
       }
 
-      case 'thread/list':
+      case 'thread/list': {
+        const wantArchived = msg.params?.archived === true;
         respond(msg.id, {
-          data: [...threadHistory.keys()].map(id => ({
-            id,
-            name: 'Mock thread',
-            preview: threadHistory.get(id)?.input || '',
-            cwd: process.cwd(),
-            createdAt: Math.floor(Date.now() / 1000),
-            updatedAt: Math.floor(Date.now() / 1000),
-            status: { type: 'idle' }
-          })),
+          data: [...threadHistory.keys()]
+            .filter(id => archivedThreads.has(id) === wantArchived)
+            .map(id => ({
+              id,
+              name: 'Mock thread',
+              preview: threadHistory.get(id)?.input || '',
+              cwd: process.cwd(),
+              createdAt: Math.floor(Date.now() / 1000),
+              updatedAt: Math.floor(Date.now() / 1000),
+              status: { type: 'idle' }
+            })),
           nextCursor: null
         });
+        break;
+      }
+
+      case 'thread/archive':
+        archivedThreads.add(msg.params?.threadId);
+        respond(msg.id, {});
+        break;
+
+      case 'thread/unarchive':
+        archivedThreads.delete(msg.params?.threadId);
+        respond(msg.id, {});
         break;
 
       case 'turn/start': {

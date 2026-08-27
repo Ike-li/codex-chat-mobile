@@ -1351,3 +1351,51 @@ test('ui-icon is an inline 1em glyph so mixed text does not wrap or blow up', ()
   assert.match(uiIcon, /height:\s*1em/, '.ui-icon 默认高 1em');
   assert.doesNotMatch(uiIcon, /display:\s*block/, '.ui-icon 不得默认 display:block');
 });
+
+test('a sheet raised from the drawer covers the drawer instead of hiding behind it', () => {
+  // 抽屉里的 Rename / Delete 会拉起 .sheet-overlay。抽屉是靠左停靠的 300px 侧栏,
+  // sheet 是铺满宽度的底部卡片——两者同一坐标系,z-index 谁大谁在上。sheet 排在下面时
+  // 它并没有消失,只从抽屉右边缘露出一截,看起来就像弹窗错开到了主页面上。
+  const zIndexOf = selector => {
+    const block = css.match(new RegExp(`${selector}\\s*\\{[^}]*\\}`))?.[0] || '';
+    const value = block.match(/z-index:\s*(\d+)/)?.[1];
+    assert.ok(value, `${selector} 应显式声明 z-index`);
+    return Number(value);
+  };
+  const sheet = zIndexOf('\\.sheet-overlay');
+  const drawer = zIndexOf('#drawer');
+  const drawerOverlay = zIndexOf('#drawer-overlay');
+  const authGate = zIndexOf('#auth-gate');
+
+  assert.ok(sheet > drawer, `.sheet-overlay(${sheet}) 必须盖住 #drawer(${drawer})`);
+  assert.ok(sheet > drawerOverlay, `.sheet-overlay(${sheet}) 必须盖住 #drawer-overlay(${drawerOverlay})`);
+  // 认证闸门是最后一道墙,任何业务弹窗都不该越过它。
+  assert.ok(sheet < authGate, `.sheet-overlay(${sheet}) 不得盖过 #auth-gate(${authGate})`);
+});
+
+test('the drawer offers a way back to archived threads', () => {
+  // 会话列表默认只拉未归档,所以列表里永远不会出现 archived 的行,
+  // 行内那颗 Unarchive 按钮也就永远渲染不出来。没有这个开关,归档就是单程票。
+  assert.match(html, /id="drawer-archived-toggle"/, '抽屉需要「显示已归档」入口');
+  assert.match(appJs, /drawer-archived-toggle/, 'app.js 必须绑定该入口');
+  // 数赋值语句,不要写成 /=\s*(?!false)/ 这类否定前瞻——\s* 会回溯到 0 字符,
+  // 让 `let showArchivedThreads = false;` 这行自己就匹配上,断言恒真。
+  const writes = [...appJs.matchAll(/showArchivedThreads\s*=(?!=)/g)];
+  assert.ok(
+    writes.length >= 2,
+    `showArchivedThreads 除初始化外必须有写入点(实际 ${writes.length} 处赋值)`,
+  );
+  assert.match(appJs, /data-action="unarchive"|'unarchive'/, '取消归档动作必须仍然可达');
+
+  // 归档/未归档是两份列表,来回切会同时挂起两个 thread:list。响应无顺序保证,晚到的那份
+  // 若不认领自己属于哪个视图,就会盖掉用户已切回去的列表(实测在慢响应下必现)。
+  // 这条只能靠源码契约守护:复现它需要给 mock 注入不对称延迟,不适合进常规回归。
+  const listFn = appJs.match(/function refreshThreadsForCwd[\s\S]*?\n {2}\}/)?.[0] || '';
+  assert.ok(listFn, '未找到 refreshThreadsForCwd');
+  assert.match(listFn, /const requestedArchived = showArchivedThreads/, '必须捕获请求时的视图');
+  assert.match(
+    listFn,
+    /requestedArchived !== showArchivedThreads\)\s*return/,
+    'thread:list 的回调必须丢弃已切走视图的过期响应',
+  );
+});

@@ -504,6 +504,35 @@ body {
 #drawer-close svg { width: 18px; height: 18px; }
 #drawer-close:active { background: var(--hover-wash-strong); }
 
+/* 归档回路的入口。留在滚动区之外,长会话列表不会把它顶走。 */
+#drawer-archived-bar {
+  flex-shrink: 0;
+  padding: var(--space-2) 12px 0;
+}
+#drawer-archived-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+#drawer-archived-toggle:active { background: var(--hover-wash-strong); }
+/* 处于归档视图时把开关点亮,否则用户分不清眼前这份空列表是「没有会话」还是「看错了列表」。 */
+#drawer-archived-toggle[aria-pressed="true"] {
+  background: var(--hover-wash-strong);
+  color: var(--text);
+}
+.drawer-archived-icon { display: inline-flex; }
+.drawer-archived-icon svg { width: 14px; height: 14px; }
+
 #drawer-body {
   flex: 1;
   min-height: 0;
@@ -1845,7 +1874,10 @@ body {
 .sheet-overlay {
   position: fixed;
   inset: 0;
-  z-index: 40;
+  /* 抽屉(#drawer 101 / #drawer-overlay 100)之上、认证闸门(#auth-gate 210)之下。
+     排在抽屉下面时,Rename / Delete 这些从抽屉里拉起的 sheet 并不会消失——它铺满宽度,
+     只从抽屉右边缘露出一截,看起来就像弹窗错开到了主页面上。 */
+  z-index: 150;
   background: rgba(0,0,0,0.4);
   display: flex;
   align-items: flex-end;

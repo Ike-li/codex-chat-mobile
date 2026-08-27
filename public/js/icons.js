@@ -124,6 +124,10 @@ export const ICONS = {
   gear: svg(
     '<circle cx="12" cy="12" r="3"/><path d="M12 3v2.2M12 18.8V21M4.9 6.5l1.6 1.6M17.5 15.9l1.6 1.6M3 12h2.2M18.8 12H21M4.9 17.5l1.6-1.6M17.5 8.1l1.6-1.6"/>',
   ),
+  archive: svg(
+    '<rect x="3" y="4" width="18" height="4" rx="1"/>'
+    + '<path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>',
+  ),
 };
 
 export function icon(name, { className } = {}) {
