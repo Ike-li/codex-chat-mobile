@@ -36,7 +36,7 @@ test('P0/P1 surfaces resolve through icon names instead of emoji', () => {
     readFileSync(new URL('../public/js/icons.js', import.meta.url), 'utf8'),
     /\[data-icon\]/,
   );
-  for (const name of ['compass', 'chart', 'clipboard', 'search', 'notepad', 'broom', 'shield', 'chat', 'tools', 'warning', 'hammer', 'pencil', 'plus', 'hourglass']) {
+  for (const name of ['compass', 'chart', 'clipboard', 'search', 'notepad', 'broom', 'shield', 'chat', 'tools', 'warning', 'hammer', 'pencil', 'hourglass']) {
     assert.match(html, new RegExp(`data-icon="${name}"`));
   }
 

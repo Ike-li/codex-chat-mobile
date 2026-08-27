@@ -296,18 +296,36 @@ test('client renders summary and full reasoning streams separately', () => {
   assert.match(allContent, /payload\.channel/);
 });
 
-test('main chrome hides live instance tabs and keeps new session in the drawer', () => {
-  assert.match(html, /id="new-session-btn"/);
-  assert.match(html, /id="drawer-fab-new"/);
+test('main chrome hides live instance tabs; drawer new session is per-workspace', () => {
   assert.match(allContent, /function createNewSession/);
+  assert.match(appJs, /createNewSession\(btn\.dataset\.newCwd\)/);
+  assert.doesNotMatch(html, /id="new-session-btn"/);
+  assert.doesNotMatch(html, /id="drawer-fab-new"/);
   assert.doesNotMatch(html, /id="instance-tabs"/);
   assert.doesNotMatch(allContent, /id="new-instance-btn"/);
   assert.doesNotMatch(allContent, /id="fork-instance-btn"/);
 });
 
+test('drawer header is a titled panel with close, not brand or duplicate new-session', () => {
+  assert.match(html, /id="drawer-title"[^>]*>工作区与会话/);
+  assert.match(html, /id="drawer-close"/);
+  assert.match(html, /aria-labelledby="drawer-title"/);
+  assert.doesNotMatch(html, /class="drawer-logo"/);
+  assert.doesNotMatch(html, /id="drawer-project"/);
+  assert.doesNotMatch(html, /class="drawer-search-pill"/);
+  assert.doesNotMatch(html, /id="new-session-btn"/);
+  assert.doesNotMatch(html, /id="drawer-fab-new"/);
+  assert.doesNotMatch(css, /\.drawer-logo\s*\{/);
+  assert.doesNotMatch(css, /\.drawer-search-pill\s*\{/);
+  assert.doesNotMatch(css, /\.drawer-fab\s*\{/);
+  assert.doesNotMatch(css, /#new-session-btn\s*\{/);
+  assert.doesNotMatch(appJs, /\$\('new-session-btn'\)/);
+  assert.doesNotMatch(appJs, /\$\('drawer-fab-new'\)/);
+  assert.match(appJs, /\$\('drawer-close'\)\.onclick\s*=\s*closeDrawer/);
+});
+
 test('drawer hides the tools panel and labels conversations by project', () => {
   assert.match(html, /id="drawer-tools"[^>]*\bhidden\b/);
-  assert.match(html, /id="drawer-project"/);
   assert.match(appJs, /from '\/js\/project-label\.js'/);
   assert.match(appJs, /function renderDrawerProject/);
   assert.doesNotMatch(appJs, / · native/);
@@ -1250,14 +1268,12 @@ test('dark-mode hard-coded washes and on-fill colours live in theme tokens', () 
     assert.match(darkRoot, new RegExp(`${token}:\\s*${dark.source}`, 'i'), `${token} 深色档`);
   }
 
-  // 组件只引用 token,不再写死白玻璃 / 白字 / 浅粉面 / 死黑 FAB / 黑拇指。
+  // 组件只引用 token,不再写死白玻璃 / 白字 / 浅粉面 / 黑拇指。
   assert.match(componentCss, /\.slash-popup\s*\{[^}]*background:\s*var\(--glass\)/s);
   assert.match(componentCss, /#attach-tray\s*\{[^}]*background:\s*var\(--glass-soft\)/s);
   assert.match(componentCss, /#confirm-ok\s*\{[^}]*color:\s*var\(--on-accent\)/s);
   assert.match(componentCss, /#confirm-ok\[data-danger="true"\]\s*\{[^}]*color:\s*var\(--on-error\)/s);
   assert.match(componentCss, /\.approve-btn\s*\{[^}]*color:\s*var\(--on-accent-text\)/s);
-  assert.match(componentCss, /\.drawer-fab\s*\{[^}]*background:\s*var\(--accent\)/s);
-  assert.match(componentCss, /\.drawer-fab\s*\{[^}]*color:\s*var\(--on-accent\)/s);
   assert.match(componentCss, /\.mini-spinner\s*\{[^}]*border:\s*2px\s+solid\s+var\(--spinner-track\)/s);
   assert.match(componentCss, /\.error-msg \.bubble\s*\{[^}]*background:\s*var\(--error-surface\)/s);
   assert.match(componentCss, /\.error-msg \.bubble\s*\{[^}]*color:\s*var\(--error-text\)/s);
@@ -1287,7 +1303,6 @@ test('dark-mode hard-coded washes and on-fill colours live in theme tokens', () 
   }
   assert.doesNotMatch(componentCss, /\.slash-popup\s*\{[^}]*background:\s*rgba\(255/s);
   assert.doesNotMatch(componentCss, /#confirm-ok\s*\{[^}]*color:\s*#fff/s);
-  assert.doesNotMatch(componentCss, /\.drawer-fab\s*\{[^}]*background:\s*#0d0d0d/s);
 });
 
 

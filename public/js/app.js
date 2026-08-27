@@ -1515,11 +1515,6 @@ import { icon, hydrateIcons } from '/js/icons.js';
 
   function renderDrawerProject() {
     const name = projectLabel(serverCwd) || '项目';
-    const el = $('drawer-project');
-    if (el) {
-      el.textContent = name;
-      el.title = serverCwd || '';
-    }
     const headerProject = $('header-project');
     if (headerProject) {
       headerProject.textContent = name;
@@ -3769,6 +3764,7 @@ import { icon, hydrateIcons } from '/js/icons.js';
     drawerOverlay.classList.remove('open');
   }
   drawerOverlay.onclick = closeDrawer;
+  $('drawer-close').onclick = closeDrawer;
 
   $('header-context').onclick = () => {
     workspacePanel.open();
@@ -3788,17 +3784,6 @@ import { icon, hydrateIcons } from '/js/icons.js';
     if (navigator.clipboard?.writeText) navigator.clipboard.writeText(code);
     else fallbackCopyText(code);
   });
-
-  $('new-session-btn').onclick = () => {
-    createNewSession();
-    closeDrawer();
-  };
-
-  // Drawer FAB
-  $('drawer-fab-new').onclick = () => {
-    createNewSession();
-    closeDrawer();
-  };
 
   applyComposerMode();
   renderDrawerProject();

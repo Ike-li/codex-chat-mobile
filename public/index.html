@@ -40,13 +40,14 @@
 
 <!-- Session drawer -->
 <div id="drawer-overlay"></div>
-<div id="drawer">
+<div id="drawer" aria-labelledby="drawer-title">
   <div id="drawer-header">
-    <div id="drawer-title-group">
-      <span class="drawer-logo">Codex</span>
-      <span id="drawer-project" class="drawer-search-pill">项目</span>
-    </div>
-    <button id="new-session-btn">+ 新会话</button>
+    <h2 id="drawer-title">工作区与会话</h2>
+    <button type="button" id="drawer-close" title="关闭" aria-label="关闭">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
+      </svg>
+    </button>
   </div>
   <div id="drawer-body">
     <div id="drawer-projects"></div>
@@ -67,11 +68,6 @@
       <button id="native-admin-btn" class="native-control-btn native-danger" title="Admin 管理" hidden>Admin</button>
     </div>
   </div>
-  <!-- Floating FAB inside drawer -->
-  <button id="drawer-fab-new" class="drawer-fab">
-    <span class="fab-icon" data-icon="plus"></span>
-    <span class="fab-text">新会话</span>
-  </button>
   <button id="push-subscribe-btn" type="button" hidden>开启推送通知</button>
 </div>
 

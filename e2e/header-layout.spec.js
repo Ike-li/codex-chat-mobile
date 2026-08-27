@@ -71,10 +71,16 @@ test.describe('顶部导航紧凑度', () => {
     await expect(page.locator('#drawer')).toHaveClass(/open/);
     await expect(page.locator('#drawer-tools'), '抽屉主路径不再展示工具面板').toBeHidden();
     await expect(page.locator('#native-thread-refresh'), '工具按钮对用户不可见').toBeHidden();
-    await expect(page.locator('#new-session-btn')).toBeVisible();
-    await expect(page.locator('#drawer-project')).toBeVisible();
+    await expect(page.locator('#drawer-title')).toHaveText('工作区与会话');
+    await expect(page.locator('#drawer-close')).toBeVisible();
+    await expect(page.locator('#new-session-btn')).toHaveCount(0);
+    await expect(page.locator('#drawer-fab-new')).toHaveCount(0);
+    await expect(page.locator('#drawer-project')).toHaveCount(0);
     await expect(page.locator('#drawer-projects')).toBeInViewport();
     await expect.poll(async () => page.locator('#drawer-body').evaluate(el => el.scrollTop)).toBe(0);
+
+    await page.locator('#drawer-close').click();
+    await expect(page.locator('#drawer')).not.toHaveClass(/open/);
   });
 
   test('连接状态条在宽屏上收进阅读栏', async ({ page }) => {

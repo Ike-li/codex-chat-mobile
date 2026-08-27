@@ -29,7 +29,7 @@
 | Thread 列表/历史/续接 | 默认 | Threads/历史抽屉 | thread/list/read/resume | Codex 原生 |
 | Rename/Archive/Delete | 默认 | thread 操作菜单 | ACK + thread event | Codex 原生 |
 | Compact/Rollback/Fork | 默认，取决于协议 | 抽屉/标签 | ACK + 更新 thread | Codex 原生 |
-| 多 runtime 视图 | 默认 | 抽屉新会话 / 历史 thread | scoped init/events | gateway 进程内 |
+| 多 runtime 视图 | 默认 | 顶栏 + / 项目行 ＋ / 历史 thread | scoped init/events | gateway 进程内 |
 | 多设备视图隔离 | 默认 | 各设备独立操作 | 目标 room 事件 | 每 Socket 视图 |
 | 短断线 catch-up | 默认 | 自动 | seq/epoch 增量 | runtime 有界 buffer |
 | Gap snapshot 重建 | 默认 | 自动 | thread/read snapshot | Codex 原生 |

@@ -200,7 +200,7 @@ receipt ledger 是 gateway 进程内状态，因此项目不保证 gateway 重�
 
 打开左侧抽屉，可以：
 
-- 新建会话；
+- 点项目行的 `＋` 在该工作区新建会话；
 - 刷新原生 thread 列表；
 - 打开历史 thread 并查看完整消息；
 - 续接 Codex App 或 Web 创建的 thread；

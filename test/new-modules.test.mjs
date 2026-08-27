@@ -290,7 +290,8 @@ const allContent = html + '\n' + appJs;
 test('frontend: instance routing stays in memory without a main-chrome tab strip', () => {
   assert.match(allContent, /handleInstances/, 'has handleInstances function');
   assert.doesNotMatch(html, /id="instance-tabs"/, 'instance tabs are not in main chrome');
-  assert.match(html, /id="new-session-btn"/, 'new session lives in the drawer');
+  assert.match(html, /id="drawer-close"/, 'drawer has an explicit close control');
+  assert.doesNotMatch(html, /id="new-session-btn"/, 'global new session is not a drawer header button');
 });
 
 test('frontend: attachment elements', () => {
