@@ -344,6 +344,7 @@ test('drawer lists every allowlisted workspace so the user can switch projects',
   assert.match(html, /id="drawer-projects"/);
   assert.match(html, /id="drawer-body"/);
   assert.match(appJs, /function renderDrawerProjects/);
+  assert.doesNotMatch(appJs, /drawer-section-label">项目/, 'drawer title already names the panel; do not repeat 项目');
   assert.match(appJs, /function toggleDirExpand/);
   assert.match(appJs, /from '\/js\/drawer-dirs\.js'/);
   assert.match(appJs, /dir-toggle/);

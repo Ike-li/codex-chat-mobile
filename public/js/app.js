@@ -1573,7 +1573,7 @@ import { icon, hydrateIcons } from '/js/icons.js';
       return;
     }
     root.hidden = false;
-    root.innerHTML = `<div class="drawer-section-label">项目</div>`;
+    root.innerHTML = '';
     for (const dir of dirs) {
       const name = projectLabel(dir) || dir;
       const expanded = expandedDirs.has(dir);
