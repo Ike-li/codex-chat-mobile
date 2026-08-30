@@ -6,7 +6,7 @@
 
 [English](./README.md) | 简体中文
 
-面向手机的本地 Codex CLI 控制界面。目标是让手机端具备接近终端的 Codex 使用体验：同一个本地工作区、同一套审批边界、同样的流式 agent 事件。
+本机 [Codex CLI](https://github.com/openai/codex) 使用自定义 `base_url` 和 API key 时，官方 ChatGPT 远控无法与这台主机配对。本项目是这台开发机上已在运行的 `codex app-server` 的手机控制面：同一个本地工作区、同一套审批边界、同一条原生 thread 和同样的流式 agent 事件。
 
 | 流式对话 | 审批卡片 |
 |---|---|

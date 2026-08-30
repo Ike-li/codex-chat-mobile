@@ -6,7 +6,7 @@
 
 English | [简体中文](./README.zh-CN.md)
 
-A mobile control plane for your local [Codex CLI](https://github.com/openai/codex). Codex keeps running on your dev machine; you drive it from your phone with a terminal-equivalent experience — same local workspace, same approval boundaries, same streaming agent events.
+When your local [Codex CLI](https://github.com/openai/codex) uses a custom `base_url` and API key, official ChatGPT remote control cannot pair with that host. This project is the phone control plane for the `codex app-server` already running on your machine — same local workspace, same approval boundaries, same native threads and streaming agent events.
 
 | Streaming chat | Approval card |
 |---|---|
