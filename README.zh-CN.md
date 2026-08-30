@@ -76,7 +76,15 @@ CODEX_P3_EXPERIMENTAL=0
 | `CODEX_ADMIN_ENABLED` / `CODEX_P3_EXPERIMENTAL` | `0` | 显式启用 Admin / Labs；默认不进入核心聊天面 |
 | `VAPID_SUBJECT` / `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | 空 | 启用设备绑定 Web Push（三项齐全才生效） |
 
-本机打开 `http://127.0.0.1:3001`。手机访问默认必须走 HTTPS，并配置精确 `CODEX_ALLOWED_ORIGINS`；同机反代通常继续使用 `HOST=127.0.0.1`，只有拓扑确实需要对外监听时才改 `0.0.0.0`，此时 `AUTH_TOKEN` 至少 32 字符。静态 token 只用来换取绑定设备的 HttpOnly session，不写入浏览器持久存储。完整配置见 [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md)。
+本机打开 `http://127.0.0.1:3001`。
+
+手机只推荐一条路径：同机 Tailscale Serve，网关继续听 loopback，由 Serve 提供 tailnet 内 HTTPS。
+
+```bash
+tailscale serve 3001
+```
+
+`AUTH_TOKEN` 至少 32 字符，`CODEX_ALLOWED_ORIGINS` 写成 Serve 打印的精确 `https://<机器名>.<tailnet>.ts.net`，`CODEX_TRUSTED_PROXY_IPS=127.0.0.1,::1`。用 Serve，不要用 Funnel。新设备批准前不能发送。其它 HTTPS 反代见 [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md)，不写在这里。
 
 ## 常用命令
 
@@ -110,7 +118,7 @@ npm run test:ci
 - [docs/SHOWCASE.md](docs/SHOWCASE.md)：功能巡览（长什么样、能干什么）。
 - [docs/WEB_CAPABILITIES.md](docs/WEB_CAPABILITIES.md)：Web 端能力参考（能看到、点击、输入和得到什么）。
 - [docs/GUIDE.md](docs/GUIDE.md)：从安装到装成 PWA 的端到端使用走查。
-- [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md)：从手机连接（HTTPS/PWA/Push 硬限制、Tailscale、隧道）。
+- [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md)：手机接入以 Tailscale Serve 为推荐路径；其它 HTTPS 反代和 PWA/Push 硬限制在这篇。
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)：当前架构和安全模型。
 - [docs/PROTOCOL.md](docs/PROTOCOL.md)：Codex app-server 协议参考（方法、事件、覆盖）。
 - [docs/API.md](docs/API.md)：接口参考（HTTP 路由 + Socket.IO 事件签名）。

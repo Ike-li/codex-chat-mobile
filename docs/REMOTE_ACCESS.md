@@ -17,6 +17,8 @@ Service Worker、PWA 安装和 Web Push 只在浏览器安全上下文中可用�
 
 ## 方案对比
 
+入门只推荐 Tailscale Serve。Caddy 与公网 tunnel 留给已经有证书或访问策略的部署，不要和 Serve 并列当成第一步。
+
 无论选哪种反代，都应让代理覆盖为单一 `X-Forwarded-Proto: https`，并把代理的**直接对端 IP**精确写入 `CODEX_TRUSTED_PROXY_IPS`。不要使用 `trust proxy=true`、CIDR、hostname、`*` Origin，也不要相信客户端传入的 `X-Forwarded-For`。
 
 通用 `.env` 基线：

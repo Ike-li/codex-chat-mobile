@@ -56,7 +56,15 @@ npm test
 npm start
 ```
 
-Open `http://127.0.0.1:3001` on the same machine. Phone access is fail-closed unless the effective connection is HTTPS, its exact Origin is allowlisted, and authentication/device pairing succeeds. A same-host HTTPS proxy should normally leave `HOST=127.0.0.1`; bind a non-loopback interface only when the proxy topology requires it, with an `AUTH_TOKEN` of at least 32 characters. Follow [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md) before exposing the gateway.
+Open `http://127.0.0.1:3001` on the same machine.
+
+From a phone, the only recommended path is Tailscale Serve: keep the gateway on loopback and publish it as tailnet HTTPS.
+
+```bash
+tailscale serve 3001
+```
+
+Set `AUTH_TOKEN` to at least 32 characters, `CODEX_ALLOWED_ORIGINS` to the exact `https://<machine>.<tailnet>.ts.net` URL Serve prints, and `CODEX_TRUSTED_PROXY_IPS=127.0.0.1,::1`. Use Serve, not Funnel. Pair the new device before it can send. Other HTTPS proxies are in [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md), not here.
 
 ## Configuration
 
@@ -126,7 +134,7 @@ This is a control plane for a real development machine — treat any remote expo
 - [docs/SHOWCASE.md](docs/SHOWCASE.md) — visual feature tour (what it looks like and what it does)
 - [docs/WEB_CAPABILITIES.md](docs/WEB_CAPABILITIES.md) — complete Web UI capability reference: visible state, actions, inputs, and results
 - [docs/GUIDE.md](docs/GUIDE.md) — end-to-end walkthrough from install to installing the PWA
-- [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md) — connect from your phone (HTTPS/PWA/Push constraints, Tailscale, tunnels)
+- [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md) — phone access: Tailscale Serve is the recommended path; other HTTPS proxies and PWA/Push constraints live here
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — current architecture and security model
 - [docs/PROTOCOL.md](docs/PROTOCOL.md) — Codex app-server protocol reference (methods, events, coverage)
 - [docs/API.md](docs/API.md) — interface reference (HTTP routes + Socket.IO events with signatures)

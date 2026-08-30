@@ -76,17 +76,23 @@ npm start
 
 ## 第三步：连接手机
 
-手机远程访问默认要求可信 HTTPS、精确 Origin、有效 session 和设备批准。推荐让同机 Tailscale Serve、Caddy 或受保护的 tunnel 反代 `127.0.0.1:3001`。
+本机对话跑通之后，手机只推荐一条路径：同机 Tailscale Serve 把 loopback 发布为 tailnet 内 HTTPS。其它 HTTPS 反代不是入门选项，见 [REMOTE_ACCESS.md](REMOTE_ACCESS.md)。
 
-至少配置：
+在开发机：
+
+```bash
+tailscale serve 3001
+```
+
+保持 `HOST=127.0.0.1`，并至少配置：
 
 ```dotenv
 AUTH_TOKEN=<至少 32 字符的随机值>
-CODEX_ALLOWED_ORIGINS=https://your-mobile-origin.example
-CODEX_TRUSTED_PROXY_IPS=<反向代理到网关时的直接对端 IP>
+CODEX_ALLOWED_ORIGINS=https://<机器名>.<tailnet>.ts.net
+CODEX_TRUSTED_PROXY_IPS=127.0.0.1,::1
 ```
 
-详细部署方式见 [REMOTE_ACCESS.md](REMOTE_ACCESS.md)。
+把 Origin 写成 Serve 打印的精确 URL。用 Serve，不要用 Funnel。
 
 手机打开 HTTPS 地址后：
 

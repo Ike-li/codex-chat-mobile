@@ -51,6 +51,48 @@ test('bilingual READMEs keep their language contract and stay cross-linked', () 
   }
 });
 
+function sectionBetween(text, startHeading, endHeading) {
+  const startIdx = text.indexOf(`${startHeading}\n`);
+  assert.ok(startIdx >= 0, `missing heading ${startHeading}`);
+  const from = startIdx + startHeading.length + 1;
+  const endIdx = text.indexOf(`\n${endHeading}\n`, from);
+  assert.ok(endIdx >= 0, `missing heading ${endHeading} after ${startHeading}`);
+  return text.slice(from, endIdx);
+}
+
+test('quick-start phone path recommends only Tailscale Serve', () => {
+  const otherProxies = /Caddy|ngrok|Cloudflare Tunnel/i;
+  const readmeEnQuick = sectionBetween(readDoc('../README.md'), '## Quick Start', '## Configuration');
+  const readmeZhLocal = sectionBetween(readDoc('../README.zh-CN.md'), '## 本地运行', '## 常用命令');
+  const gettingStartedPhone = sectionBetween(
+    readDoc('../docs/GETTING_STARTED.md'),
+    '## 第三步：连接手机',
+    '## 第四步：完成一次审批',
+  );
+  const guidePhone = sectionBetween(readDoc('../docs/GUIDE.md'), '## 从手机连接', '## 第一轮对话');
+  const remoteAccess = readDoc('../docs/REMOTE_ACCESS.md');
+
+  for (const [name, section] of [
+    ['README.md Quick Start', readmeEnQuick],
+    ['README.zh-CN.md 本地运行', readmeZhLocal],
+    ['GETTING_STARTED.md 第三步', gettingStartedPhone],
+    ['GUIDE.md 从手机连接', guidePhone],
+  ]) {
+    assert.match(section, /Tailscale Serve/, `${name} must recommend Tailscale Serve`);
+    assert.match(section, /tailscale serve 3001/, `${name} must include the Serve command`);
+    assert.doesNotMatch(section, otherProxies, `${name} must not list other proxies as a first path`);
+  }
+
+  assert.match(readmeEnQuick, /docs\/REMOTE_ACCESS\.md/, 'README.md Quick Start must send other proxies to REMOTE_ACCESS.md');
+  assert.match(readmeZhLocal, /docs\/REMOTE_ACCESS\.md/, 'README.zh-CN.md 本地运行 must send other proxies to REMOTE_ACCESS.md');
+  assert.match(gettingStartedPhone, /REMOTE_ACCESS\.md/, 'GETTING_STARTED.md must send other proxies to REMOTE_ACCESS.md');
+  assert.match(guidePhone, /REMOTE_ACCESS\.md/, 'GUIDE.md must send other proxies to REMOTE_ACCESS.md');
+
+  assert.match(remoteAccess, /### 1\. Tailscale Serve（推荐）/);
+  assert.match(remoteAccess, /### 2\. Caddy \/ 局域网可信证书/);
+  assert.match(remoteAccess, /### 3\. Cloudflare Tunnel \/ ngrok/);
+});
+
 test('key-file docs name the extracted stylesheet, not an index.html "CSS shell"', () => {
   // 样式已抽到 public/css/app.css,把 index.html 描述成 "HTML and CSS shell" 会误导读者
   // 去 index.html 里找样式。CONTRIBUTING.md 要求 EN/ZH 同步,三处必须一起改。

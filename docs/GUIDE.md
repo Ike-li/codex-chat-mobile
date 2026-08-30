@@ -20,12 +20,18 @@ npm start
 
 ## 从手机连接
 
-手机访问必须优先完成 HTTPS 部署。远程明文 HTTP 默认被网关拒绝，不再支持“先用局域网 HTTP 临时聊天”的普通路径。推荐让同机 Tailscale Serve、Caddy 或受访问策略保护的 tunnel 反代 `127.0.0.1:3001`，并至少设置：
+手机访问必须优先完成 HTTPS 部署。远程明文 HTTP 默认被网关拒绝，不再支持“先用局域网 HTTP 临时聊天”的普通路径。入门只推荐同机 Tailscale Serve 把 `127.0.0.1:3001` 发布为 tailnet 内 HTTPS；其它 HTTPS 反代见 [REMOTE_ACCESS.md](REMOTE_ACCESS.md)。
+
+```bash
+tailscale serve 3001
+```
+
+至少设置：
 
 ```dotenv
 HOST=127.0.0.1
 AUTH_TOKEN=<openssl rand -hex 32 的结果>
-CODEX_ALLOWED_ORIGINS=https://你的精确域名
+CODEX_ALLOWED_ORIGINS=https://<机器名>.<tailnet>.ts.net
 CODEX_TRUSTED_PROXY_IPS=127.0.0.1,::1
 CODEX_ALLOW_INSECURE_REMOTE=0
 ```
