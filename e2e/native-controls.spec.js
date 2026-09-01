@@ -52,10 +52,25 @@ async function clickNativeControl(page, selector) {
     await page.locator('#menu-btn').click();
     await expect(drawer).toHaveClass(/open/);
   }
-  await page.locator(selector).dispatchEvent('click');
+  // 用真实 click 而不是 dispatchEvent：后者直接把事件派发到元素上，绕过可见性检查，
+  // 于是按钮即便对用户完全不可见，这些断言照样是绿的——工具面板整块被 hidden 的那段
+  // 时间里就是如此。判据必须是「用户点得到」，不是「元素存在」。
+  await page.locator(selector).click();
 }
 
 test.describe('Native Controls Browser Panels', () => {
+  test('工具面板在抽屉里对用户可见', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('#state-label')).not.toHaveText('offline', { timeout: 10000 });
+    await page.locator('#menu-btn').click();
+    await expect(page.locator('#drawer')).toHaveClass(/open/);
+    // 只断言「HTML 里有这个 id」挡不住整块被 hidden：判据必须是用户真的看得见。
+    await expect(page.locator('#drawer-tools')).toBeVisible();
+    for (const selector of ['#native-files-btn', '#native-health-btn', '#native-account-btn']) {
+      await expect(page.locator(selector)).toBeVisible();
+    }
+  });
+
   test('Native Controls Browser Panels', async ({ page }) => {
     const runtimeErrors = collectRuntimeErrors(page);
 

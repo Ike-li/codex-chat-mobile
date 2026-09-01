@@ -69,8 +69,10 @@ test.describe('顶部导航紧凑度', () => {
 
     await page.locator('#menu-btn').click();
     await expect(page.locator('#drawer')).toHaveClass(/open/);
-    await expect(page.locator('#drawer-tools'), '抽屉主路径不再展示工具面板').toBeHidden();
-    await expect(page.locator('#native-thread-refresh'), '工具按钮对用户不可见').toBeHidden();
+    // 工具栏移进抽屉是为了让顶栏变清爽，不是为了让这些功能消失：Files / 诊断 / 设备
+    // 都只有这一个入口，整块隐藏等于建了却点不到。
+    await expect(page.locator('#drawer-tools'), '抽屉里应当能看到工具面板').toBeVisible();
+    await expect(page.locator('#native-thread-refresh'), '工具按钮对用户可见').toBeVisible();
     await expect(page.locator('#drawer-title')).toHaveText('工作区与会话');
     await expect(page.locator('#drawer-close')).toBeVisible();
     await expect(page.locator('#new-session-btn')).toHaveCount(0);

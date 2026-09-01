@@ -1802,6 +1802,30 @@ io.on('connection', socket => {
     });
   });
 
+  // devices:list 只回 16 位引用，不把完整 token 发给浏览器。撤销因此也要按引用来，
+  // 否则界面上看得到、却撤不掉。引用由服务端解析回完整 token，客户端始终不需要知道它。
+  on(socket, 'devices:revoke', (payload = {}, ack) => {
+    const deviceRef = typeof payload?.deviceRef === 'string' ? payload.deviceRef : '';
+    const matches = getTrustedDevices()
+      .map(record => record.deviceToken)
+      .filter(token => token.slice(0, 16) === deviceRef);
+    if (deviceRef.length !== 16 || matches.length !== 1) {
+      ackError(ack, new Error(matches.length > 1 ? 'device_ref_ambiguous' : 'device_ref_unknown'));
+      return;
+    }
+    const persisted = revokeDeviceAccess(matches[0], {
+      removeTrust: true,
+      source: 'socket',
+      actorToken: socket.handshake.auth?.deviceToken,
+    });
+    broadcastPendingDevices();
+    if (!persisted) {
+      ackError(ack, new Error('device_persist_failed'));
+      return;
+    }
+    ackOk(ack);
+  });
+
   on(socket, 'needs-you:snapshot', (_payload = {}, ack) => {
     ackOk(ack, needsYouRegistry.snapshot());
   });

@@ -2287,6 +2287,40 @@ import { icon, hydrateIcons } from '/js/icons.js';
     socket.emit('health:read', { cwd: serverCwd }, ack => render(ack?.ok ? ack : null));
   }
 
+  // D2：手机上要能看清「现在有哪些设备连着」并能踢掉其中一台。列表只拿得到 16 位引用，
+  // 撤销走 devices:revoke 由服务端解析——完整 token 不下发到浏览器。
+  function loadDevicesPanel() {
+    socket.emit('devices:list', {}, ack => {
+      if (!ack?.ok) return appendSystem(ack?.error || '设备列表读取失败', true);
+      const fmt = ts => (ts ? new Date(ts).toLocaleString() : '—');
+      const rows = (ack.devices || []).map(device => `<div class="native-list-row">
+        <div class="native-row-title">${escHtml(device.deviceRef)}${device.current ? '（本机）' : ''}</div>
+        <div class="native-row-meta">最近活跃 ${escHtml(fmt(device.lastSeenAt))} · 首次接入 ${escHtml(fmt(device.approvedAt))}</div>
+        <div class="native-row-meta">${escHtml(device.ip || '来源未知')} · 推送${device.pushSubscribed ? '已订阅' : '未订阅'}</div>
+        ${device.current ? '' : `<button class="native-mini-btn native-danger" data-revoke-device="${escHtml(device.deviceRef)}" type="button">撤销</button>`}
+      </div>`).join('') || '<div class="native-list-row">暂无已接入设备</div>';
+      renderNativePanel('设备', rows);
+      for (const button of document.querySelectorAll('[data-revoke-device]')) {
+        button.onclick = async () => {
+          const deviceRef = button.dataset.revokeDevice;
+          // 撤销会立刻断开那台设备并清掉它的推送绑定，不可逆，所以要确认。
+          const ok = await confirmDialog.confirm({
+            title: '撤销设备',
+            body: `${deviceRef} 将立即断开连接，其推送订阅一并失效。需要时可重新注册。`,
+            confirmText: '撤销',
+            danger: true,
+          });
+          if (!ok) return;
+          socket.emit('devices:revoke', { deviceRef }, res => {
+            if (!res?.ok) return appendSystem(res?.error || '撤销失败', true);
+            appendSystem(`已撤销设备 ${deviceRef}`);
+            loadDevicesPanel();
+          });
+        };
+      }
+    });
+  }
+
   function loadMcpPanel() {
     socket.emit('mcp:read', { cwd: serverCwd }, ack => {
       if (!ack?.ok) return appendSystem(ack?.error || 'MCP read failed', true);
@@ -3714,6 +3748,7 @@ import { icon, hydrateIcons } from '/js/icons.js';
   $('native-account-btn').onclick = loadAccountPanel;
   $('native-mcp-btn').onclick = loadMcpPanel;
   $('native-health-btn').onclick = loadHealthPanel;
+  $('native-devices-btn').onclick = loadDevicesPanel;
   $('native-skills-btn').onclick = loadSkillsPanel;
   $('native-import-btn').onclick = detectExternalAgentConfig;
   $('native-p3-btn').onclick = openP3Panel;

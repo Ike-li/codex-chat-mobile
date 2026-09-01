@@ -324,8 +324,12 @@ test('drawer header is a titled panel with close, not brand or duplicate new-ses
   assert.match(appJs, /\$\('drawer-close'\)\.onclick\s*=\s*closeDrawer/);
 });
 
-test('drawer hides the tools panel and labels conversations by project', () => {
-  assert.match(html, /id="drawer-tools"[^>]*\bhidden\b/);
+// 工具面板原本在移动端改版里被整块 hidden，于是 Files / Account / 诊断 / 设备这些入口
+// 全部不可达——功能建了却没人点得到。真机验证时才发现：e2e 用 dispatchEvent 直接派发事件，
+// 绕过了可见性检查，所以按钮不可见时断言照样是绿的。
+// 可达性的判据在 e2e（真实 click + toBeVisible）；这里只锁住「不得再整块隐藏」。
+test('drawer keeps the tools panel reachable and labels conversations by project', () => {
+  assert.doesNotMatch(html, /id="drawer-tools"[^>]*\bhidden\b/);
   assert.match(appJs, /from '\/js\/project-label\.js'/);
   assert.match(appJs, /function renderDrawerProject/);
   assert.doesNotMatch(appJs, / · native/);
