@@ -44,7 +44,10 @@
 | 文本 | 默认 | 输入框 | user message + ACK | outbox/原生 thread |
 | 文件附件 | 默认 | `+` | mention/localImage | owner-only 临时文件 |
 | Workspace mention | 默认 | `@` 搜索或工作区 sheet | mention | 必须在 runtime cwd 内 |
-| 工作区文件浏览 | 默认只读 | 顶栏项目名 | `fs:readDirectory` / `fs:readFile` | 不写盘 |
+| 工作区文件浏览 | 默认只读 | 抽屉 → 设备旁的 Files | `fs:readDirectory` / `fs:readFile` | 不写盘 |
+| 工作区路径作用域 | 始终 | 越界时报「路径不在允许的工作区内」 | 服务端强制 + `workspace_scope` 审计 | 审计落盘 |
+| 已接入设备列表 | 始终 | 抽屉 → 设备 | `devices:list` | 读信任表 |
+| 撤销某台设备 | 始终 | 设备面板的撤销（危险色二次确认） | `devices:revoke` | 撤信任 + 清推送订阅 |
 | Git 改动 | 默认只读 | 工作区 sheet「改动」 | `git:status` / `git:diff` | 非 git 仓明确失败 |
 | 连接横幅 | 默认 | 自动 | 延迟出现的可读状态 | 浏览器进程内 |
 | 连接延迟芯片 | 默认 | 顶栏 | `conn:ping` ACK 往返 | 浏览器进程内 |
