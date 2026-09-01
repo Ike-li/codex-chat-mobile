@@ -217,6 +217,17 @@ export function pushDecision(envelope) {
     return needsYouPush(envelope, 'Codex 需要人到场', '有问题等待回答');
   }
   if (envelope.type === 'approval_revoked') return null;
+  // codex 进程死掉是最需要人知道的情形之一：任务停了，而手机上看到的还是「运行中」，
+  // 不推的话用户会一直等一个不会来的结果。只推真正的失败原因——status 事件本身很频繁。
+  if (envelope.type === 'status') {
+    const reason = envelope.payload?.reason;
+    if (reason !== 'process_exit' && reason !== 'process_error') return null;
+    return {
+      title: 'Codex 已中断',
+      body: reason === 'process_exit' ? '宿主机上的 codex 进程已退出，任务停止' : '宿主机上的 codex 进程异常退出，任务停止',
+      tag: 'ccm-host-down',
+    };
+  }
   if (envelope.type === 'result' || envelope.type === 'error') {
     const status = envelope.payload?.ok ? '完成' : '出错';
     return {
