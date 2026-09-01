@@ -101,8 +101,10 @@
 | 事件 | 参数 | ACK |
 |---|---|---|
 | `models:read` | `cwd`、`includeHidden` | `{ok:true, models, nextCursor, capabilities}` |
-| `fs:readDirectory` | `cwd`、`path`（默认 WORK_DIR） | `{ok:true, entries, path}` |
-| `fs:readFile` | `cwd`、`path` | `{ok:true, dataBase64, path}` |
+| `fs:readDirectory` | `cwd`、`path`（默认 WORK_DIR） | `{ok:true, entries, path}`；`path` 必须落在工作区内，否则拒绝 |
+| `fs:readFile` | `cwd`、`path` | `{ok:true, dataBase64, path}`；同上 |
+| `devices:list` | — | `{ok:true, devices}`，每项含 `deviceRef`（16 位引用）、`ip`、`userAgent`、`approvedAt`、`lastSeenAt`、`pushSubscribed`、`current` |
+| `devices:revoke` | `deviceRef` | `{ok:true}`；按列表给出的引用撤销，服务端解析回完整 token。引用无法唯一命中时 `device_ref_unknown` / `device_ref_ambiguous` |
 | `files:search` | `cwd`、`query` | `{ok:true, paths, cwd}`；只在 allowlist cwd 内模糊匹配相对路径 |
 | `git:status` | `cwd` | `{ok:true, branch, staged, unstaged, untracked, conflicted, truncated}`；非 git 仓返回 `errorCode:"not_git"` |
 | `git:diff` | `cwd`、`path`、`side`（`staged`/`unstaged`） | `{ok:true, path, side, patch, binary, truncated, empty}`；越界路径 `errorCode:"bad_path"` |
@@ -179,6 +181,12 @@ Admin 只有在 `CODEX_ADMIN_ENABLED=1` 时可用。`admin:unlock` 要求 `confi
 - `admin:mcpToolCall`、`admin:accountLogout`
 
 Admin 成功、失败、拒绝、unlock、lock 与过期均写 owner-only 脱敏审计；文件正文、MCP arguments 和账号凭证不落明文。
+
+### 工作区路径作用域
+
+`fs:*` 与 `admin:fs*` 的 `path`（`admin:fsCopy` 的源和目标都算）必须落在 allowlist 工作区内，由服务端强制：realpath 归一后比对，挡住软链接逃逸；比到路径分隔符，避免 `/srv/work` 顺带放行 `/srv/work-other`；目标尚不存在时对最近的已存在祖先做 realpath 再接回尾巴，让新建文件可用。越界返回 `路径不在允许的工作区内`，并写 `workspace_scope` 审计（含动作、设备引用、脱敏路径）。
+
+这道闸的目的是**防误操作**而非防攻击者：能发消息的设备照样可以让 agent 去读同一个文件。它挡住的是随手翻文件翻到工作区外的私钥，也把 `~/.codex/auth.json`、`~/.ssh` 挡在默认视野之外——凭据外泄是唯一撤销设备也收不回的破坏。
 
 ## Socket.IO 服务端到客户端
 

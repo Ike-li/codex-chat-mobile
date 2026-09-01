@@ -17,6 +17,15 @@ npm run test:e2e
 - `npm run test:ci` 串联 lint、协议门禁、单测、覆盖率门禁和 E2E，四道门都在里面。协议门禁必须在门禁内，否则枚举值一类的漂移能直接合入——`on-failure` 审批档就是这么进来的。
 - 本机 Node 25 跑 `npm test` 会间歇报 `Unable to deserialize cloned data`。这是 Node 25 test runner 与测试子进程之间 v8 序列化 IPC 的回归，与被测代码无关：Node 22 连跑 5 次全绿，换 `--test-reporter=tap` 无效，而 `--test-isolation=none`（同进程运行、绕开该 IPC）连跑 5 次全绿。本地改用 `npm run test:local`；CI 跑 Node 20/22，门禁仍以 `npm test` 为准。
 
+## 判据必须是用户看得见的东西
+
+两条从真机验证里换来的教训，写在这里免得再犯：
+
+- **不要用 `dispatchEvent` 代替 `click`。** 它把事件直接派发到元素上，绕过 Playwright 的可见性检查。`e2e/native-controls.spec.js` 曾这样点击工具按钮，于是 `drawer-tools` 整块带着 `hidden` 的那段时间里，Files / Account / 诊断 / 设备全部对用户不可达，而 e2e 一直是绿的。
+- **「HTML 里有这个 id」不等于「用户点得到」。** 单元测试断言元素存在、e2e 用绕过可见性的方式点击，两层都在验证存在性，没有一层验证可达性。新增功能如果只有一个入口，必须有一条 `toBeVisible` 的用例守着那个入口。
+
+同类的还有「测试里出现一份和生产代码平行的清单」：那是在复述数据而不是验证行为。审批档、沙箱档、图标名都曾各自被抄成字面量清单，协议删掉 `on-failure` 时三处同时说谎。正确形态是从唯一来源派生。
+
 ## 自动化覆盖
 
 当前自动化覆盖以下关键边界：
