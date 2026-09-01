@@ -47,6 +47,7 @@ import {
   normalizeCollaborationMode,
   parseCollaborationModeSlash,
   loadCliSettings,
+  modelAcceptsImages,
   reasoningOptionsForModel,
   resolveSelectedModel,
   saveCliSettings,
@@ -776,6 +777,7 @@ import { icon, hydrateIcons } from '/js/icons.js';
   function renderCliSettingsPopovers() {
     const modelRecord = currentModelRecord();
     const effective = effectiveTurnSettings();
+    syncAttachAffordance(modelRecord);
     renderPopoverItems($('approval-list'), APPROVAL_OPTIONS, 'approval', effective.approvalPolicy);
     renderPopoverItems($('sandbox-list'), SANDBOX_OPTIONS, 'sandbox', effective.sandbox);
     renderPopoverItems(
@@ -830,6 +832,16 @@ import { icon, hydrateIcons } from '/js/icons.js';
         </div>`;
     }
     updateFloatingBadges();
+  }
+
+  // 模型不收图片就把入口禁掉并说明原因——让用户选完照片、上传完再失败，是最差的顺序。
+  function syncAttachAffordance(modelRecord) {
+    if (!attachBtn) return;
+    const accepts = modelAcceptsImages(modelRecord);
+    attachBtn.disabled = !accepts;
+    attachBtn.title = accepts
+      ? '添加附件'
+      : `${modelRecord?.displayName || modelRecord?.model || '当前模型'} 不接受图片输入`;
   }
 
   function applyComposerModel(modelId) {

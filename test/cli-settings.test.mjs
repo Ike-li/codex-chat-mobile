@@ -27,6 +27,7 @@ import {
   isUnsupportedCollaborationModeError,
   parseCollaborationModeSlash,
   sanitizeTurnOverrides,
+  modelAcceptsImages,
   sandboxPolicyFromMode,
   buildTurnStartOverrides,
   effectiveComposerSettings,
@@ -515,4 +516,15 @@ test('effective settings also fill reasoning effort and service tier', () => {
   const offline = effectiveComposerSettings({}, { status: null, models: [] });
   assert.equal(offline.effort, '');
   assert.equal(offline.serviceTier, '');
+});
+
+// R-10：附件入口要按当前模型声明的输入模态启用或禁用，不能让用户传完了才失败。
+// 模态未知时放行——协议里 inputModalities 是可选的，缺失不等于不支持，宁可让用户试一次
+// 也不该凭空禁掉一个可能可用的功能。
+test('附件入口按模型的 inputModalities 门控', () => {
+  assert.equal(modelAcceptsImages({ inputModalities: ['text', 'image'] }), true);
+  assert.equal(modelAcceptsImages({ inputModalities: ['text'] }), false);
+  assert.equal(modelAcceptsImages({ inputModalities: [] }), true, '空数组视为未声明');
+  assert.equal(modelAcceptsImages({}), true, '未声明时放行');
+  assert.equal(modelAcceptsImages(null), true);
 });
