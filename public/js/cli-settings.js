@@ -458,3 +458,13 @@ export function buildTurnStartOverrides(settings = {}) {
   // 个 params 里。调用方仍可从 sanitizeTurnOverrides 的结果里读到它。
   return out;
 }
+
+// 协议的 Model.inputModalities 声明这个模型收什么。附件入口据此启用或禁用，免得用户
+// 传完了才在 turn 里失败。
+// 未声明时放行：inputModalities 在协议里是可选的，缺失不等于不支持，宁可让用户试一次，
+// 也不该凭空禁掉一个可能可用的功能——「缺失信息不得猜测」在这里的方向是放行而非拦截。
+export function modelAcceptsImages(model) {
+  const modalities = model?.inputModalities;
+  if (!Array.isArray(modalities) || modalities.length === 0) return true;
+  return modalities.includes('image');
+}
