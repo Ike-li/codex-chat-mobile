@@ -1772,6 +1772,21 @@ io.on('connection', socket => {
 
   // R-SEC-1 的设备表：要能回答「这台是什么设备、什么时候接进来的、最近还在不在用、
   // 推送订阅还在不在」——那正是判断要不要撤销它的依据。不返回凭证哈希。
+  // R-19：把六层里能在服务端观测到的部分交给前端，前端补上自己那两层（浏览器在线、
+  // socket 是否连着）后做判定。
+  on(socket, 'health:read', (payload = {}, ack) => {
+    const agent = agents.get(socket.data?.controlInstanceId) || [...agents.values()][0] || null;
+    ackOk(ack, {
+      gatewayReachable: true,
+      appServerRunning: Boolean(agent?.child),
+      codexError: agent?.lastErrorMessage || null,
+      upstreamError: null,
+      versions,
+      instances: agents.size,
+      cwd: routeCwd(payload?.cwd),
+    });
+  });
+
   on(socket, 'devices:list', (_payload = {}, ack) => {
     const subscribed = new Set(pushSubscriptions.map(item => item.deviceToken));
     ackOk(ack, {

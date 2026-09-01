@@ -29,6 +29,17 @@ import { formatRttChip, formatWorkspaceChangeBadge } from '/js/header-chrome.js'
 import { createConfirmController } from '/js/confirm-dialog.js';
 import { threadActionConfirm, threadActionErrorMessage } from '/js/thread-actions.js';
 import { summarizeTextChange } from '/js/file-diff-summary.js';
+import { summarizeTurnOutcome } from '/js/turn-outcome.js';
+import { diagnoseHealth, HEALTH_LAYERS } from '/js/health-diagnosis.js';
+
+const LAYER_LABELS = {
+  browser: '这台设备的网络',
+  network: '到控制台的可达性',
+  gateway: '控制台进程',
+  appServer: 'codex app-server 进程',
+  codex: 'codex 运行状态',
+  upstream: '模型上游',
+};
 import { detectAtMentionQuery, applyAtMentionPick, mentionPartFromSearchHit } from '/js/at-mention.js';
 import { pickPastedImage, attachmentPreview } from '/js/attachments-ui.js';
 import { createWorkspacePanel } from '/js/workspace-panel.js';
@@ -682,6 +693,9 @@ import { icon, hydrateIcons } from '/js/icons.js';
   let selectedApproval = storedCliSettings.approvalPolicy || '';
   // null = 未启用细粒度，走三个字符串档；对象 = 五个开关整体替换 approvalPolicy。
   let granularApproval = null;
+  // 本轮的客观素材：聚合 diff 与已结束的命令。turn 结束时汇总成验收摘要后清空。
+  let turnDiff = '';
+  let turnCommands = [];
   let selectedSandbox = storedCliSettings.sandbox || '';
   let selectedMode = storedCliSettings.collaborationMode || '';
   let availableModels = [];
@@ -2243,6 +2257,36 @@ import { icon, hydrateIcons } from '/js/icons.js';
     });
   }
 
+  // R-19：把「连不上」拆成六层，并只报最外层的坏点——修好它之前，里层的好坏无从验证。
+  function loadHealthPanel() {
+    const render = server => {
+      const view = diagnoseHealth({
+        browserOnline: navigator.onLine !== false,
+        gatewayReachable: Boolean(server),
+        socketConnected: isTransportConnected(),
+        appServerRunning: server?.appServerRunning !== false,
+        codexError: server?.codexError || null,
+        upstreamError: server?.upstreamError || null,
+      });
+      const layers = HEALTH_LAYERS.map(name => {
+        const reached = !view.layer || HEALTH_LAYERS.indexOf(name) < HEALTH_LAYERS.indexOf(view.layer);
+        const mark = view.layer === name ? '✗' : (reached ? '✓' : '·');
+        return `<div class="native-list-row"><div class="native-row-title">${mark} ${escHtml(LAYER_LABELS[name])}</div></div>`;
+      }).join('');
+      renderNativePanel('诊断', `
+        <div class="native-list-row">
+          <div class="native-row-title">${escHtml(view.title)}</div>
+          <div class="native-row-meta">${escHtml(view.detail || '所有层都正常')}</div>
+        </div>
+        ${layers}
+        <div class="native-list-row"><div class="native-row-meta">${escHtml(
+          server ? `codex ${server.versions?.codex || '?'} · ${server.instances} 个实例 · ${server.cwd || ''}` : '控制台无响应'
+        )}</div></div>`);
+    };
+    if (!isTransportConnected()) return render(null);
+    socket.emit('health:read', { cwd: serverCwd }, ack => render(ack?.ok ? ack : null));
+  }
+
   function loadMcpPanel() {
     socket.emit('mcp:read', { cwd: serverCwd }, ack => {
       if (!ack?.ok) return appendSystem(ack?.error || 'MCP read failed', true);
@@ -2935,6 +2979,10 @@ import { icon, hydrateIcons } from '/js/icons.js';
       exitCode: payload.exitCode ?? (payload.ok ? 0 : null),
       status: payload.status || 'completed',
     });
+    // 攒给本轮的验收摘要用。只有拿到退出码的才算数——还在跑的没有结论。
+    if (Number.isInteger(model.exitCode)) {
+      turnCommands.push({ command: existingCommand, exitCode: model.exitCode });
+    }
     if (card) {
       card.classList.add('command-card');
       if (model.ok === true) card.dataset.ok = 'true';
@@ -2967,9 +3015,41 @@ import { icon, hydrateIcons } from '/js/icons.js';
     finalizeStream();
     finishAssistantTurn();
     announceTurnComplete(payload?.ok === false ? '回复失败' : '回复完成');
+    renderTurnOutcome();
     setBusy(false);
     refreshNativeThreads();
     checkEmptyState();
+  }
+
+  // R-20：完成时给出客观的验收摘要——改了哪些文件、跑过哪些验证、哪些失败了。这些都从
+  // 本轮的聚合 diff 与命令退出码导出，不依赖模型自述。
+  function renderTurnOutcome() {
+    const outcome = summarizeTurnOutcome({ diff: turnDiff, commands: turnCommands });
+    turnDiff = '';
+    turnCommands = [];
+    if (!outcome.hasChanges && outcome.checks.length === 0) return;
+
+    const lines = [];
+    if (outcome.hasChanges) {
+      lines.push(`改动 ${outcome.files.length} 个文件 · +${outcome.added} / -${outcome.removed}`);
+      lines.push(outcome.files.slice(0, 8).join('\n') + (outcome.files.length > 8 ? `\n…还有 ${outcome.files.length - 8} 个` : ''));
+    }
+    if (outcome.checks.length) {
+      lines.push(outcome.allPassed
+        ? `跑过 ${outcome.checks.length} 项验证，全部通过`
+        : `跑过 ${outcome.checks.length} 项验证，${outcome.failed.length} 项失败`);
+      for (const item of outcome.failed) lines.push(`✗ ${item.command} (exit ${item.exitCode})`);
+    } else if (outcome.hasChanges) {
+      // 没跑过验证就说没跑过，不能让「没有失败」看起来像「验证通过」。
+      lines.push('本轮没有运行任何验证命令');
+    }
+
+    const card = document.createElement('div');
+    card.className = 'tool-card';
+    card.innerHTML = `<div class="tool-name">${icon('clipboard')} 本轮结果</div>`
+      + `<pre class="tool-cmd" style="white-space:pre-wrap;font-size:11px;">${escHtml(lines.join('\n'))}</pre>`;
+    appendRaw(card, 'codex');
+    scrollBottom();
   }
 
   function handleApprovalRequest(payload, event) {
@@ -3268,6 +3348,7 @@ import { icon, hydrateIcons } from '/js/icons.js';
   // Cumulative diff card
   function handleDiff(payload) {
     if (!payload.diff) return;
+    turnDiff = payload.diff;
     finalizeStream();
     const card = document.createElement('div');
     card.className = 'tool-card';
@@ -3632,6 +3713,7 @@ import { icon, hydrateIcons } from '/js/icons.js';
   $('native-files-btn').onclick = () => openFileBrowser(serverCwd);
   $('native-account-btn').onclick = loadAccountPanel;
   $('native-mcp-btn').onclick = loadMcpPanel;
+  $('native-health-btn').onclick = loadHealthPanel;
   $('native-skills-btn').onclick = loadSkillsPanel;
   $('native-import-btn').onclick = detectExternalAgentConfig;
   $('native-p3-btn').onclick = openP3Panel;
