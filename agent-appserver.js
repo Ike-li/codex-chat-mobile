@@ -113,6 +113,7 @@ export class ThreadRuntime {
     this.interruptTimeoutMs = numberFromEnv('CODEX_INTERRUPT_TIMEOUT_MS', DEFAULT_INTERRUPT_TIMEOUT_MS);
     this.currentTurnId = null;
     this.threadStatus = null;
+    this.lastErrorMessage = null;
     // command/exec 起的进程。它们不置 busy、不产生 turn，所以必须单独记账，
     // 否则一个跑着长命令的 runtime 在 isReclaimable 眼里完全空闲。
     this.activeProcesses = new Set();
@@ -191,6 +192,8 @@ export class ThreadRuntime {
   }
 
   handleTransportError(err) {
+    // 留一份最近的错误给健康诊断：分层判定要能说出「codex 报了什么」，而不是笼统的离线。
+    this.lastErrorMessage = err?.message ? String(err.message).slice(0, 200) : null;
     this.busy = false;
     this.currentTurnId = null;
     this.child = null;
