@@ -1705,7 +1705,10 @@ export class ThreadRuntime {
   }
 
   observeRpc(frame, details = {}) {
+    // 统计覆盖全部帧；落盘跳过 delta。它们的正文早已被打码成占位符，诊断价值接近零，
+    // 却能占掉 96% 的日志体积，把真正有用的 request/response/error 挤出保留窗口。
     this.incrementRpcStats(frame, details);
+    if (isDeltaNotification(frame, details.method)) return;
     this.appendRpcLog(buildRpcLogEntry({
       ...details,
       frame,
@@ -1810,6 +1813,11 @@ function normalizeServerRequestParams(runtime, rpcId, method, params) {
 // Compatibility export for existing integrations while the runtime split rolls out.
 export { ThreadRuntime as CodexAppServerSession };
 
+
+// 高频增量通知：正文按 CONTENT_RPC_KEY_RE 打码后只剩长度信息，逐帧留档没有意义。
+function isDeltaNotification(frame, method) {
+  return frame === 'notification' && typeof method === 'string' && /Delta$|\/delta$/.test(method);
+}
 
 function buildRpcLogEntry(details) {
   const sensitiveMethod = SENSITIVE_RPC_KEY_RE.test(details.method || '');

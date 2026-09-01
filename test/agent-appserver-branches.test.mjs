@@ -817,7 +817,8 @@ test('LOG_STDERR: 开启时 ensureReady 记录日志(不影响会话结果)', as
 
 test('rpc observability: rotates instead of growing without bound', () => {
   // 日志此前没有任何上限：本仓库根目录的 .codex-chat-rpc.jsonl 已累积 4.4MB / 10928 行，
-  // 其中 7609 行（70%）来自流式 delta——每个 token 增量一行。
+  // 其中 7609 行（70%）来自流式 delta——每个 token 增量一行。delta 现已不落盘，所以这里
+  // 改用会留档的通知来制造体积；轮转本身仍必须有上限。
   const dir = mkdtempSync(join(tmpdir(), 'ccm-rpc-rotate-'));
   const rpcLogPath = join(dir, 'rpc-rotate.jsonl');
   try {
@@ -827,8 +828,8 @@ test('rpc observability: rotates instead of growing without bound', () => {
 
     for (let index = 0; index < 400; index += 1) {
       session.handleLine(JSON.stringify({
-        method: 'item/agentMessage/delta',
-        params: { threadId: 'thr_1', turnId: 'turn_1', delta: `chunk-${index}` },
+        method: 'item/completed',
+        params: { threadId: 'thr_1', turnId: 'turn_1', item: { type: 'agentMessage', id: `item_${index}`, text: `chunk-${index}` } },
       }));
     }
 
@@ -961,6 +962,29 @@ test('rpc observability: refuses to write through a symlinked log path', () => {
 
     assert.equal(readFileSync(target, 'utf8'), 'original contents\n', '不应写穿符号链接');
     assert.equal(session.rpcLogPath, null, '遇到符号链接应停用日志而不是每帧重试');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// RPC 日志是可观测数据，不是安全审计（文件里自陈如此）。delta 帧的正文早已被打码成
+// `<redacted:N chars>` 占位符，诊断价值接近零，却占了本机 8 MB 日志的 96%——真正有用的
+// request/response/error 被挤出保留窗口。按帧类型过滤，统计仍然照记。
+test('rpc 日志跳过已打码的 delta 通知，保留 request/response/error', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ccm-rpc-delta-'));
+  const rpcLogPath = join(dir, 'rpc-delta.jsonl');
+  try {
+    const { session } = makeSession({ cwd: dir, rpcLogPath });
+    const before = session.rpcStats.serverNotifications;
+
+    for (const method of ['item/agentMessage/delta', 'item/reasoning/delta', 'item/commandExecution/outputDelta']) {
+      session.observeRpc('notification', { direction: 'inbound', method, params: { delta: 'x'.repeat(500) } });
+    }
+    session.observeRpc('notification', { direction: 'inbound', method: 'turn/completed', params: {} });
+
+    const methods = readJsonl(rpcLogPath).map(entry => entry.method);
+    assert.deepEqual(methods, ['turn/completed'], '只有非 delta 通知落盘');
+    assert.equal(session.rpcStats.serverNotifications, before + 4, '统计仍要覆盖全部通知');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
