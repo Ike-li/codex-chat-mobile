@@ -28,6 +28,7 @@ import { resolveConnectionBanner } from '/js/connection-banner.js';
 import { formatRttChip, formatWorkspaceChangeBadge } from '/js/header-chrome.js';
 import { createConfirmController } from '/js/confirm-dialog.js';
 import { threadActionConfirm, threadActionErrorMessage } from '/js/thread-actions.js';
+import { summarizeTextChange } from '/js/file-diff-summary.js';
 import { detectAtMentionQuery, applyAtMentionPick, mentionPartFromSearchHit } from '/js/at-mention.js';
 import { pickPastedImage, attachmentPreview } from '/js/attachments-ui.js';
 import { createWorkspacePanel } from '/js/workspace-panel.js';
@@ -2060,7 +2061,10 @@ import { icon, hydrateIcons } from '/js/icons.js';
           const action = entry.isDirectory ? `data-dir="${escHtml(child)}"` : `data-file="${escHtml(child)}"`;
           return `<div class="native-list-row">
             <div class="native-row-title">${entry.isDirectory ? 'Folder' : 'File'} ${escHtml(entry.fileName)}</div>
-            <div class="native-row-actions"><button class="native-mini-btn" ${action}>${entry.isDirectory ? 'Open' : '@ Mention'}</button></div>
+            <div class="native-row-actions">
+              <button class="native-mini-btn" ${action}>${entry.isDirectory ? 'Open' : '@ 引用'}</button>
+              <button class="native-mini-btn native-danger" data-remove="${escHtml(child)}" data-remove-dir="${entry.isDirectory ? '1' : ''}">删除</button>
+            </div>
           </div>`;
         })
       ].join('');
@@ -2075,6 +2079,27 @@ import { icon, hydrateIcons } from '/js/icons.js';
       nativePanel.querySelectorAll('[data-file]').forEach(btn => {
         btn.onclick = () => readNativeFile(btn.dataset.file);
       });
+      nativePanel.querySelectorAll('[data-remove]').forEach(btn => {
+        btn.onclick = () => removeNativePath(btn.dataset.remove, btn.dataset.removeDir === '1', targetPath);
+      });
+    });
+  }
+
+  // 删除不可逆，手机误触率又远高于桌面，所以走真正的确认框而不是 window.prompt。
+  // 目录的 recursive 由这里显式声明——服务端不替用户默认成 true。
+  async function removeNativePath(path, isDirectory, refreshFrom) {
+    const accepted = await confirmDialog.confirm({
+      title: isDirectory ? '删除目录' : '删除文件',
+      body: isDirectory
+        ? `${path}\n\n将连同目录下的全部内容一起删除，且无法撤销。`
+        : `${path}\n\n删除后无法撤销。`,
+      danger: true,
+    });
+    if (!accepted) return;
+    socket.emit('fs:remove', { path, recursive: isDirectory, cwd: serverCwd }, ack => {
+      if (!ack?.ok) return appendSystem(ack?.error || '删除失败', true);
+      appendSystem(`已删除 ${path}`, false);
+      openFileBrowser(refreshFrom);
     });
   }
 
@@ -2084,7 +2109,46 @@ import { icon, hydrateIcons } from '/js/icons.js';
       const text = decodeBase64Text(ack.dataBase64 || '');
       addInputPart({ kind: 'mention', name: path.split('/').pop() || path, path });
       inputEl.focus();
-      renderNativePanel('File Preview', `<div class="native-list-row"><div class="native-row-title">${escHtml(path)}</div><pre class="tool-output" style="max-height:180px;">${escHtml(text.slice(0, 2000))}</pre></div>`);
+      renderNativePanel('File Preview', `<div class="native-list-row">
+        <div class="native-row-title">${escHtml(path)}</div>
+        <div class="native-row-actions"><button class="native-mini-btn" data-edit-file type="button">编辑</button></div>
+        <pre class="tool-output" style="max-height:180px;">${escHtml(text.slice(0, 2000))}</pre>
+      </div>`);
+      nativePanel.querySelector('[data-edit-file]').onclick = () => editNativeFile(path, text);
+    });
+  }
+
+  function editNativeFile(path, original) {
+    renderNativePanel('编辑文件', `<div class="native-list-row">
+      <div class="native-row-title">${escHtml(path)}</div>
+      <textarea class="native-input" data-file-editor rows="12" spellcheck="false">${escHtml(original)}</textarea>
+      <div class="native-row-actions"><button class="native-mini-btn" data-file-save type="button">保存</button></div>
+    </div>`);
+    const editor = nativePanel.querySelector('[data-file-editor]');
+    nativePanel.querySelector('[data-file-save]').onclick = () => saveNativeFile(path, original, editor.value);
+  }
+
+  // R-16：写入前强制看到 diff 再确认。只问「要覆盖吗」不够——用户得能看出改了什么。
+  async function saveNativeFile(path, original, next) {
+    const summary = summarizeTextChange(original, next);
+    if (summary.unchanged) return appendSystem('内容没有变化，未写入', false);
+    const preview = summary.hunk.map(line => `${line.sign}${line.text}`).join('\n');
+    const accepted = await confirmDialog.confirm({
+      title: '写入文件',
+      body: [
+        path,
+        `第 ${summary.firstChangedLine} 行起：+${summary.added} 行 / -${summary.removed} 行`,
+        '',
+        preview + (summary.truncated ? '\n…（差异过长，仅显示开头）' : ''),
+      ].join('\n'),
+      danger: true,
+    });
+    if (!accepted) return;
+    const dataBase64 = btoa(unescape(encodeURIComponent(next)));
+    socket.emit('fs:writeFile', { path, dataBase64, cwd: serverCwd }, ack => {
+      if (!ack?.ok) return appendSystem(ack?.error || '写入失败', true);
+      appendSystem(`已写入 ${path}`, false);
+      readNativeFile(path);
     });
   }
 
@@ -2310,14 +2374,6 @@ import { icon, hydrateIcons } from '/js/icons.js';
         </div>
       </div>
       <div class="native-list-row">
-        <div class="native-row-title">Files</div>
-        <div class="native-row-actions">
-          <button id="admin-fs-write-btn" class="native-mini-btn native-danger" type="button">Write</button>
-          <button id="admin-fs-remove-btn" class="native-mini-btn native-danger" type="button">Remove</button>
-          <button id="admin-fs-copy-btn" class="native-mini-btn" type="button">Copy</button>
-        </div>
-      </div>
-      <div class="native-list-row">
         <div class="native-row-title">MCP / Account</div>
         <div class="native-row-actions">
           <button id="admin-mcp-call-btn" class="native-mini-btn native-danger" type="button">Tool Call</button>
@@ -2334,9 +2390,6 @@ import { icon, hydrateIcons } from '/js/icons.js';
     $('admin-marketplace-add-btn').onclick = adminMarketplaceAdd;
     $('admin-marketplace-remove-btn').onclick = adminMarketplaceRemove;
     $('admin-marketplace-upgrade-btn').onclick = adminMarketplaceUpgrade;
-    $('admin-fs-write-btn').onclick = adminFsWrite;
-    $('admin-fs-remove-btn').onclick = adminFsRemove;
-    $('admin-fs-copy-btn').onclick = adminFsCopy;
     $('admin-mcp-call-btn').onclick = adminMcpCall;
     $('admin-logout-btn').onclick = adminAccountLogout;
   }
@@ -2376,9 +2429,6 @@ import { icon, hydrateIcons } from '/js/icons.js';
     'admin:marketplaceAdd': (payload, ack) => socket.emit('admin:marketplaceAdd', payload, ack),
     'admin:marketplaceRemove': (payload, ack) => socket.emit('admin:marketplaceRemove', payload, ack),
     'admin:marketplaceUpgrade': (payload, ack) => socket.emit('admin:marketplaceUpgrade', payload, ack),
-    'admin:fsWriteFile': (payload, ack) => socket.emit('admin:fsWriteFile', payload, ack),
-    'admin:fsRemove': (payload, ack) => socket.emit('admin:fsRemove', payload, ack),
-    'admin:fsCopy': (payload, ack) => socket.emit('admin:fsCopy', payload, ack),
     'admin:mcpToolCall': (payload, ack) => socket.emit('admin:mcpToolCall', payload, ack),
     'admin:accountLogout': (payload, ack) => socket.emit('admin:accountLogout', payload, ack),
   };
@@ -2453,25 +2503,6 @@ import { icon, hydrateIcons } from '/js/icons.js';
 
   function adminMarketplaceUpgrade() {
     runAdminAction('admin:marketplaceUpgrade', () => ({ marketplaceName: promptRequired('Marketplace name') }));
-  }
-
-  function adminFsWrite() {
-    runAdminAction('admin:fsWriteFile', () => ({
-      path: promptRequired('File path', serverCwd ? `${serverCwd}/admin.txt` : ''),
-      dataBase64: btoa(unescape(encodeURIComponent(promptRequired('File text')))),
-    }));
-  }
-
-  function adminFsRemove() {
-    runAdminAction('admin:fsRemove', () => ({ path: promptRequired('Path'), recursive: true, force: false }));
-  }
-
-  function adminFsCopy() {
-    runAdminAction('admin:fsCopy', () => ({
-      sourcePath: promptRequired('Source path'),
-      destinationPath: promptRequired('Destination path'),
-      recursive: true,
-    }));
   }
 
   function adminMcpCall() {

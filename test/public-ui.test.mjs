@@ -986,9 +986,6 @@ test('client exposes P2 admin controls behind unlock and per-action confirmation
     'admin-marketplace-add-btn',
     'admin-marketplace-remove-btn',
     'admin-marketplace-upgrade-btn',
-    'admin-fs-write-btn',
-    'admin-fs-remove-btn',
-    'admin-fs-copy-btn',
     'admin-mcp-call-btn',
     'admin-logout-btn',
   ]) {
@@ -1013,14 +1010,23 @@ test('client exposes P2 admin controls behind unlock and per-action confirmation
     'admin:marketplaceAdd',
     'admin:marketplaceRemove',
     'admin:marketplaceUpgrade',
-    'admin:fsWriteFile',
-    'admin:fsRemove',
-    'admin:fsCopy',
     'admin:mcpToolCall',
     'admin:accountLogout',
   ]) {
     assert.match(allContent, new RegExp(`socket\\.emit\\('${event.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
   }
+
+  // 文件读写是 P0 功能（D6），已从 admin 门后转正到文件浏览器：那道门的口令是源码常量，
+  // 挡不住任何能打开页面的设备，属安全剧场。转正后写入必须先看到 diff、删除必须二次确认。
+  for (const event of ['fs:writeFile', 'fs:remove']) {
+    assert.match(allContent, new RegExp(`socket\\.emit\\('${event}'`));
+  }
+  assert.doesNotMatch(allContent, /socket\.emit\('admin:fs/);
+  assert.match(allContent, /function saveNativeFile/);
+  assert.match(allContent, /function removeNativePath/);
+  assert.match(allContent, /summarizeTextChange\(original, next\)/);
+  // 目录的 recursive 由调用方显式声明，服务端不替用户默认。
+  assert.match(allContent, /'fs:remove', \{ path, recursive: isDirectory/);
 
   assert.match(allContent, /\$\('native-admin-btn'\)\.onclick = openAdminPanel/);
 });

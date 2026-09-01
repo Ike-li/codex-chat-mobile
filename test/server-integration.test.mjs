@@ -3706,11 +3706,11 @@ test('server gates P2 admin app-server controls with unlock, per-action confirma
     try {
       await waitForAgentEvent(socket, 'init');
 
-      const filePath = join(fixture.workDir, 'admin.txt');
-      const denied = await emitWithAck(socket, 'admin:fsWriteFile', {
-        path: filePath,
-        dataBase64: Buffer.from('secret file body').toString('base64'),
-        adminConfirm: 'admin:fsWriteFile',
+      const denied = await emitWithAck(socket, 'admin:configWrite', {
+        keyPath: 'model',
+        value: 'gpt-5.5',
+        mergeStrategy: 'replace',
+        adminConfirm: 'admin:configWrite',
       });
       assert.equal(denied.ok, false);
       assert.match(denied.error, /Admin/);
@@ -3730,9 +3730,10 @@ test('server gates P2 admin app-server controls with unlock, per-action confirma
       assert.equal(unlock.ok, true);
       assert.equal(unlock.adminMode, true);
 
-      const missingActionConfirm = await emitWithAck(socket, 'admin:fsWriteFile', {
-        path: filePath,
-        dataBase64: Buffer.from('secret file body').toString('base64'),
+      const missingActionConfirm = await emitWithAck(socket, 'admin:configWrite', {
+        keyPath: 'model',
+        value: 'gpt-5.5',
+        mergeStrategy: 'replace',
       });
       assert.equal(missingActionConfirm.ok, false);
       assert.match(missingActionConfirm.error, /confirm/i);
@@ -3745,9 +3746,6 @@ test('server gates P2 admin app-server controls with unlock, per-action confirma
         ['admin:marketplaceAdd', { source: 'https://example.com/market.git', refName: 'main' }],
         ['admin:marketplaceRemove', { marketplaceName: 'community' }],
         ['admin:marketplaceUpgrade', { marketplaceName: 'community' }],
-        ['admin:fsWriteFile', { path: filePath, dataBase64: Buffer.from('secret file body').toString('base64') }],
-        ['admin:fsRemove', { path: filePath, recursive: false, force: true }],
-        ['admin:fsCopy', { sourcePath: join(fixture.workDir, 'a.txt'), destinationPath: join(fixture.workDir, 'b.txt'), recursive: false }],
         ['admin:mcpToolCall', { threadId: 'thr_fake', server: 'github', tool: 'search', arguments: { secret: 'should-not-log' } }],
         ['admin:accountLogout', {}],
       ];
@@ -3774,9 +3772,6 @@ test('server gates P2 admin app-server controls with unlock, per-action confirma
         'marketplace/add',
         'marketplace/remove',
         'marketplace/upgrade',
-        'fs/writeFile',
-        'fs/remove',
-        'fs/copy',
         'mcpServer/tool/call',
         'account/logout',
       ]) {
@@ -3822,10 +3817,11 @@ test('admin unlock expires before a privileged action reaches app-server', async
     assert.ok(unlock.expiresAt > Date.now());
     await new Promise(resolve => setTimeout(resolve, 40));
 
-    const expired = await emitWithAck(socket, 'admin:fsWriteFile', {
-      path: join(fixture.workDir, 'must-not-write.txt'),
-      dataBase64: Buffer.from('blocked').toString('base64'),
-      adminConfirm: 'admin:fsWriteFile',
+    const expired = await emitWithAck(socket, 'admin:configWrite', {
+      keyPath: 'model',
+      value: 'must-not-write',
+      mergeStrategy: 'replace',
+      adminConfirm: 'admin:configWrite',
     });
     assert.equal(expired.ok, false);
     assert.equal(expired.errorCode, 'admin_locked');
@@ -4913,6 +4909,50 @@ test('an out-of-range idle TTL falls back to the default instead of reclaiming e
     assert.equal(fixture.reclaimIdleAgents(), 0, 'TTL=0 应被当作非法值忽略，回落默认值');
     // 对照：把时钟拨到未来证明它本来就是可回收的——上面的 0 不是因为 socket 还连着。
     assert.equal(fixture.reclaimIdleAgents(Date.now() + 3_600_000), 1, '拨到未来后应可回收');
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// D6 把文件读写定为 P0 功能，不该继续藏在 admin 面板后面——那道门的口令是源码常量，任何
+// 能打开页面的设备都能解锁，挡不住任何人（§3.1）。转正的代价是必须真的记审计：admin 审计
+// 文件默认根本不启用（CODEX_ADMIN_ENABLED 缺省为 0），等于写操作此前无迹可寻。
+test('文件写入不需要 admin 解锁，但必须留下不含内容的审计', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ccm-fs-write-test-'));
+  const codexBin = createFakeCodexBin(root);
+  const fixture = await startIsolatedServer({ codexBin });
+  try {
+    const socket = await connectSocket(fixture.url, fixture.authToken);
+    try {
+      await waitForAgentEvent(socket, 'init');
+      const target = join(fixture.workDir, 'note.txt');
+      const secret = 'PRIVATE-CONTENT-DO-NOT-LOG';
+      const written = await emitWithAck(socket, 'fs:writeFile', {
+        path: target,
+        dataBase64: Buffer.from(secret, 'utf8').toString('base64'),
+      });
+      assert.equal(written.ok, true, '未解锁 admin 也应能写入');
+
+      const outside = await emitWithAck(socket, 'fs:writeFile', {
+        path: join(root, 'escape.txt'),
+        dataBase64: Buffer.from('x', 'utf8').toString('base64'),
+      });
+      assert.equal(outside.ok, false, '工作区外的写入必须被拒绝');
+
+      // recursive 不能由服务端替用户默认成 true：删错目录不可逆。
+      const removed = await emitWithAck(socket, 'fs:remove', { path: target });
+      assert.equal(removed.ok, true);
+
+      const audit = readFileSync(join(fixture.dataDir, 'security-audit.jsonl'), 'utf8');
+      assert.match(audit, /"event":"fs_mutation"/);
+      assert.match(audit, /"action":"fs:writeFile"/);
+      assert.match(audit, /"action":"fs:remove"/);
+      assert.doesNotMatch(audit, new RegExp(secret), '审计不得记录文件内容');
+      assert.doesNotMatch(audit, /PRIVATE/);
+    } finally {
+      socket.disconnect();
+    }
   } finally {
     await fixture.close();
     rmSync(root, { recursive: true, force: true });
