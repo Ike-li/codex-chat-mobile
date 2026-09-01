@@ -323,3 +323,14 @@ test('the visual acceptance doc stays executable by both a person and a browser 
       `${readmePath} missing link to docs/SMOKE_MATRIX.md`);
   }
 });
+
+// R-ENG-3：无头 Linux 上跑通是本产品唯一一条官方结构上给不出的承诺——官方 Remote 要求
+// host 运行 ChatGPT 桌面 app（仅 macOS/Windows）并「Keep your computer awake and online」，
+// 而服务器不会休眠。既然把它当卖点，验收路径就必须写下来并可复核。
+test('测试文档记录无头 Linux 的验收路径', () => {
+  const section = testingDoc.slice(testingDoc.indexOf('## 无头 Linux 验收'));
+  assert.ok(section.startsWith('## 无头 Linux 验收'), 'TESTING.md 缺少「## 无头 Linux 验收」小节');
+  for (const keyword of ['无图形界面', 'npm run doctor', '桌面 app', '审批']) {
+    assert.match(section, new RegExp(keyword), `无头 Linux 验收缺少关键项：${keyword}`);
+  }
+});
