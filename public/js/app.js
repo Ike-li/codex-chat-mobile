@@ -27,7 +27,7 @@ import { commandCard, fileChangeCard } from '/js/tool-cards.js';
 import { resolveConnectionBanner } from '/js/connection-banner.js';
 import { formatRttChip, formatWorkspaceChangeBadge } from '/js/header-chrome.js';
 import { createConfirmController } from '/js/confirm-dialog.js';
-import { threadActionConfirm } from '/js/thread-actions.js';
+import { threadActionConfirm, threadActionErrorMessage } from '/js/thread-actions.js';
 import { detectAtMentionQuery, applyAtMentionPick, mentionPartFromSearchHit } from '/js/at-mention.js';
 import { pickPastedImage, attachmentPreview } from '/js/attachments-ui.js';
 import { createWorkspacePanel } from '/js/workspace-panel.js';
@@ -1888,7 +1888,7 @@ import { icon, hydrateIcons } from '/js/icons.js';
       const name = await confirmDialog.prompt({ title: '重命名会话', body: '输入新的会话名称', initial: thread.title || '' });
       if (!name) return;
       socket.emit('thread:rename', { threadId: thread.id, name, cwd: thread.cwd }, ack => {
-        if (!ack?.ok) return appendSystem(ack?.error || 'Rename failed', true);
+        if (!ack?.ok) return appendSystem(threadActionErrorMessage('rename', ack?.error), true);
         refreshNativeThreads();
       });
       return;
@@ -1898,14 +1898,14 @@ import { icon, hydrateIcons } from '/js/icons.js';
     if (needsConfirm && !await confirmDialog.confirm(needsConfirm)) return;
     if (action === 'unarchive') {
       socket.emit('thread:unarchive', { threadId: thread.id, cwd: thread.cwd }, ack => {
-        if (!ack?.ok) return appendSystem(ack?.error || 'Unarchive failed', true);
+        if (!ack?.ok) return appendSystem(threadActionErrorMessage('unarchive', ack?.error), true);
         refreshNativeThreads();
       });
       return;
     }
     if (action === 'delete') {
       socket.emit('thread:delete', { threadId: thread.id, cwd: thread.cwd }, ack => {
-        if (!ack?.ok) return appendSystem(ack?.error || 'Delete failed', true);
+        if (!ack?.ok) return appendSystem(threadActionErrorMessage('delete', ack?.error), true);
         clearCurrentThread(localStorage, thread.cwd || serverCwd, thread.id);
         if (currentSessionId === thread.id) {
           currentSessionId = null;
@@ -1917,7 +1917,7 @@ import { icon, hydrateIcons } from '/js/icons.js';
       return;
     }
     socket.emit('thread:archive', { threadId: thread.id, cwd: thread.cwd }, ack => {
-      if (!ack?.ok) return appendSystem(ack?.error || 'Archive failed', true);
+      if (!ack?.ok) return appendSystem(threadActionErrorMessage('archive', ack?.error), true);
       refreshNativeThreads();
     });
   }
