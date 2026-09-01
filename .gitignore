@@ -23,3 +23,5 @@ reasonix.toml
 .reasonix
 .bug-hunter/
 tmp-ui-shots/
+.ccm-uploads
+draft

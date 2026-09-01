@@ -1181,6 +1181,34 @@ test('atomically removing a trusted device externally disconnects it and revokes
   }
 });
 
+// D2：web 上要能看到当前接入的设备并撤销其中一个。devices:list 出于最小暴露只回 16 位
+// deviceRef，而 user:denyDevice 要完整 token——两者对不上，基于列表的 UI 就撤销不了任何东西。
+test('设备面板能按列表里的引用撤销设备，无需知道完整 token', async () => {
+  const keep = 'device-panel-keep-0000000000000001';
+  const drop = 'device-panel-drop-0000000000000002';
+  const fixture = await startIsolatedServer({ initialTrustedDevices: [keep, drop] });
+  try {
+    const socket = await connectSocket(fixture.url, fixture.authToken, keep);
+    try {
+      const listed = await emitWithAck(socket, 'devices:list', {});
+      assert.equal(listed.ok, true);
+      const target = listed.devices.find(item => item.deviceRef === drop.slice(0, 16));
+      assert.ok(target, '列表里应当能看到另一台设备');
+      assert.equal(target.deviceRef.length, 16, '列表只暴露引用，不暴露完整 token');
+
+      const revoked = await emitWithAck(socket, 'devices:revoke', { deviceRef: target.deviceRef });
+      assert.equal(revoked.ok, true, '应当能用列表给出的引用直接撤销');
+
+      const after = await emitWithAck(socket, 'devices:list', {});
+      assert.deepEqual(after.devices.map(item => item.deviceRef), [keep.slice(0, 16)]);
+    } finally {
+      socket.close();
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
 test('atomically removing an offline trusted device revokes its session and Push binding', async () => {
   const deviceToken = 'device-offline-external-revoke';
   const endpoint = 'https://push.example/offline-external-revoke';
