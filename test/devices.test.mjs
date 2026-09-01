@@ -186,7 +186,7 @@ test('trusted devices persist to file', async () => {
   const file = join(tempDir, 'trusted-devices.json');
   assert.ok(existsSync(file));
   const data = JSON.parse(await import('node:fs').then(fs => fs.readFileSync(file, 'utf8')));
-  assert.ok(data.includes('persist-token'));
+  assert.ok(data.some(record => record.deviceToken === 'persist-token'));
   cleanup();
 });
 
@@ -267,4 +267,69 @@ test('device CLI list reads trusted devices from CODEX_DATA_DIR', () => {
   } finally {
     cleanup();
   }
+});
+
+// R-SEC-1：设备表此前是扁平字符串数组，IP / UA / 时间在批准瞬间被丢弃——设备列表页因此
+// 无法回答「这台是什么设备、什么时候接进来的、最近还在不在用」，而那正是判断要不要撤销
+// 它的依据。
+test('设备记录保留元数据，且能读回旧的扁平数组', async () => {
+  const { addPendingDevice, approveDevice, getTrustedDevices, touchDevice } =
+    await import(`../devices.js?meta=${Date.now()}`);
+
+  addPendingDevice('dev_meta', { ip: '10.0.0.9', userAgent: 'iPhone Safari' });
+  assert.equal(approveDevice('dev_meta'), true);
+
+  const [record] = getTrustedDevices();
+  assert.equal(record.deviceToken, 'dev_meta');
+  assert.equal(record.ip, '10.0.0.9', '批准时不该丢掉来源 IP');
+  assert.equal(record.userAgent, 'iPhone Safari');
+  assert.ok(record.approvedAt > 0, '需要首次注册时间');
+  assert.equal(record.lastSeenAt, record.approvedAt);
+
+  touchDevice('dev_meta', { now: record.approvedAt + 5000 });
+  assert.equal(getTrustedDevices()[0].lastSeenAt, record.approvedAt + 5000, '最近活跃要能更新');
+});
+
+test('旧格式的扁平数组仍可读，缺失字段留空而不是伪造', async () => {
+  writeFileSync(join(tempDir, 'trusted-devices.json'), JSON.stringify(['dev_legacy']));
+  const { getTrustedDevices, isDeviceTrusted } =
+    await import(`../devices.js?legacy=${Date.now()}`);
+
+  assert.equal(isDeviceTrusted('dev_legacy'), true, '旧格式设备不能因为升级就被踢下线');
+  const [record] = getTrustedDevices();
+  assert.equal(record.deviceToken, 'dev_legacy');
+  assert.equal(record.ip, null, '旧记录没有这些信息，留空而不是编一个');
+  assert.equal(record.approvedAt, null);
+});
+
+// R-SEC-1 的核心：共享 token 降级为**注册凭证**，只在新设备首次接入时用一次；此后设备
+// 用服务端为它签发的专属凭证。这样轮换共享 token 只阻断新设备注册，不会把已注册设备
+// 全部踢下线——而那正是当前「改 AUTH_TOKEN 要重启且所有人重登」的问题。
+test('批准设备时签发专属凭证，可据此认证且可单独撤销', async () => {
+  const { addPendingDevice, approveDevice, issueDeviceSecret, verifyDeviceSecret, denyDevice } =
+    await import(`../devices.js?secret=${Date.now()}`);
+
+  addPendingDevice('dev_a', { ip: '10.0.0.1' });
+  approveDevice('dev_a');
+  const secret = issueDeviceSecret('dev_a');
+  assert.equal(typeof secret, 'string');
+  assert.ok(secret.length >= 32, '凭证要有足够熵，它替代共享 token 承担日常认证');
+
+  assert.equal(verifyDeviceSecret('dev_a', secret), true);
+  assert.equal(verifyDeviceSecret('dev_a', 'wrong'), false);
+  assert.equal(verifyDeviceSecret('dev_b', secret), false, '凭证绑定到具体设备');
+
+  denyDevice('dev_a');
+  assert.equal(verifyDeviceSecret('dev_a', secret), false, '撤销设备后其凭证立即失效');
+});
+
+test('凭证不以明文落盘', async () => {
+  const { addPendingDevice, approveDevice, issueDeviceSecret } =
+    await import(`../devices.js?hash=${Date.now()}`);
+  addPendingDevice('dev_h', {});
+  approveDevice('dev_h');
+  const secret = issueDeviceSecret('dev_h');
+
+  const raw = await import('node:fs').then(fs => fs.readFileSync(join(tempDir, 'trusted-devices.json'), 'utf8'));
+  assert.ok(!raw.includes(secret), '设备表被读走时不该等于交出所有设备的通行证');
 });
