@@ -25,7 +25,7 @@ const SERVER_REQUEST_SET_NAME = 'ALL_REQUEST_METHODS';
 
 export const LEGACY_METHOD_ALLOWLIST = new Set([
   // Phase 1 keeps dual-track compatibility with this legacy notification even
-  // though codex 0.142.5 no longer exports it in ServerNotification.
+  // though codex 0.147.0 no longer exports it in ServerNotification.
   'turn/failed',
 ]);
 
@@ -50,6 +50,36 @@ export function parseProtocolMethods(source) {
     methods.add(match[1]);
   }
   return methods;
+}
+
+// Top-level string members of a union alias. Object variants (e.g. the
+// `granular` shape of AskForApproval) are skipped so their quoted keys are not
+// mistaken for accepted values.
+export function parseStringLiteralUnion(source, typeName) {
+  const alias = source.match(new RegExp(`export type ${typeName}\\s*=([\\s\\S]*?);`));
+  if (!alias) throw new Error(`Type alias ${typeName} not found in protocol source.`);
+
+  const members = [];
+  let depth = 0;
+  let current = '';
+  for (const char of alias[1]) {
+    if (char === '{' || char === '(' || char === '[') depth += 1;
+    else if (char === '}' || char === ')' || char === ']') depth -= 1;
+    else if (char === '|' && depth === 0) {
+      members.push(current);
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  members.push(current);
+
+  const literals = new Set();
+  for (const member of members) {
+    const literal = member.trim().match(/^"([^"]+)"$/);
+    if (literal) literals.add(literal[1]);
+  }
+  return literals;
 }
 
 export function collectBridgeMethodUsage({ agentAppserverSource, approvalBrokerSource }) {

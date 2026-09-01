@@ -1,5 +1,8 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { parseStringLiteralUnion } from '../scripts/protocol-check.mjs';
 import {
   APPROVAL_OPTIONS,
   SANDBOX_OPTIONS,
@@ -32,21 +35,26 @@ import {
   SETTINGS_STORAGE_KEY,
 } from '../public/js/cli-settings.js';
 
-test('approval options match the CLI --ask-for-approval values plus protocol on-failure', () => {
-  assert.deepEqual(APPROVAL_OPTIONS.map(option => option.id), [
-    'untrusted',
-    'on-failure',
-    'on-request',
-    'never',
-  ]);
+// Derived from the pinned protocol rather than restated here: an option the
+// protocol dropped would otherwise stay valid in the UI and get rejected only
+// once app-server refuses the turn.
+function protocolLiterals(relativePath, typeName) {
+  const source = readFileSync(join(process.cwd(), '.protocol', 'stable', relativePath), 'utf8');
+  return parseStringLiteralUnion(source, typeName);
+}
+
+test('approval options are accepted by the pinned AskForApproval', () => {
+  const accepted = protocolLiterals(join('v2', 'AskForApproval.ts'), 'AskForApproval');
+  for (const id of APPROVAL_OPTIONS.map(option => option.id)) {
+    assert.ok(accepted.has(id), `approval option "${id}" is not in AskForApproval: ${[...accepted].join(' | ')}`);
+  }
 });
 
-test('sandbox options match the CLI --sandbox values', () => {
-  assert.deepEqual(SANDBOX_OPTIONS.map(option => option.id), [
-    'read-only',
-    'workspace-write',
-    'danger-full-access',
-  ]);
+test('sandbox options are accepted by the pinned SandboxMode', () => {
+  const accepted = protocolLiterals(join('v2', 'SandboxMode.ts'), 'SandboxMode');
+  for (const id of SANDBOX_OPTIONS.map(option => option.id)) {
+    assert.ok(accepted.has(id), `sandbox option "${id}" is not in SandboxMode: ${[...accepted].join(' | ')}`);
+  }
 });
 
 test('fallback reasoning options match the Codex CLI effort enum', () => {

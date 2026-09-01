@@ -6,12 +6,6 @@ export const APPROVAL_OPTIONS = [
     iconName: 'shield',
   },
   {
-    id: 'on-failure',
-    title: '失败时询问',
-    desc: '先尝试执行，失败后再向你确认',
-    iconName: 'refresh',
-  },
-  {
     id: 'on-request',
     title: '按请求批准',
     desc: '模型决定何时向你申请批准',
@@ -259,7 +253,6 @@ export function formatPermissionBadge({
 
 const COMPOSER_APPROVAL = {
   untrusted: '仅信任',
-  'on-failure': '失败问',
   'on-request': '按请求',
   never: '不问',
 };
