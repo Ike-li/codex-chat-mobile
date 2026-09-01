@@ -1,6 +1,6 @@
 # Codex App Server 协议参考
 
-本文件是 codex-chat-mobile 对 Codex `app-server` JSON-RPC 2.0 协议的维护型参考。仓库 pin 为 `.codex-version` 中的 `0.142.5`；类型与方法事实以 `.protocol/stable/` 的 `generate-ts` 基线为准，桥接行为以 `app-server-host.js`、`app-server-transport.js`、`thread-registry.js` 和 `agent-appserver.js` 为准。
+本文件是 codex-chat-mobile 对 Codex `app-server` JSON-RPC 2.0 协议的维护型参考。仓库 pin 为 `.codex-version` 中的 `0.147.0`；类型与方法事实以 `.protocol/stable/` 的 `generate-ts` 基线为准，桥接行为以 `app-server-host.js`、`app-server-transport.js`、`thread-registry.js` 和 `agent-appserver.js` 为准。
 
 本文只记录项目实际依赖与适配边界，不记录某台开发机某次门禁是否通过。更早的调研底稿位于 [archive/](archive/)；它们不再维护，也不是事实来源。
 
@@ -19,7 +19,7 @@ B2  generate-ts --experimental / Codex 源码     → 包含实验接口
 - 项目主干只依赖 B1 中的稳定方法。Labs 是项目自身的产品门控：其中既可能包装 B1 方法，也可能只消费实验通知；不能把“出现在 Labs”解释为“一定不在 B1”。
 - 共享 app-server 只有在 `CODEX_P3_EXPERIMENTAL=1` 时，才在一次性的 `initialize` 中声明 `capabilities.experimentalApi:true`。
 
-`0.142.5` 默认导出集合为：ClientRequest 90、ServerRequest 10、ServerNotification 69、ClientNotification 1。
+`0.147.0` 默认导出集合为：ClientRequest 98、ServerRequest 10、ServerNotification 72、ClientNotification 1。
 
 ## 产品主干接口
 
@@ -58,7 +58,7 @@ thread 的标题、cwd、更新时间、历史和归档状态全部来自上述 
 - turn：`turn/started`、`turn/completed`、`turn/plan/updated`、`turn/diff/updated`
 - thread：`thread/status/changed`、`thread/tokenUsage/updated`、`thread/archived`、`thread/unarchived`、`thread/deleted`、`thread/name/updated`、`thread/compacted`
 
-终态从 `turn/completed.status` 读取。`turn/failed` 只作为 `0.142.5` 基线外的一版本兼容项保留。
+终态从 `turn/completed.status` 读取。`turn/failed` 只作为 `0.147.0` 基线外的一版本兼容项保留。
 
 ### Server request、账号与资源
 
@@ -150,14 +150,18 @@ server.js ── ThreadRuntime(instances)
 | 可靠请求 | receipt ledger 与客户端 outbox | `message-receipt-ledger.js` / `public/js/message-outbox.js` |
 | 跨会话待办 | needs-you 状态机与精确决议 | `needs-you-registry.js` |
 
-对 `0.142.5` 基线的静态使用统计：
+对 `0.147.0` 基线的静态使用统计：
 
 | 方向 | 默认导出 | bridge 字面使用 | 说明 |
 |---|---:|---:|---|
-| Client → Server Request | 90 | 45 | 未用能力不会由网关暴露 |
+| Client → Server Request | 98 | 46 | 45 项在基线内，另 1 项是 experimental allowlist 的 `thread/settings/update`；未用能力不会由网关暴露 |
 | Client → Server Notification | 1 | 1 | `initialized` |
 | Server → Client Request | 10 | 7 | 未处理：`attestation/generate`、`item/tool/call`、`mcpServer/elicitation/request` |
-| Server → Client Notification | 69 | 40 | 其中 39 项在基线内，另 1 项是 allowlist 中的 `turn/failed` |
+| Server → Client Notification | 72 | 41 | 40 项在基线内，另 1 项是 legacy allowlist 的 `turn/failed` |
+
+「bridge 字面使用」一列统一为 `collectBridgeMethodUsage` 数出的总数，allowlist 项含在内、并在说明列拆开；`0.142.5` 那版表格的 Request 行填的是「在基线内」的数，与列头对不上，这次一并纠正。
+
+从 `0.142.5` 升到 `0.147.0` 是纯新增、零移除：ServerNotification 多出 `thread/environment/connected`、`thread/environment/disconnected`、`rawResponse/completed`，ClientRequest 多出 `threadSection/{list,create,update,delete}`、`thread/section/move`、`app/read`、`app/installed`、`externalAgentConfig/import/recordHistory`。bridge 一项都没接，新通知靠 `handleNotification` 的 switch 落空安全忽略。
 
 统计由 `scripts/protocol-check.mjs` 的静态收集逻辑定义。未处理通知进入 `handleNotification` default 分支并安全忽略；未识别 item 才转成 `raw_item`。
 

@@ -183,7 +183,7 @@ graph TB
 
 <p><code>generate-ts</code>（不带 <code>--experimental</code>）默认过滤全部 <code>#[experimental]</code> 门控的请求方法，但不过滤通知。因此会出现「看得到 realtime/remoteControl/process 的通知、却看不到对应请求方法」的现象。</p>
 
-<h2>计数口径（0.142.5）</h2>
+<h2>计数口径（0.147.0）</h2>
 
 <table>
   <thead>
@@ -197,8 +197,8 @@ graph TB
   <tbody>
     <tr>
       <td>Client→Server Request</td>
-      <td>90</td>
-      <td>45</td>
+      <td>98</td>
+      <td>46</td>
       <td>未用的多为 goal/权限档/oauth/windowsSandbox 等</td>
     </tr>
     <tr>
@@ -215,8 +215,8 @@ graph TB
     </tr>
     <tr>
       <td>Server→Client Notification</td>
-      <td>69</td>
-      <td>39</td>
+      <td>72</td>
+      <td>41</td>
       <td>未处理的在 default 分支安全忽略</td>
     </tr>
   </tbody>
