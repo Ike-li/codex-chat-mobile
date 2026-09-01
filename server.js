@@ -217,6 +217,15 @@ export function pushDecision(envelope) {
     return needsYouPush(envelope, 'Codex 需要人到场', '有问题等待回答');
   }
   if (envelope.type === 'approval_revoked') return null;
+  // 手机可以调松审批与沙箱（§3.1：功能层设限挡不住任何人，因为绕行路径至少有三条）。
+  // 挡不住就必须看得见——变更推送到全部已注册设备，手机被盗时其他设备会收到提醒。
+  if (envelope.type === 'policy_change') {
+    return {
+      title: 'Codex 权限已变更',
+      body: pushText(envelope.payload?.summary || '会话权限被修改'),
+      tag: 'ccm-policy-change',
+    };
+  }
   // codex 进程死掉是最需要人知道的情形之一：任务停了，而手机上看到的还是「运行中」，
   // 不推的话用户会一直等一个不会来的结果。只推真正的失败原因——status 事件本身很频繁。
   if (envelope.type === 'status') {
@@ -1686,6 +1695,25 @@ io.on('connection', socket => {
   // 走裸 socket.on（不经 on() 的 deviceApproved 闸）——待审批设备也能看到网络延迟。
   socket.on('conn:ping', (_payload, ack) => {
     if (typeof ack === 'function') ack({ ok: true, t: Date.now() });
+  });
+
+  // R-13：策略可以调松（§3.1 已论证功能层设限无效），但必须留痕并让其他设备看得见。
+  // 由前端上报而非服务端推断，是因为覆盖值存在浏览器里——服务端只在 turn/start 时才见到，
+  // 那时通知已经晚了。
+  on(socket, 'policy:changed', (payload = {}, ack) => {
+    const summary = typeof payload?.summary === 'string' ? payload.summary.slice(0, 120) : '会话权限被修改';
+    appendSecurityAudit({
+      event: 'policy_change',
+      outcome: 'success',
+      deviceRef: String(socket?.handshake?.auth?.deviceToken || '').slice(0, 16),
+      summary,
+      approvalPolicy: typeof payload?.approvalPolicy === 'string' ? payload.approvalPolicy : null,
+      sandbox: typeof payload?.sandbox === 'string' ? payload.sandbox : null,
+      granular: payload?.granular === true,
+    });
+    const push = pushDecision({ type: 'policy_change', payload: { summary } });
+    if (push) pushNotify(push).catch(() => {});
+    ackOk(ack, {});
   });
 
   on(socket, 'needs-you:snapshot', (_payload = {}, ack) => {

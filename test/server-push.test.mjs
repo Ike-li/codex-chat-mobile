@@ -66,3 +66,16 @@ test('codex 进程退出要推送，普通状态变化不推', async () => {
     assert.equal(pushDecision({ type: 'status', payload: { reason, state: 'running' } }), null, `${reason} 不该推送`);
   }
 });
+
+// R-13：手机可以调松审批和沙箱（§3.1——功能层设限挡不住任何人）。挡不住就必须看得见：
+// 变更写审计，并推送到**全部**已注册设备。手机被盗时，你的其他设备会收到提醒。
+test('策略变更要推送到全部设备', async () => {
+  const { pushDecision } = await importServerWithoutStarting();
+  const decision = pushDecision({
+    type: 'policy_change',
+    payload: { summary: '恢复宿主机默认', approvalPolicy: 'never', sandbox: 'danger-full-access' },
+  });
+  assert.ok(decision, '策略变更必须推送');
+  assert.match(decision.title, /权限/);
+  assert.match(decision.body, /恢复宿主机默认/);
+});

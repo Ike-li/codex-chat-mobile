@@ -28,6 +28,7 @@ import {
   parseCollaborationModeSlash,
   sanitizeTurnOverrides,
   modelAcceptsImages,
+  GRANULAR_APPROVAL_KEYS,
   sandboxPolicyFromMode,
   buildTurnStartOverrides,
   effectiveComposerSettings,
@@ -527,4 +528,29 @@ test('附件入口按模型的 inputModalities 门控', () => {
   assert.equal(modelAcceptsImages({ inputModalities: [] }), true, '空数组视为未声明');
   assert.equal(modelAcceptsImages({}), true, '未声明时放行');
   assert.equal(modelAcceptsImages(null), true);
+});
+
+// 0.147.0 的 AskForApproval 除三个字符串档外还有一个对象变体 granular，含五个独立开关。
+// 它不是第四个「档位」——放进 APPROVAL_OPTIONS 会让「每个选项都必须是协议里的字符串字面量」
+// 这条漂移断言失效。所以单独建模：档位仍是三个字符串，细粒度是一组独立开关，选中时整体
+// 替换 approvalPolicy。
+test('细粒度审批开关的键与协议 granular 完全一致', () => {
+  const source = readFileSync(join(process.cwd(), '.protocol', 'stable', 'v2', 'AskForApproval.ts'), 'utf8');
+  const protocolKeys = [...source.matchAll(/(\w+):\s*boolean/g)].map(match => match[1]).sort();
+  assert.deepEqual(GRANULAR_APPROVAL_KEYS.map(item => item.id).sort(), protocolKeys,
+    '多一个或少一个键，app-server 都会拒掉整个 turn');
+});
+
+test('选中细粒度审批时下发协议的对象形态', () => {
+  const flags = { sandbox_approval: true, rules: false, skill_approval: true, request_permissions: false, mcp_elicitations: true };
+  const out = sanitizeTurnOverrides({ approvalPolicy: 'on-request', granularApproval: flags });
+  assert.deepEqual(out.approvalPolicy, { granular: flags }, '细粒度优先于字符串档');
+
+  // 五个键必须齐全：协议的对象变体没有可选字段。
+  const partial = sanitizeTurnOverrides({ granularApproval: { sandbox_approval: true } });
+  assert.equal(partial.approvalPolicy.granular.rules, false, '缺失的键补 false 而不是省略');
+  assert.equal(Object.keys(partial.approvalPolicy.granular).length, 5);
+
+  // 没开细粒度时行为不变。
+  assert.equal(sanitizeTurnOverrides({ approvalPolicy: 'never' }).approvalPolicy, 'never');
 });

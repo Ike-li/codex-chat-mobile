@@ -310,6 +310,17 @@
       </div>
       <div class="popover-section-label bordered">审批策略 (-a / --ask-for-approval)</div>
       <div class="popover-list" id="approval-list"></div>
+      <div class="popover-section-label bordered">细粒度审批 (granular)</div>
+      <div class="popover-list" id="granular-list"></div>
+      <div class="popover-list">
+        <div class="popover-item" id="approval-reset" role="button" tabindex="0">
+          <span class="popover-item-icon" data-icon="refresh"></span>
+          <div class="popover-item-details">
+            <span class="popover-item-title">恢复宿主机默认</span>
+            <span class="popover-item-desc">清除本会话的审批与沙箱覆盖，交回 config.toml</span>
+          </div>
+        </div>
+      </div>
       <div class="popover-section-label bordered">沙箱 (-s / --sandbox)</div>
       <div class="popover-list" id="sandbox-list"></div>
       <div class="popover-list" id="bypass-list"></div>

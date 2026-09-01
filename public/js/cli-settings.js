@@ -19,6 +19,24 @@ export const APPROVAL_OPTIONS = [
   },
 ];
 
+
+// AskForApproval 的对象变体：五个独立开关，协议里没有可选字段，缺一个 app-server 就拒掉
+// 整个 turn。它不是第四个「档位」——档位是三个字符串，这组开关选中时整体替换 approvalPolicy。
+export const GRANULAR_APPROVAL_KEYS = [
+  { id: 'sandbox_approval', title: '沙箱外操作', desc: '命令要越出沙箱时询问' },
+  { id: 'rules', title: '规则匹配', desc: '命中审批规则时询问' },
+  { id: 'skill_approval', title: '技能调用', desc: '调用 skill 时询问' },
+  { id: 'request_permissions', title: '权限申请', desc: '模型主动申请权限时询问' },
+  { id: 'mcp_elicitations', title: 'MCP 追问', desc: 'MCP 服务器要求补充信息时询问' },
+];
+
+export function granularApprovalPolicy(flags) {
+  if (!flags || typeof flags !== 'object') return null;
+  const granular = {};
+  for (const { id } of GRANULAR_APPROVAL_KEYS) granular[id] = flags[id] === true;
+  return { granular };
+}
+
 export const SANDBOX_OPTIONS = [
   {
     id: 'read-only',
@@ -353,8 +371,12 @@ export function sanitizeTurnOverrides(input = {}) {
   if (typeof input.model === 'string' && input.model.trim()) out.model = input.model.trim();
   const effort = normalizeReasoningEffort(input.effort);
   if (effort) out.effort = effort;
+  // 细粒度优先：它一旦开启，三个字符串档就不再适用——协议的 approvalPolicy 是联合类型，
+  // 同一个字段只能是其中一种形态。
+  const granular = granularApprovalPolicy(input.granularApproval);
   const approvalPolicy = normalizeApprovalPolicy(input.approvalPolicy);
-  if (approvalPolicy) out.approvalPolicy = approvalPolicy;
+  if (granular) out.approvalPolicy = granular;
+  else if (approvalPolicy) out.approvalPolicy = approvalPolicy;
   const sandbox = normalizeSandbox(input.sandbox);
   if (sandbox) out.sandbox = sandbox;
   if (typeof input.serviceTier === 'string' && input.serviceTier.trim()) {
