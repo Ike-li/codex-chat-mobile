@@ -45,7 +45,7 @@ import {
   evaluateTransportSecurity,
   evaluateSocketHandshakeSecurity,
 } from './server-security.js';
-import { resolveWorkdirAllowlist } from './workdir-allowlist.js';
+import { resolveWorkdirAllowlist, resolveWithinWorkdirs } from './workdir-allowlist.js';
 import { searchFiles } from './file-search.js';
 import { listGitChanges, readGitDiff } from './git-workspace.js';
 import { normalizeThreadHistoryMessages } from './thread-history.js';
@@ -1092,6 +1092,22 @@ function clearSocketInstanceReferences(instanceId) {
 
 // 多工作目录路由
 const routeCwd = cwd => (typeof cwd === 'string' && workDirs.includes(cwd)) ? cwd : WORK_DIR;
+
+// fs/* 的作用域闸门。协议侧只校验「是不是绝对路径」，作用域只能落在这一侧。
+// 只记拒绝：那是安全事件，而放行的读取太频繁（文件浏览器持续列目录），逐条记会把审计淹掉。
+function requireWorkspacePath(socket, action, rawPath) {
+  const resolved = resolveWithinWorkdirs(rawPath, workDirs);
+  if (resolved) return resolved;
+  appendSecurityAudit({
+    event: 'workspace_scope',
+    action,
+    outcome: 'denied',
+    reasonCode: 'path_outside_workspace',
+    deviceRef: String(socket?.handshake?.auth?.deviceToken || '').slice(0, 16),
+    path: sanitizePath(typeof rawPath === 'string' ? rawPath : ''),
+  });
+  throw new Error('路径不在允许的工作区内');
+}
 
 // 实例路由
 const resolveInstanceId = id => agents.has(id) ? id : null;
@@ -2334,8 +2350,9 @@ io.on('connection', socket => {
 
   on(socket, 'fs:readDirectory', async (payload = {}, ack) => {
     try {
-      const response = await ensureControlAgent(payload?.cwd, socket).readDirectory(payload?.path || WORK_DIR);
-      ackOk(ack, { entries: response?.entries || [], path: payload?.path || WORK_DIR });
+      const target = requireWorkspacePath(socket, 'fs:readDirectory', payload?.path || WORK_DIR);
+      const response = await ensureControlAgent(payload?.cwd, socket).readDirectory(target);
+      ackOk(ack, { entries: response?.entries || [], path: target });
     } catch (err) {
       ackError(ack, err);
     }
@@ -2343,8 +2360,9 @@ io.on('connection', socket => {
 
   on(socket, 'fs:readFile', async (payload = {}, ack) => {
     try {
-      const response = await ensureControlAgent(payload?.cwd, socket).readFile(payload?.path);
-      ackOk(ack, { dataBase64: response?.dataBase64 || '', path: payload?.path });
+      const target = requireWorkspacePath(socket, 'fs:readFile', payload?.path);
+      const response = await ensureControlAgent(payload?.cwd, socket).readFile(target);
+      ackOk(ack, { dataBase64: response?.dataBase64 || '', path: target });
     } catch (err) {
       ackError(ack, err);
     }
@@ -2620,19 +2638,24 @@ io.on('connection', socket => {
 
   on(socket, 'admin:fsWriteFile', async (payload = {}, ack) => {
     await runAdminAction(socket, ack, 'admin:fsWriteFile', payload, () =>
-      ensureControlAgent(payload?.cwd, socket).writeFile(payload?.path, payload?.dataBase64));
+      ensureControlAgent(payload?.cwd, socket).writeFile(
+        requireWorkspacePath(socket, 'admin:fsWriteFile', payload?.path), payload?.dataBase64));
   });
 
   on(socket, 'admin:fsRemove', async (payload = {}, ack) => {
     await runAdminAction(socket, ack, 'admin:fsRemove', payload, () =>
-      ensureControlAgent(payload?.cwd, socket).removePath(payload?.path, { recursive: payload?.recursive, force: payload?.force }));
+      ensureControlAgent(payload?.cwd, socket).removePath(
+        requireWorkspacePath(socket, 'admin:fsRemove', payload?.path),
+        { recursive: payload?.recursive, force: payload?.force }));
   });
 
   on(socket, 'admin:fsCopy', async (payload = {}, ack) => {
+    // 源和目标都要过闸：只挡一端等于留了一条把工作区外的文件复制进来、或把工作区内容
+    // 复制出去的通道。
     await runAdminAction(socket, ack, 'admin:fsCopy', payload, () =>
       ensureControlAgent(payload?.cwd, socket).copyPath({
-        sourcePath: payload?.sourcePath,
-        destinationPath: payload?.destinationPath,
+        sourcePath: requireWorkspacePath(socket, 'admin:fsCopy', payload?.sourcePath),
+        destinationPath: requireWorkspacePath(socket, 'admin:fsCopy', payload?.destinationPath),
         recursive: payload?.recursive,
       }));
   });

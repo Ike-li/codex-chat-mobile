@@ -3494,6 +3494,16 @@ test('server exposes P1 native app-server controls over Socket.IO', async () => 
       assert.equal(file.ok, true);
       assert.equal(Buffer.from(file.dataBase64, 'base64').toString('utf8'), 'hello from fake file');
 
+      // app-server 的 fs/* 收任意绝对路径。作用域必须由服务端兜住，否则任何已认证设备
+      // 都能读走 ~/.ssh/id_rsa 和 ~/.codex/auth.json，而凭据外泄撤销设备也收不回。
+      const outsideFile = join(root, 'outside-secret');
+      writeFileSync(outsideFile, 'private key material');
+      const escaped = await emitWithAck(socket, 'fs:readFile', { path: outsideFile });
+      assert.equal(escaped.ok, false, '工作区外的文件必须被拒绝');
+      assert.match(escaped.error, /工作区/);
+      const escapedDir = await emitWithAck(socket, 'fs:readDirectory', { path: root });
+      assert.equal(escapedDir.ok, false, '工作区外的目录必须被拒绝');
+
       writeFileSync(join(fixture.workDir, 'src-app.js'), 'export const ok = true\n');
       const search = await emitWithAck(socket, 'files:search', { cwd: fixture.workDir, query: 'src-app' });
       assert.equal(search.ok, true);
