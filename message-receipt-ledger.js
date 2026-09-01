@@ -1,7 +1,6 @@
 export class MessageReceiptLedger {
   constructor(options = {}) {
     this.entries = new Map();
-    this.handles = new Map();
     this.runtimeIndex = new Map();
     this.maxEntries = Number.isInteger(options.maxEntries) && options.maxEntries > 0
       ? options.maxEntries
@@ -40,12 +39,11 @@ export class MessageReceiptLedger {
       resolveReady,
     };
     this.entries.set(key, entry);
-    this.handles.set(handle, entry);
     return { kind: 'owner', handle };
   }
 
   settle(handle, result) {
-    const entry = this.handles.get(handle);
+    const entry = this.#entryOf(handle);
     if (!entry || entry.phase !== 'pending') return false;
     const receipt = selectLatestReceipt(result?.receipt, entry.latestReceipt);
     entry.phase = settledPhase(result, receipt);
@@ -66,7 +64,7 @@ export class MessageReceiptLedger {
   }
 
   bindRuntime(handle, { instanceId, clientRequestId }) {
-    const entry = this.handles.get(handle);
+    const entry = this.#entryOf(handle);
     if (!entry || !instanceId || !clientRequestId) return false;
     const runtimeKey = `${instanceId}\0${clientRequestId}`;
     const existing = this.runtimeIndex.get(runtimeKey);
@@ -98,7 +96,7 @@ export class MessageReceiptLedger {
   }
 
   async replay(handle) {
-    const entry = this.handles.get(handle);
+    const entry = this.#entryOf(handle);
     if (!entry) return null;
     await entry.ready;
     return entry.result;
@@ -129,8 +127,13 @@ export class MessageReceiptLedger {
 
   clear() {
     this.entries.clear();
-    this.handles.clear();
     this.runtimeIndex.clear();
+  }
+
+  // handle 只是 key 的一层封装，所以不需要第二张表来做 handle→entry：多一张就要手工保持
+  // 同步，removeEntry 漏删一边就是泄漏。
+  #entryOf(handle) {
+    return handle ? this.entries.get(handle.key) : undefined;
   }
 
   stats() {
@@ -139,7 +142,6 @@ export class MessageReceiptLedger {
 
   removeEntry(entry) {
     this.entries.delete(entry.handle.key);
-    this.handles.delete(entry.handle);
     if (entry.runtimeKey) this.runtimeIndex.delete(entry.runtimeKey);
   }
 }
