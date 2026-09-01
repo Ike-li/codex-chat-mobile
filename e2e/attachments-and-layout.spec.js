@@ -98,3 +98,25 @@ test.describe('P1 文件与移动布局', () => {
     }
   });
 });
+
+test.describe('附件入口的模型门控', () => {
+  // R-10：模型不收图片时入口就该是禁用的，而不是让用户选完照片、上传完才失败。
+  // 判据是可见画面：按钮 disabled 且 title 说明原因。
+  test('切到纯文本模型后附件入口禁用并说明原因', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('#state-label')).not.toHaveText('offline', { timeout: 10000 });
+    await expect(page.locator('#attach-btn')).toBeEnabled();
+
+    await page.locator('[data-testid="composer-defaults"]').click();
+    await expect(page.locator('#session-settings')).toBeVisible();
+    // mock 里只有 gpt-5.4-mini 声明为纯文本。
+    await page.locator('#model-list .popover-item[data-model="gpt-5.4-mini"]').first().click();
+    await expect(page.locator('#model-trigger-text')).toContainText('5.4-Mini');
+
+    await expect(page.locator('#attach-btn')).toBeDisabled();
+    await expect(page.locator('#attach-btn')).toHaveAttribute('title', /不接受图片输入/);
+
+    await page.locator('#model-list .popover-item[data-model="gpt-5.6-sol"]').first().click();
+    await expect(page.locator('#attach-btn')).toBeEnabled();
+  });
+});

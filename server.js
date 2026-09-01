@@ -1263,6 +1263,7 @@ function createAgent(resumeId = null, cwd = WORK_DIR) {
     cwd,
     codexBin,
     host: getAppServerHost(),
+    approvalAuditPath: SECURITY_AUDIT_FILE,
     idleTimeoutMs,
     onEvent: envelope => {
       syncRuntimeIdentity(agent, envelope);

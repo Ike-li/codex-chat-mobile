@@ -1585,3 +1585,12 @@ test('reasoning 的 item/started 不重复发，completed 时才出正文', () =
   });
   assert.equal(byType(events, 'reasoning').length, 1);
 });
+
+// 审批审计此前写在 this.cwd 里——也就是用户的仓库。`git clean -xfd` 会连同证据一起删掉，
+// 它还会出现在用户的 git status 里。审计是「手机丢了它被用来干过什么」的唯一答案，
+// 不该放在一个随时会被清理的地方。
+test('审批审计落点可注入，默认不写进用户工作区', () => {
+  const { session } = makeSession({ cwd: '/tmp/user-repo', approvalAuditPath: '/var/data/security-audit.jsonl' });
+  assert.equal(session.approvalBroker.auditPath, '/var/data/security-audit.jsonl');
+  assert.ok(!session.approvalBroker.auditPath.startsWith('/tmp/user-repo'), '不得落在工作区内');
+});

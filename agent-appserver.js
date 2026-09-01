@@ -48,7 +48,7 @@ function nextEpoch() {
 }
 
 export class ThreadRuntime {
-  constructor({ instanceId, resumeId, cwd, codexBin, idleTimeoutMs, onEvent, onSessionId, onExit, rpcLogPath, rpcLogMaxBytes, experimentalApi = false, transportFactory, host }) {
+  constructor({ instanceId, resumeId, cwd, codexBin, idleTimeoutMs, onEvent, onSessionId, onExit, rpcLogPath, rpcLogMaxBytes, approvalAuditPath, experimentalApi = false, transportFactory, host }) {
     this.instanceId = instanceId;
     this.cwd = cwd;
     this.codexBin = codexBin || 'codex';
@@ -104,7 +104,9 @@ export class ThreadRuntime {
       emit: (type, payload) => this.emit(type, payload),
       respond: (approvalId, result) => this.respond(approvalId, result),
       pendingApprovals: this.pendingApprovals,
-      auditPath: join(this.cwd, '.codex-chat-approval-audit.jsonl'),
+      // 落点由调用方注入。默认写在工作区只是没有更好选择时的退路——审计是「手机丢了它
+      // 被用来干过什么」的唯一答案，而用户仓库里的文件随时会被 git clean 抹掉。
+      auditPath: approvalAuditPath || join(this.cwd, '.codex-chat-approval-audit.jsonl'),
     });
     this.inputQueue = [];
     this.inputQueueLimit = numberFromEnv('CODEX_INPUT_QUEUE_LIMIT', DEFAULT_INPUT_QUEUE_LIMIT);

@@ -537,7 +537,7 @@ rl.on('line', async (line) => {
                 { id: 'fast', name: 'Fast', description: '1.5x speed, increased usage' },
               ],
               defaultServiceTier: 'standard',
-              inputModalities: ['text'],
+              inputModalities: ['text', 'image'],
             },
             {
               id: 'gpt-5.5',
@@ -554,7 +554,7 @@ rl.on('line', async (line) => {
               ],
               serviceTiers: [],
               defaultServiceTier: null,
-              inputModalities: ['text'],
+              inputModalities: ['text', 'image'],
             },
             {
               id: 'gpt-5.4',
@@ -574,7 +574,7 @@ rl.on('line', async (line) => {
                 { id: 'fast', name: 'Fast', description: '1.5x speed, increased usage' },
               ],
               defaultServiceTier: 'standard',
-              inputModalities: ['text'],
+              inputModalities: ['text', 'image'],
             },
             {
               id: 'gpt-5.4-mini',
