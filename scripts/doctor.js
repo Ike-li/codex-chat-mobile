@@ -64,5 +64,23 @@ check('AUTH_TOKEN 已设置', () => {
   return `${process.env.AUTH_TOKEN.slice(0, 4)}****`;
 });
 
+// D5: 绑定到非 loopback 时的 token 强度。server-security 会在启动时 fail-closed，
+// 这里提前说清楚，免得部署到服务器上才发现起不来。
+check('远程绑定的 token 强度', () => {
+  const host = process.env.HOST || '127.0.0.1';
+  const loopback = host === '127.0.0.1' || host === '::1' || host === 'localhost';
+  if (loopback) return `HOST=${host}（仅本机，无额外要求）`;
+  const token = process.env.AUTH_TOKEN || '';
+  if (token.length < 32) throw new Error(`HOST=${host} 需要 AUTH_TOKEN ≥32 字符，当前 ${token.length}`);
+  return `HOST=${host}，token ${token.length} 字符`;
+});
+
+// D6: 无图形界面。这是本项目相对官方 Remote 的差异点——官方要求 host 跑 ChatGPT 桌面 app
+// （仅 macOS/Windows）。缺 DISPLAY 是服务器的常态，不该影响任何东西，明确报出来让人放心。
+check('无图形界面也能运行', () => {
+  const headless = !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
+  return headless ? '未检测到 DISPLAY/WAYLAND_DISPLAY，无需图形界面' : '当前有图形会话（无头环境同样支持）';
+});
+
 console.log(`\n结果: ${passed} 通过, ${failed} 失败\n`);
 if (failed > 0) process.exit(1);

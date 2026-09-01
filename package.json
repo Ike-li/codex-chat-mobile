@@ -20,6 +20,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
+    "doctor": "node scripts/doctor.js",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "protocol:check": "node scripts/protocol-check.mjs",

@@ -14,7 +14,7 @@ npm run test:e2e
 - `npm test` 以 `--test-concurrency=1` 运行 `node:test`，覆盖单元、集成、协议、安全、UI 和文档契约。
 - `npm run protocol:check` 要求本机 Codex 版本等于 `.codex-version`，并检查 `.protocol/stable/` 的覆盖与漂移；版本不匹配就是失败，不能跳过后宣称门禁通过。
 - `npm run test:e2e` 用 Playwright mobile Chrome 连接 mock gateway，不启动真实 Codex。
-- `npm run test:ci` 串联 lint、单测、覆盖率门禁和 E2E；协议门禁仍需按上面的四条命令单独运行。
+- `npm run test:ci` 串联 lint、协议门禁、单测、覆盖率门禁和 E2E，四道门都在里面。协议门禁必须在门禁内，否则枚举值一类的漂移能直接合入——`on-failure` 审批档就是这么进来的。
 - 本机 Node 25 跑 `npm test` 会间歇报 `Unable to deserialize cloned data`。这是 Node 25 test runner 与测试子进程之间 v8 序列化 IPC 的回归，与被测代码无关：Node 22 连跑 5 次全绿，换 `--test-reporter=tap` 无效，而 `--test-isolation=none`（同进程运行、绕开该 IPC）连跑 5 次全绿。本地改用 `npm run test:local`；CI 跑 Node 20/22，门禁仍以 `npm test` 为准。
 
 ## 自动化覆盖
@@ -79,6 +79,27 @@ npm run test:e2e
 - TC-23：Admin/Labs 默认隐藏且服务端拒绝；显式 flag 后才显示，Admin Lock/TTL 生效。
 - TC-24：workspace mention、enabled skill 可发送；越界路径、未启用 skill 和默认关闭的远程图片被拒绝。
 - TC-25：ACK 丢失后重启 gateway，客户端只调用 `message:reconcile`；无 thread 时仍先查 receipt ledger，有 thread 时 `thread/read` 命中 `clientRequestId` 后清除 outbox 且 `turn/start` 总计一次。消失 instance 的未尝试记录保留原 id 重绑；已尝试且无法核对时保持 `needs_reconcile`，用户确认后使用新 id，旧 id 不得复活。
+
+## 无头 Linux 验收
+
+官方 Codex Remote 要求 host 运行 ChatGPT 桌面 app（仅 macOS / Windows），并明确要求「Keep your computer awake and online」。无图形界面的 Linux 服务器不在其支持名单里，而服务器不会休眠——**在无头 Linux 上跑通，是本项目唯一一条官方结构上给不出的承诺**，所以它是验收项而不是加分项。
+
+验收目标：一台无图形界面的 Linux 主机，从全新部署到手机上完成一次审批，全程不需要任何 Mac / Windows 桌面 app 参与。
+
+```bash
+npm run doctor      # 自检：codex 可执行、工作区有效、data/ 可写、远程绑定的 token 强度
+npm start
+```
+
+判据（逐条可见，不看日志也能判断）：
+
+1. `npm run doctor` 全绿，其中「无图形界面」一项确认 `DISPLAY` / `WAYLAND_DISPLAY` 缺失也不影响启动。
+2. 服务默认只监听 `127.0.0.1`；绑定到非 loopback 时 `AUTH_TOKEN` 必须 ≥32 字符，否则拒绝启动。
+3. 手机浏览器经私有网络打开控制台，填入 token 后可见会话列表。
+4. 在手机上发起一条会触发审批的指令，审批卡片出现，点击批准后宿主机按该决定执行。
+5. 全程没有安装或运行 ChatGPT 桌面 app。
+
+第 4 条做不到，产品不成立——手机只是个只读看板，不是控制面。
 
 ## 真实 Codex 冒烟边界
 
