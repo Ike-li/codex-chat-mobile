@@ -43,6 +43,7 @@ import {
   formatComposerPermission,
   formatComposerModel,
   formatComposerEffort,
+  GRANULAR_APPROVAL_KEYS,
   formatComposerMode,
   normalizeCollaborationMode,
   parseCollaborationModeSlash,
@@ -679,6 +680,8 @@ import { icon, hydrateIcons } from '/js/icons.js';
   let selectedReasoning = storedCliSettings.effort || '';
   let selectedServiceTier = storedCliSettings.serviceTier || '';
   let selectedApproval = storedCliSettings.approvalPolicy || '';
+  // null = 未启用细粒度，走三个字符串档；对象 = 五个开关整体替换 approvalPolicy。
+  let granularApproval = null;
   let selectedSandbox = storedCliSettings.sandbox || '';
   let selectedMode = storedCliSettings.collaborationMode || '';
   let availableModels = [];
@@ -711,6 +714,7 @@ import { icon, hydrateIcons } from '/js/icons.js';
       model: selectedModel,
       effort: selectedReasoning,
       approvalPolicy: selectedApproval,
+      granularApproval: granularApproval,
       sandbox: selectedSandbox,
       serviceTier: selectedServiceTier,
       collaborationMode: selectedMode,
@@ -724,6 +728,17 @@ import { icon, hydrateIcons } from '/js/icons.js';
       status: sessionStatus,
       models: availableModels,
     });
+  }
+
+  // 覆盖值存在浏览器里，服务端要到 turn/start 才见到——那时再通知已经晚了，所以由这里上报。
+  function reportPolicyChange(summary) {
+    if (!isTransportConnected()) return;
+    socket.emit('policy:changed', {
+      summary,
+      approvalPolicy: selectedApproval || null,
+      sandbox: selectedSandbox || null,
+      granular: granularApproval !== null,
+    }, () => {});
   }
 
   function persistComposerSettings() {
@@ -780,6 +795,18 @@ import { icon, hydrateIcons } from '/js/icons.js';
     syncAttachAffordance(modelRecord);
     renderPopoverItems($('approval-list'), APPROVAL_OPTIONS, 'approval', effective.approvalPolicy);
     renderPopoverItems($('sandbox-list'), SANDBOX_OPTIONS, 'sandbox', effective.sandbox);
+    renderPopoverItems(
+      $('granular-list'),
+      GRANULAR_APPROVAL_KEYS.map(item => ({
+        ...item,
+        iconName: granularApproval?.[item.id] === true ? 'shield' : 'hand',
+      })),
+      'granular',
+      null,
+    );
+    for (const node of $('granular-list')?.querySelectorAll('[data-granular]') || []) {
+      node.classList.toggle('selected', granularApproval?.[node.dataset.granular] === true);
+    }
     renderPopoverItems(
       $('model-list'),
       modelsForPicker().map(model => ({
@@ -960,6 +987,29 @@ import { icon, hydrateIcons } from '/js/icons.js';
     selectedSandbox = 'danger-full-access';
     persistComposerSettings();
     renderCliSettingsPopovers();
+  });
+  $('granular-list')?.addEventListener('click', event => {
+    const item = event.target.closest('[data-granular]');
+    if (!item) return;
+    const key = item.dataset.granular;
+    // 第一次点开任意一项就进入细粒度模式；全部关掉则退回三个字符串档，不留一个五项全 false
+    // 的空壳——那等于把审批全关，而用户以为自己只是取消了勾选。
+    const next = { ...(granularApproval || {}) };
+    next[key] = !next[key];
+    granularApproval = GRANULAR_APPROVAL_KEYS.some(({ id }) => next[id]) ? next : null;
+    persistComposerSettings();
+    renderCliSettingsPopovers();
+    reportPolicyChange(granularApproval ? '细粒度审批' : '审批档');
+  });
+  $('approval-reset')?.addEventListener('click', () => {
+    // 协议里策略覆盖的语义是 for this turn and subsequent turns，会一直继承。没有这个入口，
+    // 为一个任务临时调松之后所有任务都是松的，而用户不会察觉。
+    selectedApproval = '';
+    selectedSandbox = '';
+    granularApproval = null;
+    persistComposerSettings();
+    renderCliSettingsPopovers();
+    reportPolicyChange('恢复宿主机默认');
   });
   $('model-list')?.addEventListener('click', event => {
     const item = event.target.closest('[data-model]');

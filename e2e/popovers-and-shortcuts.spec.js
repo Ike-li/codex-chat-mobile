@@ -143,3 +143,27 @@ test.describe('Popovers And Slash Suggestions', () => {
     expectNoForbiddenRuntimeErrors(runtimeErrors);
   });
 });
+
+test.describe('细粒度审批与恢复默认', () => {
+  // 0.147.0 新增的 granular 对象变体。判据是可见画面：勾选后该项高亮，恢复默认后全部清空。
+  test('细粒度开关可勾选，恢复默认把覆盖清空', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('#state-label')).not.toHaveText('offline', { timeout: 10000 });
+    await page.locator('[data-testid="composer-defaults"]').click();
+    await expect(page.locator('#session-settings')).toBeVisible();
+
+    const sandboxApproval = page.locator('#granular-list [data-granular="sandbox_approval"]');
+    await expect(sandboxApproval).toBeVisible();
+    await expect(sandboxApproval).not.toHaveClass(/selected/);
+    await sandboxApproval.click();
+    await expect(sandboxApproval).toHaveClass(/selected/);
+
+    // 五个开关都在，缺一个 app-server 就会拒掉整个 turn。
+    for (const key of ['sandbox_approval', 'rules', 'skill_approval', 'request_permissions', 'mcp_elicitations']) {
+      await expect(page.locator(`#granular-list [data-granular="${key}"]`)).toBeVisible();
+    }
+
+    await page.locator('#approval-reset').click();
+    await expect(sandboxApproval).not.toHaveClass(/selected/);
+  });
+});
