@@ -2021,7 +2021,7 @@ mock 只替换了 Codex 进程，`fs/*`、`git/*`、`account/*`、`mcp/*`、`ski
 ## 最近一次实测
 
 - **日期**：2026-08-25
-- **后端**：真实 Codex（`codex-cli 0.142.5`，与 `.codex-version` 一致）为主，`127.0.0.1:3001`，`AUTH_TOKEN` 临时置空；渲染类用例（VC-E01~E03）在 mock 上跑
+- **后端**：真实 Codex（`codex-cli 0.142.5`，即当时的 `.codex-version` pin；协议基线此后已升到 `0.147.0`）为主，`127.0.0.1:3001`，`AUTH_TOKEN` 临时置空；渲染类用例（VC-E01~E03）在 mock 上跑
 - **执行者**：浏览器智能体
 - **降级情况**：**全部点击与滚动都走 JS**。该环境下 CDP 的 `Input.dispatchMouseEvent` 连续 30 秒超时、`scroll` 静默失效，只有键盘事件与 JS 执行正常。因此**所有涉及点击的用例都没有验证过遮挡与 hit-testing**，键盘输入（打字、回车）是真实事件。
 

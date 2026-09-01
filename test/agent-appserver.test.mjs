@@ -1212,6 +1212,18 @@ test('item/completed(unknown item type): emits raw_item without crashing', () =>
   assert.equal(raw.payload.item.id, 'x1');
 });
 
+// 协议基线从 0.142.5 升到 0.147.0 时,ServerNotification 净增了这三项。bridge 一个都没接,
+// 靠的是 handleNotification 的 switch 落空——这份「不接也不炸」必须锁住:它没有 default 分支,
+// 将来谁给 switch 补一句兜底 emit,这三项就会变成用户看得见的噪声。
+test('0.147.0 新增的通知落空即可,既不抛也不往事件流里掺东西', () => {
+  const { session, events } = makeSession();
+  const before = events.length;
+  for (const method of ['thread/environment/connected', 'thread/environment/disconnected', 'rawResponse/completed']) {
+    assert.doesNotThrow(() => session.handleNotification(method, {}), `${method} 不该抛`);
+  }
+  assert.equal(events.length, before, '未接的新通知不该产生任何事件');
+});
+
 test('dispose: 标记 disposed 并清理', () => {
   const { session } = makeSession();
   session.child = { stdin: { write: () => {} }, kill: () => {}, on: () => {} };

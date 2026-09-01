@@ -184,8 +184,12 @@ test('protocol helpers parse generated method literals and pinned version files'
   }
 });
 
+// 这条测的是「PATH 上的 codex 与 pin 一致时,CLI 走完全程并报 OK」,而不是「pin 恰好等于
+// 某个版本号」。把版本号写死会让每次协议升级都顺带改这里,改的还是与被测行为无关的字面量
+// ——0.142.5 → 0.147.0 那次就是这么红的。让假 codex 直接照着事实源报版本。
 test('protocol check CLI succeeds against a pinned fake codex export', () => {
   const dir = mkdtempSync(join(tmpdir(), 'protocol-cli-'));
+  const pinned = readFileSync(join(root, '.codex-version'), 'utf8').trim();
   try {
     const fakeBin = join(dir, 'bin');
     const fakeCodex = join(fakeBin, 'codex');
@@ -195,7 +199,7 @@ test('protocol check CLI succeeds against a pinned fake codex export', () => {
       "import { cpSync, rmSync } from 'node:fs';",
       "import { join } from 'node:path';",
       "const args = process.argv.slice(2);",
-      "if (args[0] === '--version') { console.log('codex-cli 0.142.5'); process.exit(0); }",
+      `if (args[0] === '--version') { console.log('codex-cli ${pinned}'); process.exit(0); }`,
       "if (args[0] === 'app-server' && args[1] === 'generate-ts') {",
       "  const out = args[args.indexOf('--out') + 1];",
       "  rmSync(out, { recursive: true, force: true });",
@@ -218,7 +222,7 @@ test('protocol check CLI succeeds against a pinned fake codex export', () => {
     });
 
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /Codex protocol pin: 0\.142\.5/);
+    assert.match(result.stdout, new RegExp(`Codex protocol pin: ${pinned.replace(/\./g, '\\.')}`));
     assert.match(result.stdout, /Protocol export drift: OK/);
     assert.match(result.stdout, /Protocol coverage: OK/);
   } finally {
