@@ -2,6 +2,7 @@
 // seed: e2e/seed.spec.ts
 
 import { test, expect } from '@playwright/test';
+import { APPROVAL_OPTIONS, SANDBOX_OPTIONS } from '../public/js/cli-settings.js';
 
 const forbiddenRuntimeErrors = [
   /TypeError/i,
@@ -70,11 +71,12 @@ test.describe('Popovers And Slash Suggestions', () => {
     await expect(page.locator('#mode-trigger-text')).toHaveText('计划');
     await expect(page.locator('.msg.user')).toHaveCount(0);
     await expect(page.locator('#state-label')).toHaveText('idle');
-    for (const approval of ['untrusted', 'on-failure', 'on-request', 'never']) {
-      await expect(page.locator(`#approval-list [data-approval="${approval}"]`)).toBeVisible();
+    // 遍历真实选项而不是重述清单：协议增删一个档位不该让这条断言失效或漏检。
+    for (const { id } of APPROVAL_OPTIONS) {
+      await expect(page.locator(`#approval-list [data-approval="${id}"]`)).toBeVisible();
     }
-    for (const sandbox of ['read-only', 'workspace-write', 'danger-full-access']) {
-      await expect(page.locator(`#sandbox-list [data-sandbox="${sandbox}"]`)).toBeVisible();
+    for (const { id } of SANDBOX_OPTIONS) {
+      await expect(page.locator(`#sandbox-list [data-sandbox="${id}"]`)).toBeVisible();
     }
     const miniModel = page.locator('#model-list .popover-item[data-model="gpt-5.4-mini"]').first();
     await expect(miniModel).toBeVisible({ timeout: 10000 });

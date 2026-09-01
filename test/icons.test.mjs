@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { icon, ICONS } from '../public/js/icons.js';
+import { APPROVAL_OPTIONS, SANDBOX_OPTIONS } from '../public/js/cli-settings.js';
 
 const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 const appJs = readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
@@ -48,13 +49,11 @@ test('P0/P1 surfaces resolve through icon names instead of emoji', () => {
 });
 
 test('settings option icons are names consumed by renderPopoverItems', () => {
-  assert.match(cliSettings, /iconName:\s*'shield'/);
-  assert.match(cliSettings, /iconName:\s*'refresh'/);
-  assert.match(cliSettings, /iconName:\s*'hand'/);
-  assert.match(cliSettings, /iconName:\s*'warning'/);
-  assert.match(cliSettings, /iconName:\s*'eye'/);
-  assert.match(cliSettings, /iconName:\s*'notepad'/);
-  assert.match(cliSettings, /iconName:\s*'skull'/);
+  // 遍历真实选项而不是重述图标名清单：增删一个档位不该让这条断言失效。
+  for (const option of [...APPROVAL_OPTIONS, ...SANDBOX_OPTIONS]) {
+    assert.ok(option.iconName, `option "${option.id}" has no iconName`);
+    assert.ok(icon(option.iconName), `iconName "${option.iconName}" is not in ICONS`);
+  }
   assert.doesNotMatch(cliSettings, /icon:\s*'🛡️'/);
   assert.doesNotMatch(cliSettings, /icon:\s*'⚠️'/);
 
