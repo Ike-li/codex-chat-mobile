@@ -1,4 +1,15 @@
 import { spawn } from 'node:child_process';
+
+// codex 需要继承我们的环境（PATH、CODEX_HOME、上游配置都在里面），但测试框架的控制变量
+// 不属于业务环境：NODE_TEST_CONTEXT 会让子进程里的 node:test 以为自己是测试子进程，
+// NODE_OPTIONS 会把预加载脚本带进去。跑测试时才有，泄漏出去只会制造难查的怪事。
+const CONTROL_ENV_KEYS = ['NODE_TEST_CONTEXT', 'NODE_TEST_WORKER_ID', 'NODE_CHANNEL_FD', 'NODE_OPTIONS'];
+
+export function childEnv(source = process.env) {
+  const env = { ...source };
+  for (const key of CONTROL_ENV_KEYS) delete env[key];
+  return env;
+}
 import { StringDecoder } from 'node:string_decoder';
 
 export class AppServerTransport {
@@ -39,7 +50,7 @@ export class AppServerTransport {
     try {
       child = this.spawnImpl(this.codexBin, ['app-server'], {
         cwd: this.cwd,
-        env: process.env,
+        env: childEnv(),
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (error) {

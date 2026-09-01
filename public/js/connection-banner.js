@@ -55,3 +55,20 @@ export function resolveConnectionBanner({
 
   return null;
 }
+
+// 局域网模式不强制 TLS——强制自签证书会大幅抬高接入成本，违背「接入方式与项目解耦」。
+// 代价是 token 和全部流量在这张网里是明文的，用户必须看得见这件事：家里可以接受，
+// 咖啡厅的 WiFi 不行，而这个判断只能由用户自己做。
+//
+// isSecureContext 正好是需要的判据：HTTPS 与 loopback 为 true，其余为 false。拿不到时
+// 视为安全，免得在不支持该能力的环境里长期挂一条吓人的横幅。
+export function resolveInsecureTransportBanner({ secureContext } = {}) {
+  if (secureContext !== false) return null;
+  return {
+    tone: 'warn',
+    label: '明文连接',
+    detail: '访问令牌与全部会话内容在这个网络里未加密，同网设备可以看到。仅在你信任的网络下使用。',
+    spinner: false,
+    retry: false,
+  };
+}

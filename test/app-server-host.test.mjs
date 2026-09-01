@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { AppServerHost } from '../app-server-host.js';
 import { ThreadRegistry } from '../thread-registry.js';
+import { childEnv } from '../app-server-transport.js';
 
 function fakeChild() {
   const child = new EventEmitter();
@@ -612,4 +613,24 @@ test('thread status cache keeps the most recently seen threads', () => {
   }
   assert.ok(host.latestThreadStatus('thr_0'), '一直在更新的 thread 不该被挤掉');
   host.dispose();
+});
+
+// 测试框架的控制变量不属于业务环境：NODE_TEST_CONTEXT 会让子进程里的 node:test 以为自己
+// 是测试子进程，NODE_OPTIONS 会把预加载脚本带进去。codex 仍需继承 PATH / CODEX_HOME /
+// 上游配置，所以只剔除这几个，不做白名单。
+test('spawn 给 codex 的环境剔除测试框架控制变量，保留业务配置', () => {
+  const env = childEnv({
+    PATH: '/usr/bin',
+    CODEX_HOME: '/home/u/.codex',
+    OPENAI_BASE_URL: 'https://upstream.example/v1',
+    NODE_TEST_CONTEXT: 'child-v8',
+    NODE_TEST_WORKER_ID: '1',
+    NODE_CHANNEL_FD: '3',
+    NODE_OPTIONS: '--import file:///tmp/x.mjs',
+  });
+  assert.deepEqual(env, {
+    PATH: '/usr/bin',
+    CODEX_HOME: '/home/u/.codex',
+    OPENAI_BASE_URL: 'https://upstream.example/v1',
+  });
 });
