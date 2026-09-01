@@ -1597,6 +1597,35 @@ function requireAdmin(socket, ack, action, payload = {}) {
   return true;
 }
 
+// 宿主机的每一次文件变更都要留痕（R-SEC-2）。只记「谁在何时动了什么」——路径、字节数、
+// 结果；不记内容，否则审计日志就成了代码的第二份副本，回溯内容该用 git。
+async function runFsMutation(socket, ack, action, resolveTarget, operation) {
+  let target;
+  try {
+    target = resolveTarget();
+  } catch (err) {
+    ackError(ack, err);
+    return;
+  }
+  const record = {
+    event: 'fs_mutation',
+    action,
+    deviceRef: String(socket?.handshake?.auth?.deviceToken || '').slice(0, 16),
+    path: sanitizePath(target.path || ''),
+    ...(target.destinationPath ? { destinationPath: sanitizePath(target.destinationPath) } : {}),
+    ...(target.recursive === true ? { recursive: true } : {}),
+    ...(Number.isFinite(target.approxBytes) ? { approxBytes: target.approxBytes } : {}),
+  };
+  try {
+    const result = await operation(target);
+    appendSecurityAudit({ ...record, outcome: 'success' });
+    ackOk(ack, { result: result ?? null });
+  } catch (err) {
+    appendSecurityAudit({ ...record, outcome: 'error', reasonCode: 'operation_failed' });
+    ackError(ack, err);
+  }
+}
+
 async function runAdminAction(socket, ack, action, payload, operation) {
   if (!requireAdmin(socket, ack, action, payload)) return;
   try {
@@ -2636,28 +2665,37 @@ io.on('connection', socket => {
       ensureControlAgent(payload?.cwd, socket).marketplaceUpgrade(payload?.marketplaceName ?? null));
   });
 
-  on(socket, 'admin:fsWriteFile', async (payload = {}, ack) => {
-    await runAdminAction(socket, ack, 'admin:fsWriteFile', payload, () =>
-      ensureControlAgent(payload?.cwd, socket).writeFile(
-        requireWorkspacePath(socket, 'admin:fsWriteFile', payload?.path), payload?.dataBase64));
+  // 写操作曾藏在 admin 门后。那道门的口令是源码常量，任何能打开页面的设备都能解锁，也
+  // 拦不住让 agent 代劳的路径——是安全剧场。真正的边界是设备 token，所以功能转正，代价
+  // 是必须真的记审计：admin 审计文件默认不启用，此前写操作实际无迹可寻。
+  on(socket, 'fs:writeFile', async (payload = {}, ack) => {
+    await runFsMutation(socket, ack, 'fs:writeFile', () => ({
+      path: requireWorkspacePath(socket, 'fs:writeFile', payload?.path),
+      approxBytes: typeof payload?.dataBase64 === 'string' ? Math.floor(payload.dataBase64.length * 0.75) : 0,
+    }), target => ensureControlAgent(payload?.cwd, socket).writeFile(target.path, payload?.dataBase64));
   });
 
-  on(socket, 'admin:fsRemove', async (payload = {}, ack) => {
-    await runAdminAction(socket, ack, 'admin:fsRemove', payload, () =>
-      ensureControlAgent(payload?.cwd, socket).removePath(
-        requireWorkspacePath(socket, 'admin:fsRemove', payload?.path),
-        { recursive: payload?.recursive, force: payload?.force }));
+  on(socket, 'fs:remove', async (payload = {}, ack) => {
+    // recursive 由调用方显式声明。服务端替用户默认成 true 的话，一次误点就是不可逆的。
+    await runFsMutation(socket, ack, 'fs:remove', () => ({
+      path: requireWorkspacePath(socket, 'fs:remove', payload?.path),
+      recursive: payload?.recursive === true,
+    }), target => ensureControlAgent(payload?.cwd, socket).removePath(
+      target.path, { recursive: target.recursive, force: payload?.force === true }));
   });
 
-  on(socket, 'admin:fsCopy', async (payload = {}, ack) => {
+  on(socket, 'fs:copy', async (payload = {}, ack) => {
     // 源和目标都要过闸：只挡一端等于留了一条把工作区外的文件复制进来、或把工作区内容
     // 复制出去的通道。
-    await runAdminAction(socket, ack, 'admin:fsCopy', payload, () =>
-      ensureControlAgent(payload?.cwd, socket).copyPath({
-        sourcePath: requireWorkspacePath(socket, 'admin:fsCopy', payload?.sourcePath),
-        destinationPath: requireWorkspacePath(socket, 'admin:fsCopy', payload?.destinationPath),
-        recursive: payload?.recursive,
-      }));
+    await runFsMutation(socket, ack, 'fs:copy', () => ({
+      path: requireWorkspacePath(socket, 'fs:copy', payload?.sourcePath),
+      destinationPath: requireWorkspacePath(socket, 'fs:copy', payload?.destinationPath),
+      recursive: payload?.recursive === true,
+    }), target => ensureControlAgent(payload?.cwd, socket).copyPath({
+      sourcePath: target.path,
+      destinationPath: target.destinationPath,
+      recursive: target.recursive,
+    }));
   });
 
   on(socket, 'admin:mcpToolCall', async (payload = {}, ack) => {
