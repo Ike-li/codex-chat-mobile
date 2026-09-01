@@ -24,7 +24,7 @@ import { loadExpandedDirs, persistExpandedDirs, toggleExpandedDir } from '/js/dr
 import { renderMarkdown } from '/js/markdown.js';
 import { createTranscriptStream } from '/js/transcript-stream.js';
 import { commandCard, fileChangeCard } from '/js/tool-cards.js';
-import { resolveConnectionBanner } from '/js/connection-banner.js';
+import { resolveConnectionBanner, resolveInsecureTransportBanner } from '/js/connection-banner.js';
 import { formatRttChip, formatWorkspaceChangeBadge } from '/js/header-chrome.js';
 import { createConfirmController } from '/js/confirm-dialog.js';
 import { threadActionConfirm, threadActionErrorMessage } from '/js/thread-actions.js';
@@ -343,12 +343,16 @@ import { icon, hydrateIcons } from '/js/icons.js';
   }
 
   function paintConnectionBanner() {
+    // 明文告警是常驻状态而非事件，连接正常时也要挂着；连接出问题时让位给连接横幅，
+    // 那条更紧急。
     const view = resolveConnectionBanner({
       phase: connPhase,
       elapsedMs: Date.now() - connSince,
       suppressed: overlayBlocksBanner(),
       wasVisible: connBannerWasVisible,
-    });
+    }) || (overlayBlocksBanner() ? null : resolveInsecureTransportBanner({
+      secureContext: window.isSecureContext,
+    }));
     if (!connBanner) return;
     if (!view) {
       connBanner.hidden = true;
