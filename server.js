@@ -36,6 +36,10 @@ import {
   denyDevice,
   getPendingDevices,
   getTrustedDeviceTokens,
+  getTrustedDevices,
+  issueDeviceSecret,
+  verifyDeviceSecret,
+  touchDevice,
 } from './devices.js';
 import {
   isLocalAccess,
@@ -473,10 +477,28 @@ function appendSecurityAudit(entry) {
   }
 }
 
+// 注册凭证：启动时取自 AUTH_TOKEN，可在运行时轮换。轮换只影响**新设备注册**——已注册
+// 设备用自己的专属凭证换会话，不经过这里。持久化在 data/enrollment-token，重启后仍然有效，
+// 否则「轮换」等于「重启前有效」，用户没法信任它。
+let enrollmentToken = AUTH_TOKEN;
+const ENROLLMENT_TOKEN_FILE = join(DATA_DIR, 'enrollment-token');
+try {
+  if (existsSync(ENROLLMENT_TOKEN_FILE)) {
+    const stored = readFileSync(ENROLLMENT_TOKEN_FILE, 'utf8').trim();
+    if (stored) enrollmentToken = stored;
+  }
+} catch { /* 读不到就用 AUTH_TOKEN，启动不该被这件事挡住 */ }
+
 function tokenMatches(got) {
-  if (!AUTH_TOKEN || typeof got !== 'string') return false;
-  const a = Buffer.from(got), b = Buffer.from(AUTH_TOKEN);
+  if (!enrollmentToken || typeof got !== 'string') return false;
+  const a = Buffer.from(got), b = Buffer.from(enrollmentToken);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function rotateEnrollmentToken() {
+  enrollmentToken = randomBytes(32).toString('base64url');
+  writeOwnerOnlyFile(ENROLLMENT_TOKEN_FILE, enrollmentToken);
+  return enrollmentToken;
 }
 
 function authSessionKey(token) {
@@ -637,7 +659,14 @@ app.get('/health', httpAuth, (_req, res) => {
 
 app.post('/auth/session', (req, res) => {
   const deviceToken = req.headers['x-device-token'];
-  if (!AUTH_TOKEN || !tokenMatches(req.headers['x-auth-token'])) {
+  // 两条入口：注册凭证（共享 AUTH_TOKEN，新设备首次接入用）或设备专属凭证（此后日常用）。
+  // 分开之后，轮换共享 token 只阻断新设备注册，已注册设备不受影响——现状是改 AUTH_TOKEN
+  // 要重启且所有人重登，与 R-SEC-1 想要的方向相反。
+  const deviceSecret = req.headers['x-device-secret'];
+  const bySecret = typeof deviceToken === 'string'
+    && typeof deviceSecret === 'string'
+    && verifyDeviceSecret(deviceToken, deviceSecret);
+  if (!bySecret && (!AUTH_TOKEN || !tokenMatches(req.headers['x-auth-token']))) {
     const failure = recordAuthFailure(req.socket?.remoteAddress || req.ip);
     if (failure.shouldAudit) {
       appendSecurityAudit({
@@ -655,15 +684,40 @@ app.post('/auth/session', (req, res) => {
     return res.status(400).json({ error: 'invalid_device_token' });
   }
   const session = issueAuthSession(deviceToken);
+  // 只在用注册凭证接入时回签一次；已经拿着设备凭证来的不重签，否则每次换会话都换一次
+  // 凭证，撤销与轮换的语义会变得没法讲清楚。
+  // 设备已被批准且还没有专属凭证时签发一次。仍是 pending 的设备拿不到——它本来也做不了
+  // 任何事，先经过人工批准这一关。
+  const issuedSecret = bySecret ? null : issueDeviceSecret(deviceToken);
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Set-Cookie', sessionCookie(session.token, req));
   appendSecurityAudit({
     event: 'session_issue',
     outcome: 'success',
+    method: bySecret ? 'device_secret' : 'enrollment_token',
     deviceRef: session.key.slice(0, 16),
     ip: clientIp(req.socket?.remoteAddress || req.ip),
   });
-  return res.status(201).json({ ok: true, expiresAt: session.expiresAt });
+  touchDevice(deviceToken, { persist: true });
+  return res.status(201).json({
+    ok: true,
+    expiresAt: session.expiresAt,
+    ...(issuedSecret ? { deviceSecret: issuedSecret } : {}),
+  });
+});
+
+app.post('/auth/enrollment/rotate', (req, res) => {
+  if (!tokenMatches(req.headers['x-auth-token'])) {
+    return res.status(401).json({ status: 'unauthorized' });
+  }
+  const next = rotateEnrollmentToken();
+  appendSecurityAudit({
+    event: 'enrollment_rotate',
+    outcome: 'success',
+    ip: clientIp(req.socket?.remoteAddress || req.ip),
+  });
+  res.setHeader('Cache-Control', 'no-store');
+  return res.status(200).json({ ok: true, enrollmentToken: next });
 });
 
 app.delete('/auth/session', httpAuth, (req, res) => {
@@ -1714,6 +1768,23 @@ io.on('connection', socket => {
     const push = pushDecision({ type: 'policy_change', payload: { summary } });
     if (push) pushNotify(push).catch(() => {});
     ackOk(ack, {});
+  });
+
+  // R-SEC-1 的设备表：要能回答「这台是什么设备、什么时候接进来的、最近还在不在用、
+  // 推送订阅还在不在」——那正是判断要不要撤销它的依据。不返回凭证哈希。
+  on(socket, 'devices:list', (_payload = {}, ack) => {
+    const subscribed = new Set(pushSubscriptions.map(item => item.deviceToken));
+    ackOk(ack, {
+      devices: getTrustedDevices().map(record => ({
+        deviceRef: record.deviceToken.slice(0, 16),
+        ip: record.ip,
+        userAgent: record.userAgent,
+        approvedAt: record.approvedAt,
+        lastSeenAt: record.lastSeenAt,
+        pushSubscribed: subscribed.has(record.deviceToken),
+        current: record.deviceToken === socket.handshake.auth?.deviceToken,
+      })),
+    });
   });
 
   on(socket, 'needs-you:snapshot', (_payload = {}, ack) => {

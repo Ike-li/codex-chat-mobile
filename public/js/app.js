@@ -1358,6 +1358,15 @@ import { icon, hydrateIcons } from '/js/icons.js';
         return;
       }
       if (response.status === 401) {
+        // 会话在服务端是内存态，重启即失效。已注册设备手里有专属凭证，应当静默续期，
+        // 而不是每次重启都让人重新输一遍口令——那正是「口令必须长期留在手边」的成因。
+        if (localStorage.getItem('codex_device_secret')) {
+          try {
+            await establishAuthSession('');
+            connectSocket({ allowEmpty: true });
+            return;
+          } catch { /* 凭证已被撤销，落回口令输入 */ }
+        }
         showAuthPrompt();
         return;
       }
@@ -1367,17 +1376,26 @@ import { icon, hydrateIcons } from '/js/icons.js';
     }
   }
 
+  // 已注册设备优先用服务端签发的专属凭证，只有拿不到时才回落到注册口令。这样维护者轮换
+  // 注册口令时只会阻断新设备，不会把这台设备踢下线。
   async function establishAuthSession(token) {
+    const deviceSecret = localStorage.getItem('codex_device_secret');
+    const headers = { 'x-device-token': deviceToken };
+    if (deviceSecret && !token) headers['x-device-secret'] = deviceSecret;
+    else headers['x-auth-token'] = token || '';
+
     const response = await fetch('/auth/session', {
       method: 'POST',
       credentials: 'same-origin',
-      headers: {
-        'x-auth-token': token,
-        'x-device-token': deviceToken,
-      },
+      headers,
     });
     if (!response.ok) throw new Error('访问口令不正确，请重试。');
-    return response.json();
+    const body = await response.json();
+    // 只在注册那一次会回签。凭证泄露的代价与 deviceToken 相同，两者已经并列存在同一处。
+    if (typeof body?.deviceSecret === 'string') {
+      localStorage.setItem('codex_device_secret', body.deviceSecret);
+    }
+    return body;
   }
 
   function showAuthPrompt(message = '') {

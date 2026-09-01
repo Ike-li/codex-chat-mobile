@@ -4958,3 +4958,88 @@ test('文件写入不需要 admin 解锁，但必须留下不含内容的审计'
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// R-SEC-1：共享 token 降级为注册凭证。已注册设备用服务端签发的专属凭证换会话，所以轮换
+// 共享 token 只阻断新设备，不会把已注册设备全部踢下线。
+test('已注册设备用专属凭证换会话，轮换注册凭证不影响它', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ccm-device-secret-'));
+  const codexBin = createFakeCodexBin(root);
+  const deviceToken = 'dev_secret_flow_0123456789';
+  const fixture = await startIsolatedServer({ codexBin, initialTrustedDevices: [deviceToken] });
+  try {
+    // 设备要先被批准才谈得上签发凭证——未批准的设备什么也做不了。
+    const enroll = await fetch(`${fixture.url}/auth/session`, {
+      method: 'POST',
+      headers: { 'x-auth-token': fixture.authToken, 'x-device-token': deviceToken },
+    });
+    assert.equal(enroll.status, 201);
+    const { deviceSecret } = await enroll.json();
+    assert.ok(typeof deviceSecret === 'string' && deviceSecret.length >= 32, '应当回签设备凭证');
+
+    // 此后不再需要注册凭证。
+    const reAuth = await fetch(`${fixture.url}/auth/session`, {
+      method: 'POST',
+      headers: { 'x-device-secret': deviceSecret, 'x-device-token': deviceToken },
+    });
+    assert.equal(reAuth.status, 201, '设备凭证应当足以换取会话');
+
+    // 错误的设备凭证不行。
+    const bad = await fetch(`${fixture.url}/auth/session`, {
+      method: 'POST',
+      headers: { 'x-device-secret': 'wrong-secret-value-padding-0123', 'x-device-token': deviceToken },
+    });
+    assert.equal(bad.status, 401);
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// R-SEC-1 的轮换语义：换掉注册凭证只应阻断**新**设备注册，已注册设备照常工作。
+// 现状是改 AUTH_TOKEN 需重启且所有设备 session 一并作废——方向刚好相反。
+test('轮换注册凭证只阻断新设备，已注册设备不受影响', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ccm-rotate-'));
+  const codexBin = createFakeCodexBin(root);
+  const enrolled = 'dev_rotate_enrolled_0123456789';
+  const fixture = await startIsolatedServer({ codexBin, initialTrustedDevices: [enrolled] });
+  try {
+    const first = await fetch(`${fixture.url}/auth/session`, {
+      method: 'POST',
+      headers: { 'x-auth-token': fixture.authToken, 'x-device-token': enrolled },
+    });
+    const { deviceSecret } = await first.json();
+
+    const rotated = await fetch(`${fixture.url}/auth/enrollment/rotate`, {
+      method: 'POST',
+      headers: { 'x-auth-token': fixture.authToken },
+    });
+    assert.equal(rotated.status, 200);
+    const { enrollmentToken } = await rotated.json();
+    assert.ok(enrollmentToken.length >= 32);
+    assert.notEqual(enrollmentToken, fixture.authToken);
+
+    // 已注册设备照常。
+    const stillWorks = await fetch(`${fixture.url}/auth/session`, {
+      method: 'POST',
+      headers: { 'x-device-secret': deviceSecret, 'x-device-token': enrolled },
+    });
+    assert.equal(stillWorks.status, 201, '轮换不该把已注册设备踢下线');
+
+    // 旧注册凭证不再能带新设备进来。
+    const oldTokenNewDevice = await fetch(`${fixture.url}/auth/session`, {
+      method: 'POST',
+      headers: { 'x-auth-token': fixture.authToken, 'x-device-token': 'dev_rotate_newcomer_012345' },
+    });
+    assert.equal(oldTokenNewDevice.status, 401, '旧注册凭证必须立即失效');
+
+    // 新凭证可以。
+    const newTokenNewDevice = await fetch(`${fixture.url}/auth/session`, {
+      method: 'POST',
+      headers: { 'x-auth-token': enrollmentToken, 'x-device-token': 'dev_rotate_newcomer_012345' },
+    });
+    assert.equal(newTokenNewDevice.status, 201);
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
