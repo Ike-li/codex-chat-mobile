@@ -19,6 +19,13 @@ import {
   readPinnedCodexVersion,
   readProtocolMethodSets,
   readProtocolTypeSet,
+  LEGACY_FIELD_ALLOWLIST,
+  parseNotificationParamsTypes,
+  readTypeFields,
+  readAllNotificationParamsFields,
+  collectNotificationFieldUsage,
+  findUnknownNotificationFields,
+  formatUnknownNotificationFields,
 } from '../scripts/protocol-check.mjs';
 
 const root = process.cwd();
@@ -239,3 +246,81 @@ function writeProtocolFixture(dir, methodFiles) {
     writeFileSync(join(dir, `${typeName}.ts`), `export type ${typeName} =\n${body};\n`);
   }
 }
+
+// 字段级漂移。此前 protocol:check 只比对方法名和「上游生成的文件有没有变」，
+// 从不校验我们的代码读的 params 字段是否真的存在于协议里。上游把字段改个名，
+// 我们读到的是 undefined —— 没有异常、没有失败用例，功能静默失效，而单元测试
+// 用的是我们自己写的、同样假设错误的 fixture，两层一起说谎。
+test('通知字段用法对得上协议：解析 ServerNotification 的 method → params 类型', () => {
+  const source = `
+export type ServerNotification = { "method": "turn/started", "params": TurnStartedNotification } | { "method": "process/exited", "params": ProcessExitedNotification };
+`;
+  const map = parseNotificationParamsTypes(source);
+  assert.equal(map.get('turn/started'), 'TurnStartedNotification');
+  assert.equal(map.get('process/exited'), 'ProcessExitedNotification');
+  assert.equal(map.size, 2);
+});
+
+test('通知字段用法对得上协议：读出 params 类型声明的顶层字段', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ccm-fields-'));
+  try {
+    writeFileSync(join(dir, 'ThingNotification.ts'),
+      'export type ThingNotification = { threadId: string, threadName?: string, };\n');
+    const fields = readTypeFields(dir, 'ThingNotification');
+    assert.deepEqual([...fields].sort(), ['threadId', 'threadName']);
+    assert.equal(readTypeFields(dir, 'MissingNotification'), null, '找不到的类型返回 null 而不是空集合');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('通知字段用法对得上协议：从 handleNotification 抽出每个 method 读的字段', () => {
+  const source = `
+  handleNotification(method, params) {
+    switch (method) {
+      case 'turn/started':
+        this.emit('x', { id: params.turnId });
+        break;
+      case 'process/exited':
+        this.emit('y', { h: params.processHandle, code: params.exitCode });
+        break;
+    }
+  }
+`;
+  const usage = collectNotificationFieldUsage(source);
+  assert.deepEqual([...usage.get('turn/started')], ['turnId']);
+  assert.deepEqual([...usage.get('process/exited')].sort(), ['exitCode', 'processHandle']);
+});
+
+test('通知字段用法对得上协议：报告协议里不存在的字段，白名单里的兼容回退除外', () => {
+  const usage = new Map([
+    ['turn/started', new Set(['turnId', 'bogusField'])],
+    ['process/exited', new Set(['processHandle', 'processId'])],
+  ]);
+  const paramsTypes = new Map([
+    ['turn/started', 'TurnStartedNotification'],
+    ['process/exited', 'ProcessExitedNotification'],
+  ]);
+  const declared = new Map([
+    ['TurnStartedNotification', new Set(['turnId'])],
+    ['ProcessExitedNotification', new Set(['processHandle', 'exitCode'])],
+  ]);
+  const allowlist = new Map([['process/exited', new Set(['processId'])]]);
+
+  const unknown = findUnknownNotificationFields({ usage, paramsTypes, declared, allowlist });
+  assert.deepEqual(unknown, [
+    { method: 'turn/started', paramsType: 'TurnStartedNotification', fields: ['bogusField'] },
+  ], 'bogusField 要报出来，白名单里的 processId 不报');
+  assert.match(formatUnknownNotificationFields(unknown), /bogusField/);
+  assert.match(formatUnknownNotificationFields([]), /OK/);
+});
+
+test('通知字段用法对得上协议：真实的 agent-appserver.js 对着真实协议没有未知字段', () => {
+  const unknown = findUnknownNotificationFields({
+    usage: collectNotificationFieldUsage(readFileSync(join(root, 'agent-appserver.js'), 'utf8')),
+    paramsTypes: parseNotificationParamsTypes(readFileSync(join(protocolDir, 'ServerNotification.ts'), 'utf8')),
+    declared: readAllNotificationParamsFields(protocolDir),
+    allowlist: LEGACY_FIELD_ALLOWLIST,
+  });
+  assert.deepEqual(unknown, [], formatUnknownNotificationFields(unknown));
+});
