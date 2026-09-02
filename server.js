@@ -81,7 +81,7 @@ const GATEWAY_EPOCH = randomBytes(16).toString('hex');
 const gatewaySecurityPolicy = parseGatewaySecurityPolicy(process.env);
 const HERE = import.meta.dirname;
 const DATA_DIR = process.env.CODEX_DATA_DIR || join(HERE, 'data');
-const ADMIN_AUDIT_FILE = join(DATA_DIR, 'admin-audit.jsonl');
+const HOST_CONFIG_AUDIT_FILE = join(DATA_DIR, 'host-config-audit.jsonl');
 const SECURITY_AUDIT_FILE = join(DATA_DIR, 'security-audit.jsonl');
 const P3_EXPERIMENTAL_ENABLED = process.env.CODEX_P3_EXPERIMENTAL === '1';
 const REMOTE_IMAGE_INPUTS_ENABLED = process.env.CODEX_ALLOW_REMOTE_IMAGES === '1';
@@ -1494,11 +1494,11 @@ function emitServerEnvelope(socket, type, payload) {
   });
 }
 
-function appendAdminAudit(entry) {
+function appendHostConfigAudit(entry) {
   try {
     mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
     appendOwnerOnlyFile(
-      ADMIN_AUDIT_FILE,
+      HOST_CONFIG_AUDIT_FILE,
       JSON.stringify({ ts: Date.now(), ...sanitizeAdminAuditValue(entry) }) + '\n',
     );
   } catch {
@@ -1518,37 +1518,37 @@ function sanitizeAdminAuditValue(value, depth = 0) {
   return value;
 }
 
-function adminSummary(action, payload = {}) {
-  if (action === 'admin:configWrite') {
+function hostConfigSummary(action, payload = {}) {
+  if (action === 'host:configWrite') {
     return {
       keyPath: payload.keyPath || null,
       mergeStrategy: payload.mergeStrategy || null,
       filePath: payload.filePath ? sanitizePath(payload.filePath) : null,
     };
   }
-  if (action === 'admin:configBatchWrite') {
+  if (action === 'host:configBatchWrite') {
     return {
       edits: Array.isArray(payload.edits) ? payload.edits.length : 0,
       keyPaths: Array.isArray(payload.edits) ? payload.edits.map(edit => edit?.keyPath).filter(Boolean).slice(0, 20) : [],
       filePath: payload.filePath ? sanitizePath(payload.filePath) : null,
     };
   }
-  if (action === 'admin:pluginInstall') {
+  if (action === 'host:pluginInstall') {
     return {
       pluginName: payload.pluginName || null,
       remoteMarketplaceName: payload.remoteMarketplaceName || null,
       marketplacePath: payload.marketplacePath ? sanitizePath(payload.marketplacePath) : null,
     };
   }
-  if (action === 'admin:pluginUninstall') return { pluginId: payload.pluginId || null };
-  if (action === 'admin:marketplaceAdd') return { source: payload.source || null, refName: payload.refName || null };
-  if (action === 'admin:marketplaceRemove' || action === 'admin:marketplaceUpgrade') {
+  if (action === 'host:pluginUninstall') return { pluginId: payload.pluginId || null };
+  if (action === 'host:marketplaceAdd') return { source: payload.source || null, refName: payload.refName || null };
+  if (action === 'host:marketplaceRemove' || action === 'host:marketplaceUpgrade') {
     return { marketplaceName: payload.marketplaceName || null };
   }
-  if (action === 'admin:mcpToolCall') {
+  if (action === 'host:mcpToolCall') {
     return { server: payload.server || null, tool: payload.tool || null, arguments: '<redacted>' };
   }
-  if (action === 'admin:accountLogout') return {};
+  if (action === 'host:accountLogout') return {};
   return {};
 }
 
@@ -1558,13 +1558,13 @@ function adminSummary(action, payload = {}) {
 //
 // 保留下来的是逐动作确认：它防的是手机上误触高危操作，与攻击者无关，那是真实价值。
 function requireActionConfirm(socket, ack, action, payload = {}) {
-  if (payload.adminConfirm === action) return true;
-  appendAdminAudit({
+  if (payload.confirmAction === action) return true;
+  appendHostConfigAudit({
     event: 'denied',
     action,
     socketId: socket.id,
     error: `Missing per-action confirm: ${action}`,
-    summary: adminSummary(action, payload),
+    summary: hostConfigSummary(action, payload),
   });
   ackError(ack, new Error(`Missing per-action confirm: ${action}`));
   return false;
@@ -1599,24 +1599,24 @@ async function runFsMutation(socket, ack, action, resolveTarget, operation) {
   }
 }
 
-async function runAdminAction(socket, ack, action, payload, operation) {
+async function runHostConfigAction(socket, ack, action, payload, operation) {
   if (!requireActionConfirm(socket, ack, action, payload)) return;
   try {
     const result = await operation();
-    appendAdminAudit({
+    appendHostConfigAudit({
       event: 'success',
       action,
       socketId: socket.id,
-      summary: adminSummary(action, payload),
+      summary: hostConfigSummary(action, payload),
     });
     ackOk(ack, { result: result ?? null });
   } catch (err) {
-    appendAdminAudit({
+    appendHostConfigAudit({
       event: 'error',
       action,
       socketId: socket.id,
       error: err.message,
-      summary: adminSummary(action, payload),
+      summary: hostConfigSummary(action, payload),
     });
     ackError(ack, err);
   }
@@ -2630,38 +2630,38 @@ io.on('connection', socket => {
     }
   });
 
-  on(socket, 'admin:configWrite', async (payload = {}, ack) => {
-    await runAdminAction(socket, ack, 'admin:configWrite', payload, () =>
+  on(socket, 'host:configWrite', async (payload = {}, ack) => {
+    await runHostConfigAction(socket, ack, 'host:configWrite', payload, () =>
       ensureControlAgent(payload?.cwd, socket).writeConfigValue(payload));
   });
 
-  on(socket, 'admin:configBatchWrite', async (payload = {}, ack) => {
-    await runAdminAction(socket, ack, 'admin:configBatchWrite', payload, () =>
+  on(socket, 'host:configBatchWrite', async (payload = {}, ack) => {
+    await runHostConfigAction(socket, ack, 'host:configBatchWrite', payload, () =>
       ensureControlAgent(payload?.cwd, socket).writeConfigBatch(payload));
   });
 
-  on(socket, 'admin:pluginInstall', async (payload = {}, ack) => {
-    await runAdminAction(socket, ack, 'admin:pluginInstall', payload, () =>
+  on(socket, 'host:pluginInstall', async (payload = {}, ack) => {
+    await runHostConfigAction(socket, ack, 'host:pluginInstall', payload, () =>
       ensureControlAgent(payload?.cwd, socket).installPlugin(payload));
   });
 
-  on(socket, 'admin:pluginUninstall', async (payload = {}, ack) => {
-    await runAdminAction(socket, ack, 'admin:pluginUninstall', payload, () =>
+  on(socket, 'host:pluginUninstall', async (payload = {}, ack) => {
+    await runHostConfigAction(socket, ack, 'host:pluginUninstall', payload, () =>
       ensureControlAgent(payload?.cwd, socket).uninstallPlugin(payload?.pluginId));
   });
 
-  on(socket, 'admin:marketplaceAdd', async (payload = {}, ack) => {
-    await runAdminAction(socket, ack, 'admin:marketplaceAdd', payload, () =>
+  on(socket, 'host:marketplaceAdd', async (payload = {}, ack) => {
+    await runHostConfigAction(socket, ack, 'host:marketplaceAdd', payload, () =>
       ensureControlAgent(payload?.cwd, socket).marketplaceAdd(payload));
   });
 
-  on(socket, 'admin:marketplaceRemove', async (payload = {}, ack) => {
-    await runAdminAction(socket, ack, 'admin:marketplaceRemove', payload, () =>
+  on(socket, 'host:marketplaceRemove', async (payload = {}, ack) => {
+    await runHostConfigAction(socket, ack, 'host:marketplaceRemove', payload, () =>
       ensureControlAgent(payload?.cwd, socket).marketplaceRemove(payload?.marketplaceName));
   });
 
-  on(socket, 'admin:marketplaceUpgrade', async (payload = {}, ack) => {
-    await runAdminAction(socket, ack, 'admin:marketplaceUpgrade', payload, () =>
+  on(socket, 'host:marketplaceUpgrade', async (payload = {}, ack) => {
+    await runHostConfigAction(socket, ack, 'host:marketplaceUpgrade', payload, () =>
       ensureControlAgent(payload?.cwd, socket).marketplaceUpgrade(payload?.marketplaceName ?? null));
   });
 
@@ -2698,8 +2698,8 @@ io.on('connection', socket => {
     }));
   });
 
-  on(socket, 'admin:mcpToolCall', async (payload = {}, ack) => {
-    await runAdminAction(socket, ack, 'admin:mcpToolCall', payload, () =>
+  on(socket, 'host:mcpToolCall', async (payload = {}, ack) => {
+    await runHostConfigAction(socket, ack, 'host:mcpToolCall', payload, () =>
       ensureControlAgent(payload?.cwd, socket).callMcpTool({
         threadId: payload?.threadId,
         server: payload?.server,
@@ -2709,8 +2709,8 @@ io.on('connection', socket => {
       }));
   });
 
-  on(socket, 'admin:accountLogout', async (payload = {}, ack) => {
-    await runAdminAction(socket, ack, 'admin:accountLogout', payload, () =>
+  on(socket, 'host:accountLogout', async (payload = {}, ack) => {
+    await runHostConfigAction(socket, ack, 'host:accountLogout', payload, () =>
       ensureControlAgent(payload?.cwd, socket).logoutAccount());
   });
 

@@ -180,7 +180,7 @@ import { icon, hydrateIcons } from '/js/icons.js';
   let sessionsByCwd = new Map();
   let expandedDirs = new Set();
   let showArchivedThreads = false;
-  let features = { admin: false, labs: false };
+  let features = { labs: false };
   let pendingToolCards = {}; // toolUseId -> element
   let pendingApprovalCards = {}; // approvalId -> element
   let needsYouRevision = 0;
@@ -1586,13 +1586,9 @@ import { icon, hydrateIcons } from '/js/icons.js';
   }
 
   function applyFeatureManifest(manifest) {
-    features = {
-      admin: manifest?.admin === true,
-      labs: manifest?.labs === true,
-    };
-    const adminButton = $('native-admin-btn');
+    features = { labs: manifest?.labs === true };
+    // 宿主配置不再是特性开关，入口常驻；Labs 仍受实验开关控制。
     const labsButton = $('native-p3-btn');
-    if (adminButton) adminButton.hidden = false;
     if (labsButton) labsButton.hidden = !features.labs;
   }
 
@@ -2505,7 +2501,7 @@ import { icon, hydrateIcons } from '/js/icons.js';
     appendSystem(`Remote control ${status}: ${payload?.serverName || ''}`, false);
   }
 
-  function openAdminPanel() {
+  function openHostConfigPanel() {
     renderNativePanel('宿主配置', `
       <div class="native-list-row">
         <div class="native-row-meta">这些操作直接改动宿主机的 Codex 配置、插件与账号。每一项都会单独要求确认并写审计。</div>
@@ -2513,52 +2509,52 @@ import { icon, hydrateIcons } from '/js/icons.js';
       <div class="native-list-row">
         <div class="native-row-title">Config</div>
         <div class="native-row-actions">
-          <button id="admin-config-write-btn" class="native-mini-btn" type="button">Write</button>
-          <button id="admin-config-batch-btn" class="native-mini-btn" type="button">Batch</button>
+          <button id="host-config-write-btn" class="native-mini-btn" type="button">Write</button>
+          <button id="host-config-batch-btn" class="native-mini-btn" type="button">Batch</button>
         </div>
       </div>
       <div class="native-list-row">
         <div class="native-row-title">Plugins</div>
         <div class="native-row-actions">
-          <button id="admin-plugin-install-btn" class="native-mini-btn" type="button">Install</button>
-          <button id="admin-plugin-uninstall-btn" class="native-mini-btn" type="button">Uninstall</button>
-          <button id="admin-marketplace-add-btn" class="native-mini-btn" type="button">Add Market</button>
-          <button id="admin-marketplace-remove-btn" class="native-mini-btn" type="button">Remove Market</button>
-          <button id="admin-marketplace-upgrade-btn" class="native-mini-btn" type="button">Upgrade Market</button>
+          <button id="host-plugin-install-btn" class="native-mini-btn" type="button">Install</button>
+          <button id="host-plugin-uninstall-btn" class="native-mini-btn" type="button">Uninstall</button>
+          <button id="host-marketplace-add-btn" class="native-mini-btn" type="button">Add Market</button>
+          <button id="host-marketplace-remove-btn" class="native-mini-btn" type="button">Remove Market</button>
+          <button id="host-marketplace-upgrade-btn" class="native-mini-btn" type="button">Upgrade Market</button>
         </div>
       </div>
       <div class="native-list-row">
         <div class="native-row-title">MCP / Account</div>
         <div class="native-row-actions">
-          <button id="admin-mcp-call-btn" class="native-mini-btn native-danger" type="button">Tool Call</button>
-          <button id="admin-logout-btn" class="native-mini-btn native-danger" type="button">Logout</button>
+          <button id="host-mcp-call-btn" class="native-mini-btn native-danger" type="button">Tool Call</button>
+          <button id="host-logout-btn" class="native-mini-btn native-danger" type="button">Logout</button>
         </div>
       </div>
     `);
-    $('admin-config-write-btn').onclick = adminConfigWrite;
-    $('admin-config-batch-btn').onclick = adminConfigBatchWrite;
-    $('admin-plugin-install-btn').onclick = adminPluginInstall;
-    $('admin-plugin-uninstall-btn').onclick = adminPluginUninstall;
-    $('admin-marketplace-add-btn').onclick = adminMarketplaceAdd;
-    $('admin-marketplace-remove-btn').onclick = adminMarketplaceRemove;
-    $('admin-marketplace-upgrade-btn').onclick = adminMarketplaceUpgrade;
-    $('admin-mcp-call-btn').onclick = adminMcpCall;
-    $('admin-logout-btn').onclick = adminAccountLogout;
+    $('host-config-write-btn').onclick = hostConfigWrite;
+    $('host-config-batch-btn').onclick = hostConfigBatchWrite;
+    $('host-plugin-install-btn').onclick = hostPluginInstall;
+    $('host-plugin-uninstall-btn').onclick = hostPluginUninstall;
+    $('host-marketplace-add-btn').onclick = hostMarketplaceAdd;
+    $('host-marketplace-remove-btn').onclick = hostMarketplaceRemove;
+    $('host-marketplace-upgrade-btn').onclick = hostMarketplaceUpgrade;
+    $('host-mcp-call-btn').onclick = hostMcpCall;
+    $('host-logout-btn').onclick = hostAccountLogout;
   }
 
-  const adminEmitters = {
-    'admin:configWrite': (payload, ack) => socket.emit('admin:configWrite', payload, ack),
-    'admin:configBatchWrite': (payload, ack) => socket.emit('admin:configBatchWrite', payload, ack),
-    'admin:pluginInstall': (payload, ack) => socket.emit('admin:pluginInstall', payload, ack),
-    'admin:pluginUninstall': (payload, ack) => socket.emit('admin:pluginUninstall', payload, ack),
-    'admin:marketplaceAdd': (payload, ack) => socket.emit('admin:marketplaceAdd', payload, ack),
-    'admin:marketplaceRemove': (payload, ack) => socket.emit('admin:marketplaceRemove', payload, ack),
-    'admin:marketplaceUpgrade': (payload, ack) => socket.emit('admin:marketplaceUpgrade', payload, ack),
-    'admin:mcpToolCall': (payload, ack) => socket.emit('admin:mcpToolCall', payload, ack),
-    'admin:accountLogout': (payload, ack) => socket.emit('admin:accountLogout', payload, ack),
+  const hostConfigEmitters = {
+    'host:configWrite': (payload, ack) => socket.emit('host:configWrite', payload, ack),
+    'host:configBatchWrite': (payload, ack) => socket.emit('host:configBatchWrite', payload, ack),
+    'host:pluginInstall': (payload, ack) => socket.emit('host:pluginInstall', payload, ack),
+    'host:pluginUninstall': (payload, ack) => socket.emit('host:pluginUninstall', payload, ack),
+    'host:marketplaceAdd': (payload, ack) => socket.emit('host:marketplaceAdd', payload, ack),
+    'host:marketplaceRemove': (payload, ack) => socket.emit('host:marketplaceRemove', payload, ack),
+    'host:marketplaceUpgrade': (payload, ack) => socket.emit('host:marketplaceUpgrade', payload, ack),
+    'host:mcpToolCall': (payload, ack) => socket.emit('host:mcpToolCall', payload, ack),
+    'host:accountLogout': (payload, ack) => socket.emit('host:accountLogout', payload, ack),
   };
 
-  function runAdminAction(eventName, buildPayload) {
+  function runHostConfigAction(eventName, buildPayload) {
     let confirmation;
     try {
       confirmation = promptRequired('Confirm action', eventName);
@@ -2576,7 +2572,7 @@ import { icon, hydrateIcons } from '/js/icons.js';
       return;
     }
     if (!payload) return;
-    adminEmitters[eventName]({ ...payload, cwd: serverCwd, adminConfirm: confirmation }, ack => {
+    hostConfigEmitters[eventName]({ ...payload, cwd: serverCwd, confirmAction: confirmation }, ack => {
       if (!ack?.ok) return appendSystem(ack?.error || `${eventName} failed`, true);
       appendSystem(`${eventName} completed`, false);
     });
@@ -2590,16 +2586,16 @@ import { icon, hydrateIcons } from '/js/icons.js';
     return trimmed;
   }
 
-  function adminConfigWrite() {
-    runAdminAction('admin:configWrite', () => ({
+  function hostConfigWrite() {
+    runHostConfigAction('host:configWrite', () => ({
       keyPath: promptRequired('Config keyPath', 'model'),
       value: promptRequired('Config value', 'gpt-5.5'),
       mergeStrategy: 'replace',
     }));
   }
 
-  function adminConfigBatchWrite() {
-    runAdminAction('admin:configBatchWrite', () => ({
+  function hostConfigBatchWrite() {
+    runHostConfigAction('host:configBatchWrite', () => ({
       edits: [{
         keyPath: promptRequired('Config keyPath', 'approval_policy'),
         value: promptRequired('Config value', 'on-request'),
@@ -2609,28 +2605,28 @@ import { icon, hydrateIcons } from '/js/icons.js';
     }));
   }
 
-  function adminPluginInstall() {
-    runAdminAction('admin:pluginInstall', () => ({ pluginName: promptRequired('Plugin name') }));
+  function hostPluginInstall() {
+    runHostConfigAction('host:pluginInstall', () => ({ pluginName: promptRequired('Plugin name') }));
   }
 
-  function adminPluginUninstall() {
-    runAdminAction('admin:pluginUninstall', () => ({ pluginId: promptRequired('Plugin id') }));
+  function hostPluginUninstall() {
+    runHostConfigAction('host:pluginUninstall', () => ({ pluginId: promptRequired('Plugin id') }));
   }
 
-  function adminMarketplaceAdd() {
-    runAdminAction('admin:marketplaceAdd', () => ({ source: promptRequired('Marketplace source') }));
+  function hostMarketplaceAdd() {
+    runHostConfigAction('host:marketplaceAdd', () => ({ source: promptRequired('Marketplace source') }));
   }
 
-  function adminMarketplaceRemove() {
-    runAdminAction('admin:marketplaceRemove', () => ({ marketplaceName: promptRequired('Marketplace name') }));
+  function hostMarketplaceRemove() {
+    runHostConfigAction('host:marketplaceRemove', () => ({ marketplaceName: promptRequired('Marketplace name') }));
   }
 
-  function adminMarketplaceUpgrade() {
-    runAdminAction('admin:marketplaceUpgrade', () => ({ marketplaceName: promptRequired('Marketplace name') }));
+  function hostMarketplaceUpgrade() {
+    runHostConfigAction('host:marketplaceUpgrade', () => ({ marketplaceName: promptRequired('Marketplace name') }));
   }
 
-  function adminMcpCall() {
-    runAdminAction('admin:mcpToolCall', () => ({
+  function hostMcpCall() {
+    runHostConfigAction('host:mcpToolCall', () => ({
       threadId: promptRequired('Thread id', currentSessionId || ''),
       server: promptRequired('MCP server'),
       tool: promptRequired('MCP tool'),
@@ -2638,8 +2634,8 @@ import { icon, hydrateIcons } from '/js/icons.js';
     }));
   }
 
-  function adminAccountLogout() {
-    runAdminAction('admin:accountLogout', () => ({}));
+  function hostAccountLogout() {
+    runHostConfigAction('host:accountLogout', () => ({}));
   }
 
   function joinPath(base, name) {
@@ -3714,7 +3710,7 @@ import { icon, hydrateIcons } from '/js/icons.js';
   $('native-skills-btn').onclick = loadSkillsPanel;
   $('native-import-btn').onclick = detectExternalAgentConfig;
   $('native-p3-btn').onclick = openP3Panel;
-  $('native-admin-btn').onclick = openAdminPanel;
+  $('native-host-config-btn').onclick = openHostConfigPanel;
   // 工具按钮在抽屉里:点任一按钮后关闭抽屉,让主区的数据面板可见
   const nativeControlsRegion = $('native-controls');
   if (nativeControlsRegion) {

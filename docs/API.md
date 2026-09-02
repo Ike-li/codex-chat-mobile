@@ -168,24 +168,22 @@ flag 默认关闭；关闭时 ACK 为 `feature_disabled`。
 | `p3:threadTurns` | `cwd`、`threadId` | `{ok:true, thread, turns, source:"thread/read"}` |
 | `p3:threadSearch` | `cwd`、`query`、`limit`、`cursor`、`archived` | `{ok:true, results, ..., source:"thread/list"}` |
 
-### Admin 管理 admin:*（默认关闭）
+### 宿主配置 host:*
 
-宿主配置操作（config、插件、marketplace、MCP 工具调用、账号登出）常驻可用，不需要解锁。
+直接改动宿主机 Codex 配置的操作，入口常驻，无需解锁：
 
-`admin:lock` 立即返回 `{ok:true, adminMode:false}`。其余每个动作还必须带 `adminConfirm`，值与事件名完全相同；成功返回 `{ok:true,result}`。支持的动作：
+- `host:configWrite`、`host:configBatchWrite`
+- `host:pluginInstall`、`host:pluginUninstall`
+- `host:marketplaceAdd`、`host:marketplaceRemove`、`host:marketplaceUpgrade`
+- `host:mcpToolCall`、`host:accountLogout`
 
-- `admin:configWrite`、`admin:configBatchWrite`
-- `admin:pluginInstall`、`admin:pluginUninstall`
-- `admin:marketplaceAdd`、`admin:marketplaceRemove`、`admin:marketplaceUpgrade`
-- `admin:mcpToolCall`、`admin:accountLogout`
+每一项都必须带 `confirmAction: <事件名>`（值与事件名完全相同），否则拒绝执行——那是防手机误触，不是防攻击者。成功返回 `{ok:true, result}`；成功、失败与缺确认均写 owner-only 脱敏审计（`data/host-config-audit.jsonl`），MCP arguments 和账号凭证不落明文。
 
-这些操作**不需要解锁**，但每一项都必须带 `adminConfirm: <事件名>`，否则拒绝执行——那是防手机误触，不是防攻击者。成功、失败与缺确认均写 owner-only 脱敏审计；MCP arguments 和账号凭证不落明文。
-
-解锁机制（`admin:unlock` / `admin:lock`、`CODEX_ADMIN_ENABLED`、TTL 与失败限流）已移除：口令曾是源码常量 `ENABLE ADMIN`，任何能打开页面的设备都能解锁，且至少有三条绕行路径。功能层设限挡不住攻击者，只会让人误以为有保护——安全边界是设备 token。
+历史：这些事件曾名为 `admin:*` 并藏在解锁机制后（`admin:unlock` / `admin:lock`、`CODEX_ADMIN_ENABLED`、TTL 与失败限流）。口令是源码常量 `ENABLE ADMIN`，任何能打开页面的设备都能解锁，且至少有三条绕行路径——功能层设限挡不住攻击者，只会让人误以为有保护，因此整套拆除而非加固。安全边界是设备凭证，见 SECURITY.md。
 
 ### 工作区路径作用域
 
-`fs:*` 与 `admin:fs*` 的 `path`（`admin:fsCopy` 的源和目标都算）必须落在 allowlist 工作区内，由服务端强制：realpath 归一后比对，挡住软链接逃逸；比到路径分隔符，避免 `/srv/work` 顺带放行 `/srv/work-other`；目标尚不存在时对最近的已存在祖先做 realpath 再接回尾巴，让新建文件可用。越界返回 `路径不在允许的工作区内`，并写 `workspace_scope` 审计（含动作、设备引用、脱敏路径）。
+`fs:*` 的 `path`（`fs:copy` 的源和目标都算）必须落在 allowlist 工作区内，由服务端强制：realpath 归一后比对，挡住软链接逃逸；比到路径分隔符，避免 `/srv/work` 顺带放行 `/srv/work-other`；目标尚不存在时对最近的已存在祖先做 realpath 再接回尾巴，让新建文件可用。越界返回 `路径不在允许的工作区内`，并写 `workspace_scope` 审计（含动作、设备引用、脱敏路径）。
 
 这道闸的目的是**防误操作**而非防攻击者：能发消息的设备照样可以让 agent 去读同一个文件。它挡住的是随手翻文件翻到工作区外的私钥，也把 `~/.codex/auth.json`、`~/.ssh` 挡在默认视野之外——凭据外泄是唯一撤销设备也收不回的破坏。
 

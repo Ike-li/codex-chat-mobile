@@ -983,40 +983,40 @@ test('宿主配置操作直达，但每一项都要逐动作确认', () => {
   // 留着只会让人误以为有保护。安全边界是设备 token，见 SECURITY.md。
   // 逐动作确认保留：它防的是手机上误触，与攻击者无关。
   for (const id of [
-    'native-admin-btn',
-    'admin-config-write-btn',
-    'admin-config-batch-btn',
-    'admin-plugin-install-btn',
-    'admin-plugin-uninstall-btn',
-    'admin-marketplace-add-btn',
-    'admin-marketplace-remove-btn',
-    'admin-marketplace-upgrade-btn',
-    'admin-mcp-call-btn',
-    'admin-logout-btn',
+    'native-host-config-btn',
+    'host-config-write-btn',
+    'host-config-batch-btn',
+    'host-plugin-install-btn',
+    'host-plugin-uninstall-btn',
+    'host-marketplace-add-btn',
+    'host-marketplace-remove-btn',
+    'host-marketplace-upgrade-btn',
+    'host-mcp-call-btn',
+    'host-logout-btn',
   ]) {
     assert.match(allContent, new RegExp(`id="${id}"`));
   }
 
-  assert.match(allContent, /function openAdminPanel/);
-  assert.match(allContent, /function runAdminAction/);
+  assert.match(allContent, /function openHostConfigPanel/);
+  assert.match(allContent, /function runHostConfigAction/);
   assert.match(allContent, /promptRequired\('Confirm action', eventName\)/);
-  assert.match(allContent, /adminConfirm: confirmation/);
+  assert.match(allContent, /confirmAction: confirmation/);
 
   assert.doesNotMatch(allContent, /ENABLE ADMIN/, '解锁口令不得再出现');
   assert.doesNotMatch(allContent, /function unlockAdminMode/);
   assert.doesNotMatch(allContent, /function lockAdminMode/);
-  assert.doesNotMatch(allContent, /id="native-admin-btn"[^>]*\bhidden\b/, '宿主配置入口不再隐藏');
+  assert.doesNotMatch(allContent, /id="native-host-config-btn"[^>]*\bhidden\b/, '宿主配置入口不再隐藏');
 
   for (const event of [
-    'admin:configWrite',
-    'admin:configBatchWrite',
-    'admin:pluginInstall',
-    'admin:pluginUninstall',
-    'admin:marketplaceAdd',
-    'admin:marketplaceRemove',
-    'admin:marketplaceUpgrade',
-    'admin:mcpToolCall',
-    'admin:accountLogout',
+    'host:configWrite',
+    'host:configBatchWrite',
+    'host:pluginInstall',
+    'host:pluginUninstall',
+    'host:marketplaceAdd',
+    'host:marketplaceRemove',
+    'host:marketplaceUpgrade',
+    'host:mcpToolCall',
+    'host:accountLogout',
   ]) {
     assert.match(allContent, new RegExp(`socket\\.emit\\('${event}'`));
   }

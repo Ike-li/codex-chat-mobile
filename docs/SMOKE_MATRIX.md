@@ -1887,7 +1887,7 @@ mock 只替换了 Codex 进程，`fs/*`、`git/*`、`account/*`、`mcp/*`、`ski
 - ✅ 完全看不到
 - ❌ 能看到 —— 高权限操作暴露在默认界面
 
-**定位参考** `#native-admin-btn`
+**定位参考** `#native-host-config-btn`
 
 #### VC-K01 · 工具行整体不可达
 
@@ -1951,7 +1951,7 @@ mock 只替换了 Codex 进程，`fs/*`、`git/*`、`account/*`、`mcp/*`、`ski
 | `externalAgentConfig:import` | VC-E10 | `user:approveDevice` | VC-A02 |
 | `user:denyDevice` | VC-A02/H05 | | |
 
-> `admin:*`（14）与 `p3:*`（7）由 feature flag 门控，默认界面不可达，只验证「不出现」：VC-J03 / VC-J04。
+> `p3:*`（7）由 feature flag 门控，默认界面不可达，只验证「不出现」：VC-J03。`host:*`（9）入口常驻，验证「可见且逐动作确认」：VC-J04。
 
 ### 信封类型 → 用例
 

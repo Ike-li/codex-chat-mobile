@@ -70,7 +70,7 @@ experimental 方法受服务端 flag 与前端 feature manifest 门控，`CODEX_
 - 新设备保持 pending，批准成功落盘后才解锁。设备 deny 会撤销其全部 session、删除 Push 订阅并断开在线 socket。外部原子删除 trusted-device 记录即使设备离线也会撤销 session/Push 并断开远程 socket，但会保留已经连接的 loopback socket；`DELETE /auth/session` 只撤销当前 session 并断开其 socket。
 - Push subscribe 要求已认证且已批准的设备、公网 HTTPS endpoint 和有效 key；先持久化再返回成功，投递前重新验证设备信任与全部 DNS 答案。实际 TLS 请求使用原 hostname/SNI 并 pin 已验证 IP，总超时 10 秒，响应最多读取 64 KiB。
 - 认证、配对容量、Push 容量和 Admin unlock 有界限流；Admin 默认关闭，启用后仍有 TTL、显式 Lock、逐操作确认和独立审计。
-- `security-audit.jsonl` 使用 owner-only O_APPEND、按身份/窗口聚合 rate-limit 摘要，并在默认 1 MiB 时保留一份轮转；`admin-audit.jsonl` 在 sink 递归脱敏 source/error。两者只记录元数据/hash ref，不保存命令、问题、回答、token 或附件正文，也都不是防篡改审计系统。
+- `security-audit.jsonl` 使用 owner-only O_APPEND、按身份/窗口聚合 rate-limit 摘要，并在默认 1 MiB 时保留一份轮转；`host-config-audit.jsonl` 在 sink 递归脱敏 source/error。两者只记录元数据/hash ref，不保存命令、问题、回答、token 或附件正文，也都不是防篡改审计系统。
 
 ## 维护中的设计决策
 
