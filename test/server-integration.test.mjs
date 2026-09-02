@@ -7,6 +7,13 @@ import assert from 'node:assert/strict';
 import { io as socketClient } from 'socket.io-client';
 import webpush from 'web-push';
 
+// server.js 的运行日志走 console.log → stdout，而 node --test 的 child-v8 通道把
+// 控制帧和子进程 stdout 复用在同一条流上。这个文件为每个用例 import 一份新的
+// server.js（约 60 次），每次都往 stdout 打启动横幅和逐连接日志；帧解析被撞坏时
+// 整个文件被判 uncaughtException（"Unable to deserialize cloned data"），报出来是
+// `fail 1` 却指不出任何用例。改道到 stderr：诊断信息一条不少，但不再进入控制通道。
+console.log = console.error;
+
 const ENV_KEYS = [
   'CODEX_SERVER_NO_START',
   'CODEX_DATA_DIR',
@@ -23,10 +30,6 @@ const ENV_KEYS = [
   'CODEX_FAKE_SPAWN_LOG',
   'CODEX_ALLOW_REMOTE_IMAGES',
   'CODEX_SESSION_TTL_MS',
-  'CODEX_ADMIN_ENABLED',
-  'CODEX_ADMIN_UNLOCK_TTL_MS',
-  'CODEX_ADMIN_UNLOCK_MAX_FAILURES',
-  'CODEX_ADMIN_UNLOCK_WINDOW_MS',
   'CODEX_P3_EXPERIMENTAL',
   'CODEX_PUSH_MAX_SUBSCRIPTIONS',
   'CODEX_EVENT_BUFFER_CAP',
@@ -3847,7 +3850,7 @@ test('server exposes P3 experimental controls only behind feature flag', async (
   }
 });
 
-async function startIsolatedServer({ codexBin, rpcLog, spawnLog, hostConfigEnabled = false, adminUnlockTtlMs, adminUnlockMaxFailures, adminUnlockWindowMs, p3Experimental = false, eventBufferCap, vapid, initialPushSubscriptions, initialTrustedDevices, pushMaxSubscriptions, allowedOrigins = [], trustedProxyIps = [], allowInsecureRemote = false, authMaxFailures, authWindowMs, pendingDeviceLimit, agentIdleTtlMs } = {}) {
+async function startIsolatedServer({ codexBin, rpcLog, spawnLog, p3Experimental = false, eventBufferCap, vapid, initialPushSubscriptions, initialTrustedDevices, pushMaxSubscriptions, allowedOrigins = [], trustedProxyIps = [], allowInsecureRemote = false, authMaxFailures, authWindowMs, pendingDeviceLimit, agentIdleTtlMs } = {}) {
   const previous = snapshotEnv();
   const root = mkdtempSync(join(tmpdir(), 'ccm-server-test-'));
   let workDir = join(root, 'work');
@@ -3901,23 +3904,6 @@ async function startIsolatedServer({ codexBin, rpcLog, spawnLog, hostConfigEnabl
   if (codexBin) process.env.CODEX_BIN = codexBin;
   if (rpcLog) process.env.CODEX_FAKE_RPC_LOG = rpcLog;
   if (spawnLog) process.env.CODEX_FAKE_SPAWN_LOG = spawnLog;
-  if (hostConfigEnabled) process.env.CODEX_ADMIN_ENABLED = '1';
-  else delete process.env.CODEX_ADMIN_ENABLED;
-  if (Number.isInteger(adminUnlockTtlMs) && adminUnlockTtlMs > 0) {
-    process.env.CODEX_ADMIN_UNLOCK_TTL_MS = String(adminUnlockTtlMs);
-  } else {
-    delete process.env.CODEX_ADMIN_UNLOCK_TTL_MS;
-  }
-  if (Number.isInteger(adminUnlockMaxFailures) && adminUnlockMaxFailures > 0) {
-    process.env.CODEX_ADMIN_UNLOCK_MAX_FAILURES = String(adminUnlockMaxFailures);
-  } else {
-    delete process.env.CODEX_ADMIN_UNLOCK_MAX_FAILURES;
-  }
-  if (Number.isInteger(adminUnlockWindowMs) && adminUnlockWindowMs > 0) {
-    process.env.CODEX_ADMIN_UNLOCK_WINDOW_MS = String(adminUnlockWindowMs);
-  } else {
-    delete process.env.CODEX_ADMIN_UNLOCK_WINDOW_MS;
-  }
   if (p3Experimental) process.env.CODEX_P3_EXPERIMENTAL = '1';
   else delete process.env.CODEX_P3_EXPERIMENTAL;
   if (Number.isInteger(pushMaxSubscriptions) && pushMaxSubscriptions > 0) {
@@ -4817,7 +4803,7 @@ test('an out-of-range idle TTL falls back to the default instead of reclaiming e
 
 // D6 把文件读写定为 P0 功能，不该继续藏在 admin 面板后面——那道门的口令是源码常量，任何
 // 能打开页面的设备都能解锁，挡不住任何人（§3.1）。转正的代价是必须真的记审计：admin 审计
-// 文件默认根本不启用（CODEX_ADMIN_ENABLED 缺省为 0），等于写操作此前无迹可寻。
+// 文件在旧的 admin 开关默认关闭时根本不启用，等于写操作此前无迹可寻。
 test('文件写入不需要 admin 解锁，但必须留下不含内容的审计', async () => {
   const root = mkdtempSync(join(tmpdir(), 'ccm-fs-write-test-'));
   const codexBin = createFakeCodexBin(root);

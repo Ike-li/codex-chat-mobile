@@ -79,7 +79,7 @@ turn 进行中主按钮变为停止，可精确中断该 turn。输入框仍可�
 - **多实例标签**：多个 `ThreadRuntime` 共享一个 app-server 进程，但由 registry 和每 socket 视图精确隔离；两个设备可同时查看不同 thread，不串文本、工具、审批或状态。
 - **断线恢复**：普通短断线按 `seq/epoch` 补增量；buffer gap 或服务端 epoch 改变时自动用 `thread/read` snapshot 重建。
 
-Admin 和 Labs 默认隐藏且服务端拒绝对应调用。显式启用 Admin 后仍需限时 unlock、显式 Lock、失败限流和逐操作确认；它们都不是核心聊天的前置条件。
+Labs 默认隐藏且服务端拒绝对应调用。宿主配置入口常驻，但每个动作需要独立确认并写审计。它们都不是核心聊天的前置条件。
 
 ## 安装为 PWA
 

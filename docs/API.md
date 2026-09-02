@@ -238,7 +238,7 @@ flag 默认关闭；关闭时 ACK 为 `feature_disabled`。
 - **host token 与 session**：远程 Host 绑定要求至少 32 字符的 `AUTH_TOKEN`。浏览器用它换取设备绑定的 HttpOnly session，认证失败受 `CODEX_AUTH_MAX_FAILURES` / `CODEX_AUTH_WINDOW_MS` 限流；同一身份/窗口只审计阈值前拒绝和第一次 rate-limit 摘要。
 - **设备信任**：远程新设备进入 pending；批准写入 trusted devices。外部撤销即使设备离线也会撤销 session 与 Push 绑定并断开远程 socket，但保留已连接的 loopback socket。
 - **Push**：订阅路由必须通过 HTTP 鉴权并提供已批准设备 ID；投递前再次检查设备信任与全部 DNS 结果，非公网或混合解析会拒绝。TLS 仍验证原 endpoint hostname，但连接地址由已验证 DNS 结果 pin；总超时 10 秒、响应上限 64 KiB。陈旧绑定会被清除。approval/question 的 needs-you 推送只含通用提示与 `thread` / `need` 深链，不包含命令或问题正文；result/error 推送没有该深链，正文是截断至 180 字符的 status/message，可能包含实际错误文本。
-- **Admin**：默认关闭；启用后仍需短时 unlock、失败限流和逐动作确认。
+- **宿主配置**：没有开关也没有解锁步骤；每个动作需要 `confirmAction`，缺失即拒绝并记审计。
 - **Labs**：默认关闭；需 `CODEX_P3_EXPERIMENTAL=1`，共享 app-server 初始化时才声明 `experimentalApi:true`。
 
 详见 [../SECURITY.md](../SECURITY.md) 与 [REMOTE_ACCESS.md](REMOTE_ACCESS.md)。
@@ -247,7 +247,7 @@ flag 默认关闭；关闭时 ACK 为 `feature_disabled`。
 
 | 范围 | 测试文件 |
 |---|---|
-| HTTP/session/Push、Socket 路由、精确实例目标、设备信任、Admin/Labs | `test/server-integration.test.mjs`、`test/server-security.test.mjs`、`test/server-push.test.mjs` |
+| HTTP/session/Push、Socket 路由、精确实例目标、设备信任、宿主配置/Labs | `test/server-integration.test.mjs`、`test/server-security.test.mjs`、`test/server-push.test.mjs` |
 | 共享 app-server 传输与 thread/turn/request 路由 | `test/app-server-host.test.mjs`、`test/app-server-transport.test.mjs`、`test/thread-registry.test.mjs` |
 | ACK、receipt、去重与 IndexedDB outbox | `test/socket-ack.test.mjs`、`test/message-receipt-ledger.test.mjs`、`test/message-outbox.test.mjs` |
 | structured UserInput、上传与输入解析 | `test/agent-appserver.test.mjs`、`test/new-modules.test.mjs`、`test/input-parts.test.mjs` |

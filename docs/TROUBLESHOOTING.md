@@ -56,6 +56,12 @@ npm test
 
 runtime 仍 busy 或消息等待后续 receipt。不要删除 outbox；等待 submitted/steered/rejected 更新，必要时检查目标 turn 是否仍运行。
 
+### 文件操作被拒并记为 `workspace_scope`
+
+目标路径不在 `WORK_DIR` / `WORK_DIRS` 之内。路径先做 realpath 归一，再按分隔符锚定比较，所以软链接指向区外、`..` 穿越、以及 `/srv/work` 与 `/srv/work-other` 这类前缀碰撞都会被拒。
+
+macOS 和 Windows 上还有一种容易误判的情况：文件系统大小写不敏感，但 `realpath` **不**做大小写归一。磁盘上叫 `work` 时，`/…/WORK/a.txt` 会被判为区外并拒绝，尽管它指向同一个目录。改用与 `WORK_DIR` 完全一致的大小写即可。这里刻意保持严格匹配——大小写敏感的文件系统上 `/srv/work` 和 `/srv/WORK` 是两个不同目录，放宽比较会变成真正的越权。
+
 ## 对话、历史或审批异常
 
 ### Codex 没有输出
@@ -96,15 +102,15 @@ runtime 仍 busy 或消息等待后续 receipt。不要删除 outbox；等待 su
 
 确认设备仍 trusted、订阅没有被替换、endpoint 解析为纯公网地址。投递拒绝私网/混合 DNS，并有 10 秒总超时和 64 KiB 响应上限。
 
-## Admin、Labs 或模型不可用
+## Labs 或模型不可用
 
-### 看不到 Admin 或 Labs
+### 看不到 Labs
 
-Labs 是默认行为：设置 `CODEX_P3_EXPERIMENTAL=1` 并重启网关，关闭时服务端返回 `feature_disabled`。宿主配置不再需要开关，入口常驻在抽屉的工具面板里。
+Labs 默认关闭：设置 `CODEX_P3_EXPERIMENTAL=1` 并重启网关，关闭时服务端返回 `feature_disabled`。宿主配置不受此开关影响，入口常驻在抽屉的工具面板里。
 
-### Admin 返回 `admin_locked`
+### 宿主配置操作被拒绝
 
-不再需要解锁。每个动作仍需独立确认——缺 `confirmAction` 会被拒绝并记入审计。
+宿主配置没有解锁步骤（旧的 admin 解锁已整套拆除），但每个动作需要独立确认——缺 `confirmAction` 会被拒绝并记入审计。
 
 ### 模型列表为空或模型不能使用
 

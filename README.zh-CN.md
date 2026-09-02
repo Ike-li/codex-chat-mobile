@@ -21,7 +21,7 @@
 - 前端：`public/index.html` 提供移动端 SPA/PWA 的 HTML shell，样式在外部样式表 `public/css/app.css`，`public/js/app.js` 是外部应用模块，并复用 `public/js/` 下的可靠投递与恢复模块。
 - 核心能力：流式对话、thinking/工具/diff 卡片、审批与提问、结构化附件、`@` 文件引用、顶栏只读工作区（文件/Git 改动）、连接横幅、确认 sheet、app-server 原生历史（含工具/变更卡重建）、多工作区、多 thread 标签、可靠 ACK/outbox、gap 重建、needs-you 精确深链、result/error 通知、设备绑定 Web Push 和 PWA。IndexedDB 持久化 outbox，服务端内存 receipt ledger 在单次网关生命周期内去重；消失的 provisional instance 只会为从未尝试的请求恢复或安全重绑，已尝试且无法核对的请求必须经重复副作用警告确认，并使用新 ID 重试。
 - 事实源：只使用 `thread/list`、`thread/read`、`thread/resume`、`thread/status/changed`；不再维护 `sessions.json` 元数据副本或 JSONL history fallback。
-- 安全默认值：空 `AUTH_TOKEN` 只允许 loopback；远程 HTTP 默认拒绝；远程 Socket 可进入 pending，但在 HTTPS、精确 Origin、HttpOnly session 和设备批准全部满足前不能操作；设备 deny 会撤销 session/Push 并断线，外部 trust-file 撤销则保留已连接的 loopback socket；本地状态 owner-only 落盘；远程图片、Admin/Labs 默认关闭。
+- 安全默认值：空 `AUTH_TOKEN` 只允许 loopback；远程 HTTP 默认拒绝；远程 Socket 可进入 pending，但在 HTTPS、精确 Origin、HttpOnly session 和设备批准全部满足前不能操作；设备 deny 会撤销 session/Push 并断线，外部 trust-file 撤销则保留已连接的 loopback socket；本地状态 owner-only 落盘；远程图片和 Labs 默认关闭；宿主配置无开关，靠逐动作确认加审计约束。
 
 ## 本地运行
 

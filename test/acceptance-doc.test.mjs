@@ -249,7 +249,7 @@ test('web user documentation provides a complete learning and reference path', (
     'TROUBLESHOOTING.md': {
       content: readDoc('../docs/TROUBLESHOOTING.md'),
       headings: ['# Web 端故障排查', '## 排查顺序', '## 页面无法连接', '## 已连接但不能发送',
-        '## 对话、历史或审批异常', '## 附件、Push 或 PWA 异常', '## Admin、Labs 或模型不可用'],
+        '## 对话、历史或审批异常', '## 附件、Push 或 PWA 异常', '## Labs 或模型不可用'],
     },
     'CONCEPTS.md': {
       content: readDoc('../docs/CONCEPTS.md'),

@@ -10,7 +10,7 @@
 ├ Needs-you：与消息区同栏的跨 thread 审批/提问条          ┤
 ├ 消息区：用户、助手、reasoning、工具、diff、审批、结果         ┤
 ├ 输入区：附件 / 权限 / 模型 / 文本 / @ 引用 / 发送或中断        ┤
-└ 左侧抽屉：历史 thread、原生控制、工作区、Push、Admin/Labs 条件入口 ┘
+└ 左侧抽屉：历史 thread、原生控制、工作区、Push、宿主配置、Labs 条件入口 ┘
 ```
 
 页面上显示的 session/thread 状态属于当前 Socket 视图；切换标签不会改变另一台设备正在查看的 runtime。
@@ -83,7 +83,7 @@
 - 配置多个工作区时的工作区切换；
 - `#push-subscribe-btn`：HTTPS + VAPID 可用时显示「开启推送通知」。
 
-工具面板在抽屉里可见：Threads / Compact / Rollback / Models / Files / Account / MCP / 诊断 / 设备 / Skills / Import，Labs 与 Admin 由特性开关另行控制。这些功能只有这一个入口，整块隐藏等于建了却点不到——顶栏保持清爽由「工具行不在顶部」保证，不需要连抽屉里也藏。
+工具面板在抽屉里可见：Threads / Compact / Rollback / Models / Files / Account / MCP / 诊断 / 设备 / 宿主配置 / Skills / Import，Labs 由特性开关另行控制。这些功能只有这一个入口，整块隐藏等于建了却点不到——顶栏保持清爽由「工具行不在顶部」保证，不需要连抽屉里也藏。
 
 只读控制面返回 app-server 原生数据。Files 只允许读取目标 workspace 范围；Import 先检测迁移项，再由用户选择导入。
 

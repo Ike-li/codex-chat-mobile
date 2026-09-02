@@ -54,7 +54,11 @@ import { searchFiles } from './file-search.js';
 import { listGitChanges, readGitDiff } from './git-workspace.js';
 import { normalizeThreadHistoryMessages } from './thread-history.js';
 
-dotenv.config();
+// quiet: dotenv v17 默认往 stdout 打一条带第三方推广语的横幅，内容每次随机。
+// 启动日志不该带广告；更要紧的是 node --test 的 child-v8 通道把控制帧和子进程
+// stdout 复用在同一条流上，这种随机多字节写入会撞坏帧解析（"Unable to
+// deserialize cloned data"），把整个测试文件判失败。
+dotenv.config({ quiet: true });
 for (const k of Object.keys(process.env)) {
   if (process.env[k] === '') delete process.env[k];
 }
