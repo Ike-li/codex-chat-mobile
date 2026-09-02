@@ -17,7 +17,7 @@ Web 端是本机 Codex app-server 的移动控制面，不是另一个独立聊�
 - 账号、模型、文件、MCP、Skills 和外部配置只读控制面；
 - HTTPS 下的 PWA 安装和设备绑定 Web Push。
 
-Admin、Labs 和远程图片默认关闭，需要服务端显式启用。
+Labs 和远程图片默认关闭，需要服务端显式启用。宿主配置没有开关，靠逐动作确认约束。
 
 ## 登录与设备配对
 
@@ -278,9 +278,9 @@ needs-you 通知只使用泛化正文，不包含命令、问题或回答内容�
 
 默认关闭时按钮隐藏，服务端返回 `feature_disabled`。
 
-### Admin
+### 宿主配置
 
-宿主配置入口常驻在抽屉的工具面板里，不需要解锁；每个动作需要独立确认并写审计。支持：
+入口常驻在抽屉的工具面板里，不需要解锁；每个动作需要独立确认并写审计。支持：
 
 - 写配置和批量写配置；
 - 安装或卸载插件；
@@ -289,7 +289,7 @@ needs-you 通知只使用泛化正文，不包含命令、问题或回答内容�
 - 调用 MCP tool；
 - 账号 logout。
 
-Admin unlock 有 TTL 和失败限流。成功、失败、拒绝、lock 和过期都会写入 owner-only 脱敏审计。
+操作结果和「缺确认」被拒都会写入 owner-only 脱敏审计（`host-config-audit.jsonl`）。
 
 ## 操作速查表
 
@@ -314,7 +314,7 @@ Admin unlock 有 TTL 和失败限流。成功、失败、拒绝、lock 和过期
 - 当前版本不持久化输入草稿；刷新前未发送的纯文本草稿可能丢失。
 - IndexedDB outbox 会持久化待发送请求，但 gateway receipt ledger 和 needs-you registry 不跨进程持久化。
 - Web 能查看和续接原生 Codex thread，但不是 Codex App 全部 UI 的复制品。
-- Admin、Labs 和远程图片不是核心聊天的默认能力。
+- 宿主配置、Labs 和远程图片不是核心聊天的默认能力。
 - 真正可用的模型、账号、权限和工具取决于本机 Codex 登录状态、固定协议版本、工作区配置和服务端 feature flags。
 
 接口字段和事件签名见 [API.md](API.md)，端到端操作步骤见 [GUIDE.md](GUIDE.md)，远程部署要求见 [REMOTE_ACCESS.md](REMOTE_ACCESS.md)。

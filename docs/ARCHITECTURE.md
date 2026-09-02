@@ -69,7 +69,7 @@ experimental 方法受服务端 flag 与前端 feature manifest 门控，`CODEX_
 - 远程浏览器用静态 host token 调 `POST /auth/session`，换取绑定 `deviceToken` 的内存 HttpOnly/SameSite=Strict session；远程 Socket 不接受静态 token，HTTP query token 不参与鉴权。
 - 新设备保持 pending，批准成功落盘后才解锁。设备 deny 会撤销其全部 session、删除 Push 订阅并断开在线 socket。外部原子删除 trusted-device 记录即使设备离线也会撤销 session/Push 并断开远程 socket，但会保留已经连接的 loopback socket；`DELETE /auth/session` 只撤销当前 session 并断开其 socket。
 - Push subscribe 要求已认证且已批准的设备、公网 HTTPS endpoint 和有效 key；先持久化再返回成功，投递前重新验证设备信任与全部 DNS 答案。实际 TLS 请求使用原 hostname/SNI 并 pin 已验证 IP，总超时 10 秒，响应最多读取 64 KiB。
-- 认证、配对容量、Push 容量和 Admin unlock 有界限流；Admin 默认关闭，启用后仍有 TTL、显式 Lock、逐操作确认和独立审计。
+- 认证、配对容量和 Push 容量有界限流；宿主配置操作没有解锁门，但每个动作需要独立确认并写独立审计。
 - `security-audit.jsonl` 使用 owner-only O_APPEND、按身份/窗口聚合 rate-limit 摘要，并在默认 1 MiB 时保留一份轮转；`host-config-audit.jsonl` 在 sink 递归脱敏 source/error。两者只记录元数据/hash ref，不保存命令、问题、回答、token 或附件正文，也都不是防篡改审计系统。
 
 ## 维护中的设计决策
@@ -78,5 +78,5 @@ experimental 方法受服务端 flag 与前端 feature manifest 门控，`CODEX_
 - app-server thread API 是唯一会话事实源；浏览器本地只保存 UI 偏好、可靠 outbox 和当前指针。
 - Socket.IO envelope、ACK/receipt 与 recovery snapshot 是浏览器的稳定协议边界。
 - 目标不完整或标识冲突时 fail-closed，不使用全局当前视图猜测 thread。
-- Admin/Labs default-off；P0 聊天、可靠投递、恢复和安全不依赖它们。
+- Labs default-off；P0 聊天、可靠投递、恢复和安全不依赖它和宿主配置。
 - 日常回归只用确定性 mock app-server。接受 Codex CLI 升级前必须按 [PROTOCOL_UPGRADE.md](PROTOCOL_UPGRADE.md) 更新 pin、基线和协议门禁。

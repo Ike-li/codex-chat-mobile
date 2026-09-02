@@ -107,7 +107,7 @@ npm run test:ci         # lint + tests + coverage gates + E2E
 - Remote HTTP is rejected by default. Remote Socket.IO additionally requires an exact Origin allowlist and a device-bound HttpOnly session obtained from `POST /auth/session`.
 - New browsers remain locked/pending until approved; their upstream events are discarded. Device denial disconnects its sockets and removes bound sessions and Push subscriptions. External trust-file removal applies the same session/Push revocation, but deliberately preserves an already connected loopback socket.
 - Device, Push, upload, and redacted audit state is owner-only. CSP/frame protections, upload validation, SSRF guards, and bounded auth/pairing/Push limits reduce exposure.
-- Admin and Labs are disabled by default. Admin also requires a time-limited unlock and per-action confirmation.
+- Labs is disabled by default. Host-configuration operations have no gate to unlock but require an explicit per-action confirmation and are audited.
 
 This is a control plane for a real development machine — treat any remote exposure as high risk. See [SECURITY.md](SECURITY.md) for the threat model and how to report vulnerabilities.
 

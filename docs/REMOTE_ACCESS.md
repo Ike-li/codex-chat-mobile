@@ -91,7 +91,7 @@ Web Push 还要求 VAPID 三项、公网 HTTPS endpoint、有效 `p256dh/auth` k
 - **启动时报 token 长度错误**：`HOST` 是非 loopback，而 `AUTH_TOKEN` 少于 32 字符；重新生成，或让同机代理访问 loopback。
 - **`unauthorized` / 反复登录**：session 不存在、过期、服务器重启、cookie 与 device token 不匹配，或设备已被撤销；从登录页重新 exchange，不要把 token 塞进 Socket/query。
 - **`pairing_capacity`**：pending 已达默认 32；在受信任设备或开发机清理/拒绝旧请求。
-- **`rate_limited`**：认证或 Admin unlock 失败窗口触发；先修正凭据/配置，等待窗口结束。
+- **`rate_limited`**：认证失败窗口触发；先修正凭据/配置，等待窗口结束。
 - **批准后仍 pending，返回 `device_persist_failed`**：`CODEX_DATA_DIR` 不可写、原子临时文件冲突或磁盘错误；目标会保持锁定，修复存储后重试。
 - **deny 返回 `device_persist_failed`**：在线 socket/session 已 fail-closed 撤销，但 durable trust file 未成功更新；修复存储并再次 deny。
 - **Web Push 按钮不可用**：依次检查可信 HTTPS、VAPID 三项、有效 session、设备已批准、浏览器权限和订阅容量；订阅持久化失败不会假报成功。

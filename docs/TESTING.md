@@ -14,8 +14,10 @@ npm run test:e2e
 - `npm test` 以 `--test-concurrency=1` 运行 `node:test`，覆盖单元、集成、协议、安全、UI 和文档契约。
 - `npm run protocol:check` 要求本机 Codex 版本等于 `.codex-version`，并检查 `.protocol/stable/` 的覆盖与漂移；版本不匹配就是失败，不能跳过后宣称门禁通过。
 - `npm run test:e2e` 用 Playwright mobile Chrome 连接 mock gateway，不启动真实 Codex。
-- `npm run test:ci` 串联 lint、协议门禁、单测、覆盖率门禁和 E2E，四道门都在里面。协议门禁必须在门禁内，否则枚举值一类的漂移能直接合入——`on-failure` 审批档就是这么进来的。
-- 本机 Node 25 跑 `npm test` 会间歇报 `Unable to deserialize cloned data`。这是 Node 25 test runner 与测试子进程之间 v8 序列化 IPC 的回归，与被测代码无关：Node 22 连跑 5 次全绿，换 `--test-reporter=tap` 无效，而 `--test-isolation=none`（同进程运行、绕开该 IPC）连跑 5 次全绿。本地改用 `npm run test:local`；CI 跑 Node 20/22，门禁仍以 `npm test` 为准。
+- `npm run test:ci` 串联 lint、协议门禁、单测、覆盖率退化门禁和 E2E，四道门都在里面。协议门禁必须在门禁内，否则枚举值一类的漂移能直接合入——`on-failure` 审批档就是这么进来的。
+- `.coverage-baseline.json` 在 2026-09-01 从 95.79/87.88/97.84/95.79 重置为 90.54/76.89/89.08/90.54。旧值陈旧了 80 个提交：退化门禁（相对基线 ≤2pp）设计是对的，但它只挂在 `pull_request` 上，而 CI 矩阵默认的 fail-fast 又让 Node 22 的抖动连坐取消 Node 20 那条腿——这道门结构上从来没跑成过，于是分支覆盖在 80 个提交里从 87.88 掉到 76.89 而没有任何东西变红。重置只是让门禁重新可用；**丢掉的 11pp 分支覆盖没有补回来**，缺口集中在错误路径（catch、超时、断连），正是这个项目最依赖的可靠性路径。补回来是一项独立工作。
+- `npm test` 曾间歇报 `Unable to deserialize cloned data` 并把整个 `test/server-integration.test.mjs` 判为 uncaughtException。此处一度记为「Node 25 特有的 test runner 回归、与被测代码无关」，两条都不成立：CI 的 Node 22 腿上是同一个错误（连续四次 CI 失败里就有一次），触发源也在我们这一侧。`node --test` 的 child-v8 通道把控制帧和子进程 stdout 复用在同一条流上，而这个文件为每个用例 import 一份新的 `server.js`（约 60 次），启动横幅、逐连接日志、以及 dotenv 每次随机换文案的推广横幅全部写进那条流。两处改动后，同会话配对测量的失败率从 4/7 降到 0/10：`dotenv.config({ quiet: true })`，以及在起 server 的两个测试文件里把 `console.log` 改道到 `console.error`。0/10 不等于证明为零，但机制清楚且失败率单调下降。
+- `app-server-transport.test.mjs` 的 4 个测试曾在**每一次**运行里被标记 cancelled——不是间歇，是确定性的。请求超时定时器在生产代码里是 unref 的（服务器有 HTTP listener 吊着事件循环，线上无影响），测试等它时事件循环已排空，`node --test` 判定「promise 仍挂起而事件循环已结束」，把该用例连同其后三个一并取消。汇总显示 `fail 0`（cancelled 不计入 fail），极易被当成通过，于是超时、子进程退出、子进程错误和 dispose 这四条错误路径长期未被验证。看到 `cancelled` 不为 0 时不要放过——那是没跑，不是跑过了。
 
 ## 判据必须是用户看得见的东西
 
@@ -36,8 +38,9 @@ npm run test:e2e
 - **断线恢复**：同 epoch 连续 buffer 增量补发，buffer gap/epoch mismatch 触发精确 `thread/read` snapshot，客户端按 `throughSeq` watermark 缓冲并去重恢复期间的 live events。
 - **结构化输入**：attachments 类型、10/20 MiB 业务限制、32 MiB Socket wire cap、0700 上传目录/0600 文件，图片→`localImage`、文件→`mention`，workspace mention、enabled skill、显式门控的 HTTPS image URL 与完整 IPv4/IPv6 DNS/SSRF 拒绝路径。
 - **审批与 needs-you**：approval/question 分类、精确 target、snapshot/revision、进程内幂等重放与 conflict/stale/unknown、resolved/expired/revoked 广播和脱敏深链。
-- **自托管安全**：HTTPS fail-closed、Origin allowlist、可信代理、HttpOnly device-bound session、query token 拒绝、配对/撤销、外部 trusted-file 原子变更、认证/Admin/Push 容量限制、rate-limit 审计聚合、O_APPEND + bounded rotation、Admin sink 脱敏，以及 Push DNS pin/总超时/响应上限与持久化失败。
-- **产品门控**：Admin/Labs default-off 的 feature manifest、服务端拒绝、Admin unlock/Lock/TTL/失败窗口/逐操作确认。
+- **自托管安全**：HTTPS fail-closed、Origin allowlist、可信代理、HttpOnly device-bound session、query token 拒绝、配对/撤销、外部 trusted-file 原子变更、认证/Push 容量限制、rate-limit 审计聚合、O_APPEND + bounded rotation、宿主配置审计 sink 脱敏，以及 Push DNS pin/总超时/响应上限与持久化失败。
+- **产品门控**：Labs default-off 的 feature manifest 与服务端拒绝；宿主配置的逐动作确认与缺确认拒绝。
+- **门禁自身**：CI 矩阵关闭 fail-fast、没有 `continue-on-error` 吞掉失败、生产依赖 audit 阻断、覆盖率退化门禁不限于 PR（`test/ci-workflow.test.mjs`）；E2E 必须走 mock 且跑用例前先探测后端版本（`test/zero-quota-guard.test.mjs` + `e2e/assert-mock-backend.js`）；落盘文件不超出 A2 允许的例外（`test/zero-persistence-guard.test.mjs`）。这三类守的是「规则被违反时会不会有东西变红」，此前全靠文档约定。
 - **移动端**：流式气泡、thinking、命令/工具/diff/审批/提问卡片、状态栏、PWA/Service Worker、needs-you 恢复、outbox 存储与多实例/多视图隔离。
 
 主要证据分布在 `test/app-server-{transport,host}.test.mjs`、`test/thread-{registry,runtime,source-of-truth,status}.test.mjs`、`test/message-{receipt-ledger,outbox,request}.test.mjs`、`test/recovery-state.test.mjs`、`test/{user-inputs,input-parts}.test.mjs`、`test/server-{integration,security,push}.test.mjs`、`test/service-worker.test.mjs` 和 `e2e/*recovery*.spec.js`。
@@ -56,7 +59,7 @@ npm run test:e2e
 | 案例 6 | 历史浏览 + 工具/变更卡重建 + app-server thread 唯一事实源 + Codex App/Web 双向续接 | `thread-history.js`、`app-server-host.js`、`thread-runtime.js`、`server.js` 的 `thread:*` | thread-history 单测、native thread 集成、workspace-and-composer E2E |
 | 案例 7 | 多工作目录 + 实例切换 + 双设备/双 thread 零串流 + 共享单进程 | `app-server-host.js`、`thread-registry.js`、`thread-runtime.js`、`public/js/view-routing.js` | shared-host spawn/initialize、stale target、route/workdir、多实例 E2E |
 | 案例 8 | Web Push + DNS/address pinning + bounded response + needs-you 脱敏深链 + device revoke | `server.js`、`push-sender.js`、`network-address.js`、`needs-you-registry.js`、`public/js/sw.js` | Push DNS/mixed-IP/timeout/body-cap 单测、authenticated persist/prune、service worker 和 needs-you E2E |
-| 案例 9 | 模型切换 + 权限档切换 + Admin/Labs default-off | `agent-appserver.js`、`server.js` feature manifest、`public/index.html`、`public/js/app.js` | model/permission UI、feature flag、Admin TTL/limit 测试 |
+| 案例 9 | 模型切换 + 权限档切换 + Labs default-off | `agent-appserver.js`、`server.js` feature manifest、`public/index.html`、`public/js/app.js` | model/permission UI、feature flag、宿主配置逐动作确认测试 |
 | 案例 10 | PWA 安装 + HTTPS/auth session + 全屏/移动体验 | `server-security.js`、`public/manifest.webmanifest`、`public/js/sw.js` | transport security/session/SW 测试、响应式和 PWA E2E |
 
 ## 手工冒烟清单
@@ -85,7 +88,7 @@ npm run test:e2e
 - TC-20：强制 event buffer gap 或 epoch mismatch 后由 `thread/read` 重建；恢复期间 live event 不丢不重。
 - TC-21：新设备登录后保持 pending；批准后解锁，deny 后 cookie/socket/Push 同时失效。
 - TC-22：远程 HTTP、错误 Origin、缺失可信 `X-Forwarded-Proto` 和撤销后的 session 均 fail-closed。
-- TC-23：Admin/Labs 默认隐藏且服务端拒绝；显式 flag 后才显示，Admin Lock/TTL 生效。
+- TC-23：Labs 默认隐藏且服务端拒绝，显式 flag 后才显示；宿主配置入口常驻，但缺 `confirmAction` 会被拒绝。
 - TC-24：workspace mention、enabled skill 可发送；越界路径、未启用 skill 和默认关闭的远程图片被拒绝。
 - TC-25：ACK 丢失后重启 gateway，客户端只调用 `message:reconcile`；无 thread 时仍先查 receipt ledger，有 thread 时 `thread/read` 命中 `clientRequestId` 后清除 outbox 且 `turn/start` 总计一次。消失 instance 的未尝试记录保留原 id 重绑；已尝试且无法核对时保持 `needs_reconcile`，用户确认后使用新 id，旧 id 不得复活。
 

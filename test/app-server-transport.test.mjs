@@ -52,6 +52,20 @@ function jsonWrites(fake) {
   return fake.writes.map(line => JSON.parse(line));
 }
 
+// 请求超时定时器在生产代码里是 unref 的（app-server-transport.js 的 request）。
+// 服务器进程始终有 HTTP listener 吊着事件循环，所以线上无影响；但在测试里
+// 事件循环会在这个定时器触发前排空，node --test 判定「promise 仍挂起而事件
+// 循环已结束」，把本测试连同其后所有测试标记为 cancelled —— 退出码是 1，
+// 但计数显示 `fail 0`，很容易被当成通过。用一个 ref 住的定时器撑住这段等待。
+async function withLiveEventLoop(fn) {
+  const keepAlive = setInterval(() => {}, 1_000);
+  try {
+    return await fn();
+  } finally {
+    clearInterval(keepAlive);
+  }
+}
+
 test('start spawns one stdio app-server child and is idempotent while it is alive', () => {
   const { transport, spawned, children } = harness();
 
@@ -225,7 +239,7 @@ test('request timeout rejects and a malformed line reports an error without stop
   const [fake] = children;
 
   const pending = transport.request('thread/read', { threadId: 'thr_1' }, { timeoutMs: 10 });
-  await assert.rejects(pending, /thread\/read timed out after 10ms/);
+  await withLiveEventLoop(() => assert.rejects(pending, /thread\/read timed out after 10ms/));
 
   fake.child.stdout.emit('data', Buffer.from('not-json\n{"method":"thread/started","params":{"threadId":"thr_2"}}\n'));
   assert.equal(errors.length, 1);

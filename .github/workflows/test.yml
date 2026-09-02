@@ -12,6 +12,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      # 关掉 fail-fast：lint、protocol-check、覆盖率和 E2E 只在 Node 20 那条腿上跑，
+      # 默认的 fail-fast 会让 Node 22 的任何抖动顺手取消 Node 20，红叉背后是所有真门禁一条没跑。
+      fail-fast: false
       matrix:
         node-version: [20, 22]
 
@@ -42,15 +45,18 @@ jobs:
       - name: Run tests
         run: npm test
 
+      # 只在 Node 20 上跑：产物只从 Node 20 上传，Node 22 那份没有任何步骤消费，
+      # 却是最重的一步（c8 插桩 + 默认并发的全量测试）。跑在一条本来就常被 runner
+      # 回收的腿上纯属浪费。
       - name: Run coverage
+        if: matrix.node-version == 20
         run: npm run coverage
 
-      - name: Check coverage thresholds
-        if: matrix.node-version == 20
-        run: node scripts/check-coverage.js
-
+      # 退化门禁（相对基线跌幅 ≤2pp）已经包含 check-coverage.js 的绝对阈值
+      # （80/60/80/80 两处相同），后者是它的真子集，不再单独跑一遍插桩全量。
+      # 而 fast-forward 合并走的是 push 路径 —— 只在 PR 上跑等于给自己留后门。
       - name: Check coverage delta
-        if: matrix.node-version == 20 && github.event_name == 'pull_request'
+        if: matrix.node-version == 20
         run: node scripts/check-coverage-delta.js
 
       - name: Install Playwright browsers
@@ -83,9 +89,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run npm audit
-        run: npm audit --audit-level=high
-        continue-on-error: true
+      # 阻断门禁：只看运行时依赖。本服务的传输层就是 socket.io，
+      # 运行时依赖里的高危漏洞直接暴露在网络边界上，必须让构建变红。
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
 
-      - name: Check for known vulnerabilities
+      # 咨询性：devDependencies 的漏洞（eslint/playwright 之类）不上生产，
+      # 不阻断构建，但报告要留成产物 —— 否则等于没跑。
+      - name: Audit all dependencies (advisory)
         run: npm audit --json > audit-report.json || true
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-report
+          path: audit-report.json
+          retention-days: 7

@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+// 同 test/server-integration.test.mjs：server.js 的 console.log 会污染 node --test
+// 的 child-v8 控制通道，改道到 stderr。这里虽然用 CODEX_SERVER_NO_START 跳过监听，
+// 模块顶层的启动前检查仍会打日志。
+console.log = console.error;
+
 async function importServerWithoutStarting() {
   const prev = process.env.CODEX_SERVER_NO_START;
   process.env.CODEX_SERVER_NO_START = '1';

@@ -79,3 +79,29 @@ test('工作区作用域拦截穿越、软链接逃逸和前缀碰撞', () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// 大小写不敏感的文件系统（macOS/Windows 默认）上，realpath 不做大小写归一：
+// 磁盘上叫 work，realpath('…/WORK') 原样返回 '…/WORK'。于是异大小写的区内路径
+// 会被拒绝 —— 这是 fail closed，用户看到的是一次拒绝，重新输入即可。
+//
+// 不要把它「修」成大小写不敏感比较：在大小写敏感的文件系统上（Linux 生产环境）
+// /srv/work 和 /srv/WORK 是两个真实存在的不同目录，不敏感比较会变成真正的越权。
+// 这条断言的作用就是让那种改动变红。
+test('异大小写的区内路径被拒绝而不是被放行', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'ccm-scope-case-')));
+  try {
+    const work = join(root, 'work');
+    mkdirSync(work);
+    writeFileSync(join(work, 'a.txt'), 'a');
+    const workDirs = [work];
+
+    const upper = join(root, 'WORK', 'a.txt');
+    assert.equal(
+      resolveWithinWorkdirs(upper, workDirs),
+      null,
+      '大小写不匹配必须 fail closed；放行意味着比较变成了大小写不敏感',
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

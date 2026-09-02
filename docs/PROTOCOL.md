@@ -78,7 +78,7 @@ app-server 发起且必须响应的交互：
 - 模型：`model/list`、`modelProvider/capabilities/read`
 - 会话模式：B1 可读取 `thread/settings/updated.collaborationMode`；写入走实验方法 `thread/settings/update`（探测失败则降级为下一轮 `turn/start.collaborationMode`）
 - 只读资源：`fs/readFile`、`fs/readDirectory`、`mcpServerStatus/list`、`skills/list`、`externalAgentConfig/detect`、`externalAgentConfig/import`
-- Admin 门控写操作：`config/value/write`、`config/batchWrite`、`fs/writeFile`、`fs/remove`、`fs/copy`、`plugin/install`、`plugin/uninstall`、`marketplace/add`、`marketplace/remove`、`marketplace/upgrade`、`mcpServer/tool/call`、`account/logout`
+- 需要逐动作确认的宿主机写操作：`config/value/write`、`config/batchWrite`、`fs/writeFile`、`fs/remove`、`fs/copy`、`plugin/install`、`plugin/uninstall`、`marketplace/add`、`marketplace/remove`、`marketplace/upgrade`、`mcpServer/tool/call`、`account/logout`
 
 常见 item wire `type` 包括 `userMessage`、`agentMessage`、`plan`、`reasoning`、`commandExecution`、`fileChange`、`mcpToolCall`、`dynamicToolCall`、`webSearch`、`imageView`、`enteredReviewMode`、`exitedReviewMode`、`contextCompaction`。只有已由 host 精确路由到 owner runtime 的未知通知才可宽容忽略；无法路由的帧会记录诊断，定向 server request 会 fail-closed。未知 item 转成可见的 `raw_item`，避免静默丢失用户可见工作。
 
@@ -146,7 +146,7 @@ server.js ── ThreadRuntime(instances)
 | 共享宿主 | 初始化单飞、owner correlation、入站分派 | `app-server-host.js` |
 | 精确索引 | instance/thread/turn/request 唯一所有权 | `thread-registry.js` |
 | thread runtime | 协议方法、队列、状态、事件映射 | `agent-appserver.js` / `thread-runtime.js` |
-| 浏览器网关 | HTTP、Socket、设备视图、catch-up、Push/Admin | `server.js` |
+| 浏览器网关 | HTTP、Socket、设备视图、catch-up、Push/宿主配置 | `server.js` |
 | 可靠请求 | receipt ledger 与客户端 outbox | `message-receipt-ledger.js` / `public/js/message-outbox.js` |
 | 跨会话待办 | needs-you 状态机与精确决议 | `needs-you-registry.js` |
 
