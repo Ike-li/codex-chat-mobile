@@ -1017,3 +1017,157 @@ test('discarding an unknown or already-cleared request is a no-op', async () => 
   assert.equal(await outbox.discard(''), false);
   assert.deepEqual((await store.list()).map(record => record.clientRequestId), ['req-keep']);
 });
+
+// —— 断线时序 ——
+//
+// 上面 24 条测试全部用 isConnected: () => true。它们覆盖的是「服务端回了什么」
+// （ack、receipt、reconcile 结果），从来没有覆盖「连接本身没了」—— 而这正是这个
+// 模块存在的理由。下面几条补的是断线这一维：断开时不发、发到一半断了不丢不乱序、
+// 以及页面在 sending 状态下被关掉后重新打开会怎样。
+
+function memoryStore(initial = []) {
+  const records = new Map(initial.map(record => [record.clientRequestId, structuredClone(record)]));
+  return {
+    records,
+    async put(record) { records.set(record.clientRequestId, structuredClone(record)); },
+    async list() { return [...records.values()].map(record => structuredClone(record)); },
+    async delete(id) { records.delete(id); },
+  };
+}
+
+function requestFor(id, text = id) {
+  return createMessageRequest({ text, target: { threadId: 'thr-1' } }, { createId: () => id, now: () => 1 });
+}
+
+test('断开时 drain 不发送，队列原样保留等重连', async () => {
+  const store = memoryStore([requestFor('req-a'), requestFor('req-b')]);
+  let sends = 0;
+  const outbox = createMessageOutbox({
+    store,
+    isConnected: () => false,
+    async transport() { sends += 1; return { ok: true, receipt: { state: 'submitted' } }; },
+  });
+
+  await outbox.drain();
+
+  assert.equal(sends, 0, '离线时不该往一条死掉的 socket 上发');
+  const kept = await store.list();
+  assert.deepEqual(kept.map(r => r.clientRequestId), ['req-a', 'req-b']);
+  assert.deepEqual(kept.map(r => r.state), ['pending', 'pending'], '状态不该被离线这件事改写');
+});
+
+test('断开时 reconcile 不查询也不改状态', async () => {
+  const store = memoryStore([{ ...requestFor('req-a'), state: 'needs_reconcile' }]);
+  let queries = 0;
+  const outbox = createMessageOutbox({
+    store,
+    isConnected: () => false,
+    transport: async () => ({ ok: true }),
+    reconcileTransport: async () => { queries += 1; return { ok: true, resolved: true }; },
+  });
+
+  const summary = await outbox.reconcile();
+
+  assert.deepEqual(summary, { checked: 0, resolved: 0, unresolved: 0 });
+  assert.equal(queries, 0);
+  assert.equal((await store.list())[0].state, 'needs_reconcile', '离线的一次 reconcile 不能把状态改掉');
+});
+
+test('drain 到一半断线：已发的保持已发，未发的原样留下，顺序不乱', async () => {
+  const store = memoryStore([requestFor('req-1'), requestFor('req-2'), requestFor('req-3')]);
+  let connected = true;
+  const sent = [];
+  const outbox = createMessageOutbox({
+    store,
+    isConnected: () => connected,
+    async transport(payload) {
+      sent.push(payload.clientRequestId);
+      // 第一条发完就断线，模拟服务端还在但网络掉了。
+      if (payload.clientRequestId === 'req-1') connected = false;
+      return { ok: true, receipt: { clientRequestId: payload.clientRequestId, state: 'submitted' } };
+    },
+  });
+
+  await outbox.drain();
+
+  assert.deepEqual(sent, ['req-1'], '断线后不该继续往下发');
+  const left = await store.list();
+  assert.deepEqual(left.map(r => r.clientRequestId), ['req-2', 'req-3'],
+    'req-1 已确认提交应当被删除，后两条必须原样留着 —— 丢掉就是丢消息');
+  assert.deepEqual(left.map(r => r.state), ['pending', 'pending']);
+
+  // 重连后继续，顺序必须接着来而不是乱序或重发 req-1。
+  connected = true;
+  await outbox.drain();
+  assert.deepEqual(sent, ['req-1', 'req-2', 'req-3'], '重连后按原顺序补发剩下的');
+});
+
+test('发送途中断线的那一条进入待核对，并挡住它后面的消息', async () => {
+  const store = memoryStore([requestFor('req-1'), requestFor('req-2')]);
+  const sent = [];
+  const outbox = createMessageOutbox({
+    store,
+    isConnected: () => true,
+    async transport(payload) {
+      sent.push(payload.clientRequestId);
+      if (payload.clientRequestId === 'req-1') {
+        // emitWithAck 在断线时抛的就是这个形状：可重试，但结果未知。
+        const error = new Error('Socket disconnected before acknowledgement');
+        error.code = 'socket_disconnected';
+        error.retryable = true;
+        error.resultUnknown = true;
+        throw error;
+      }
+      return { ok: true, receipt: { clientRequestId: payload.clientRequestId, state: 'submitted' } };
+    },
+  });
+
+  await outbox.drain();
+
+  assert.deepEqual(sent, ['req-1'], 'FIFO：结果未知的头部必须挡住后面的，否则会乱序');
+  const records = await store.list();
+  assert.equal(records[0].state, 'needs_reconcile',
+    '断线时消息可能已经送达，只是 ack 没回来 —— 不能当成没发过');
+  assert.equal(records[0].lastError.resultUnknown, true);
+  assert.equal(records[1].state, 'pending', '后面那条不该被连累改状态');
+});
+
+test('页面在 sending 状态下被关掉，重新打开后按同一个 id 重发而不是丢弃', async () => {
+  // IndexedDB 里留下的就是这个形状：attempts 已加一、state 停在 sending。
+  const stranded = { ...requestFor('req-stranded'), state: 'sending', attempts: 1 };
+  const store = memoryStore([stranded]);
+  const sent = [];
+  const outbox = createMessageOutbox({
+    store,
+    isConnected: () => true,
+    async transport(payload) {
+      sent.push(payload.clientRequestId);
+      return { ok: true, receipt: { clientRequestId: payload.clientRequestId, state: 'submitted' } };
+    },
+  });
+
+  await outbox.drain();
+
+  assert.deepEqual(sent, ['req-stranded'],
+    '停在 sending 的消息必须被重发 —— 否则用户以为发出去了，实际上永远躺在本地');
+  assert.equal(sent.length, 1);
+  assert.equal((await store.list()).length, 0, '服务端按同一个 clientRequestId 去重，确认后本地要清掉');
+});
+
+test('reconcile 不处理 sending，交给 drain 靠 clientRequestId 幂等重发', async () => {
+  const store = memoryStore([{ ...requestFor('req-stranded'), state: 'sending', attempts: 1 }]);
+  let queries = 0;
+  const outbox = createMessageOutbox({
+    store,
+    isConnected: () => true,
+    transport: async () => ({ ok: true, receipt: { clientRequestId: 'req-stranded', state: 'submitted' } }),
+    reconcileTransport: async () => { queries += 1; return { ok: true, resolved: true }; },
+  });
+
+  const summary = await outbox.reconcile();
+
+  assert.equal(queries, 0, 'sending 不走核对');
+  assert.equal(summary.checked, 0,
+    '这是有意的分工：核对只管 needs_reconcile 和 queued，sending 由 drain 重发，'
+    + '服务端的回执账本按 clientRequestId 去重，重发不会变成发两次');
+});
