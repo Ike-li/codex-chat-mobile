@@ -93,7 +93,7 @@
 
 - Push：需要 HTTPS、VAPID、有效 session、已批准设备和浏览器权限；
 - Labs：需要 `CODEX_P3_EXPERIMENTAL=1`；
-- Admin：需要 `CODEX_ADMIN_ENABLED=1`，随后还需限时 unlock 和逐动作确认；
+- 宿主配置：入口常驻，每个动作需逐动作确认并留审计；
 - 远程 image URL：需要 `CODEX_ALLOW_REMOTE_IMAGES=1`，并通过公网 DNS/SSRF 校验。
 
 入口不可见通常表示服务端没有启用对应 feature，不是页面加载失败。完整能力与条件见 [CAPABILITY_MATRIX.md](CAPABILITY_MATRIX.md)。

@@ -66,7 +66,7 @@
 |---|---|---|---|
 | Remote image URL | 关闭 | `CODEX_ALLOW_REMOTE_IMAGES=1` | 仅公网 HTTPS，DNS pin/SSRF 校验 |
 | Labs | 关闭 | `CODEX_P3_EXPERIMENTAL=1` | 实验 API，进程 ID 精确归属 |
-| Admin | 关闭 | `CODEX_ADMIN_ENABLED=1` + unlock + 每动作确认 | TTL、限流、owner-only 审计 |
+| 宿主配置（config/插件/marketplace/MCP/登出） | 始终 | 抽屉 → 宿主配置，每动作独立确认 | owner-only 审计 | 改宿主机配置 |
 | ChatGPT device login | Web 不提供 | 本机 `codex` 登录或 config.toml | 网页不启动 device-code |
 | 跨 gateway exactly-once | 不提供 | — | ledger 不持久化；未知写不盲发 |
 | 草稿持久化 | 不提供 | — | 未发送文本刷新可能丢失 |

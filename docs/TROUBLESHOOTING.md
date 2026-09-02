@@ -100,11 +100,11 @@ runtime 仍 busy 或消息等待后续 receipt。不要删除 outbox；等待 su
 
 ### 看不到 Admin 或 Labs
 
-这是默认行为。分别设置 `CODEX_ADMIN_ENABLED=1` 或 `CODEX_P3_EXPERIMENTAL=1` 并重启网关。关闭时服务端也会返回 `feature_disabled`。
+Labs 是默认行为：设置 `CODEX_P3_EXPERIMENTAL=1` 并重启网关，关闭时服务端返回 `feature_disabled`。宿主配置不再需要开关，入口常驻在抽屉的工具面板里。
 
 ### Admin 返回 `admin_locked`
 
-输入精确短语 `ENABLE ADMIN` 解锁。unlock 默认 5 分钟；每个动作仍需独立确认。错误短语会触发限流。
+不再需要解锁。每个动作仍需独立确认——缺 `adminConfirm` 会被拒绝并记入审计。
 
 ### 模型列表为空或模型不能使用
 

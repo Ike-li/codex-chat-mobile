@@ -978,11 +978,12 @@ test('composer settings expose CLI model, reasoning, approval and sandbox withou
   assert.doesNotMatch(html, /data-reasoning="超高"/);
 });
 
-test('client exposes P2 admin controls behind unlock and per-action confirmation', () => {
+test('宿主配置操作直达，但每一项都要逐动作确认', () => {
+  // 解锁机制已拆除：口令是源码常量，任何能打开页面的设备都能解锁，绕行路径至少三条——
+  // 留着只会让人误以为有保护。安全边界是设备 token，见 SECURITY.md。
+  // 逐动作确认保留：它防的是手机上误触，与攻击者无关。
   for (const id of [
     'native-admin-btn',
-    'admin-unlock-btn',
-    'admin-lock-btn',
     'admin-config-write-btn',
     'admin-config-batch-btn',
     'admin-plugin-install-btn',
@@ -997,16 +998,16 @@ test('client exposes P2 admin controls behind unlock and per-action confirmation
   }
 
   assert.match(allContent, /function openAdminPanel/);
-  assert.match(allContent, /function unlockAdminMode/);
-  assert.match(allContent, /function lockAdminMode/);
   assert.match(allContent, /function runAdminAction/);
-  assert.match(allContent, /promptRequired\('Unlock phrase', 'ENABLE ADMIN'\)/);
   assert.match(allContent, /promptRequired\('Confirm action', eventName\)/);
   assert.match(allContent, /adminConfirm: confirmation/);
 
+  assert.doesNotMatch(allContent, /ENABLE ADMIN/, '解锁口令不得再出现');
+  assert.doesNotMatch(allContent, /function unlockAdminMode/);
+  assert.doesNotMatch(allContent, /function lockAdminMode/);
+  assert.doesNotMatch(allContent, /id="native-admin-btn"[^>]*\bhidden\b/, '宿主配置入口不再隐藏');
+
   for (const event of [
-    'admin:unlock',
-    'admin:lock',
     'admin:configWrite',
     'admin:configBatchWrite',
     'admin:pluginInstall',
@@ -1017,24 +1018,387 @@ test('client exposes P2 admin controls behind unlock and per-action confirmation
     'admin:mcpToolCall',
     'admin:accountLogout',
   ]) {
+    assert.match(allContent, new RegExp(`socket\\.emit\\('${event}'`));
+  }
+  for (const gone of ['admin:unlock', 'admin:lock']) {
+    assert.doesNotMatch(allContent, new RegExp(`socket\\.emit\\('${gone}'`), `${gone} 应已移除`);
+  }
+});
+
+test('client exposes P3 experimental labs controls and isolated event renderers', () => {
+  for (const id of [
+    'native-p3-btn',
+    'p3-capabilities-btn',
+    'p3-terminal-spawn-btn',
+    'p3-terminal-write-btn',
+    'p3-terminal-resize-btn',
+    'p3-terminal-terminate-btn',
+    'p3-thread-turns-btn',
+    'p3-thread-search-btn',
+  ]) {
+    assert.match(allContent, new RegExp(`id="${id}"`));
+  }
+
+  for (const event of [
+    'p3:capabilities',
+    'p3:terminalSpawn',
+    'p3:terminalWrite',
+    'p3:terminalResize',
+    'p3:terminalTerminate',
+    'p3:threadTurns',
+    'p3:threadSearch',
+  ]) {
     assert.match(allContent, new RegExp(`socket\\.emit\\('${event.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
   }
 
-  // 文件读写是 P0 功能（D6），已从 admin 门后转正到文件浏览器：那道门的口令是源码常量，
-  // 挡不住任何能打开页面的设备，属安全剧场。转正后写入必须先看到 diff、删除必须二次确认。
-  for (const event of ['fs:writeFile', 'fs:remove']) {
-    assert.match(allContent, new RegExp(`socket\\.emit\\('${event}'`));
+  for (const type of ['term_output', 'term_exit', 'realtime', 'remote_control']) {
+    assert.match(allContent, new RegExp(`case '${type}'`));
   }
-  assert.doesNotMatch(allContent, /socket\.emit\('admin:fs/);
-  assert.match(allContent, /function saveNativeFile/);
-  assert.match(allContent, /function removeNativePath/);
-  assert.match(allContent, /summarizeTextChange\(original, next\)/);
-  // 目录的 recursive 由调用方显式声明，服务端不替用户默认。
-  assert.match(allContent, /'fs:remove', \{ path, recursive: isDirectory/);
 
-  assert.match(allContent, /\$\('native-admin-btn'\)\.onclick = openAdminPanel/);
+  assert.match(allContent, /function openP3Panel/);
+  assert.match(allContent, /function spawnP3Terminal/);
+  assert.match(allContent, /function handleP3TerminalOutput/);
+  assert.match(allContent, /function handleP3Realtime/);
+  assert.match(allContent, /function handleP3RemoteControl/);
+  assert.match(allContent, /\$\('native-p3-btn'\)\.onclick = openP3Panel/);
 });
 
+test('a stuck outbox record tells the truth and offers the user a way out', () => {
+  assert.match(appJs, /requiresManualDisposal/);
+  assert.match(appJs, /from '\/js\/outbox-recovery\.js'/);
+
+  const start = appJs.indexOf('function appendOfflineBubble(');
+  const end = appJs.indexOf('function promoteOfflineBubble(', start);
+  const bubble = appJs.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+
+  // 「连接后将恢复到当前会话」只能对真的会被 rebindUnattempted 接回的记录说。
+  assert.match(bubble, /连接后将恢复到当前会话/);
+  assert.match(bubble, /requiresManualDisposal|manualDisposal/);
+  assert.doesNotMatch(
+    bubble,
+    /unboundRecovery\s*\?\s*\(needsReconcile[\s\S]{0,120}连接后将恢复到当前会话'\)\s*\n\s*:\s*\(needsReconcile/,
+    '不能只按 needsReconcile 二分——尝试过的孤儿记录永远不会被恢复',
+  );
+
+  // 卡死的记录必须能被丢弃，且丢弃前要确认（可能已经在服务端执行过）。
+  assert.match(bubble, /outbox-discard-btn/);
+  assert.match(bubble, /confirmDialog\.confirm\(/);
+  assert.match(bubble, /messageOutbox\.discard\(/);
+  assert.match(bubble, /renderedOutboxStates\.delete\(/);
+  assert.match(bubble, /el\.remove\(\)/);
+
+  assert.match(css, /\.outbox-discard-btn\s*\{/);
+});
+
+test('the outbox view passes each record its own disposal verdict', () => {
+  const start = appJs.indexOf('async function syncOutboxViewOnce()');
+  const end = appJs.indexOf('syncVisualViewport();', start);
+  const syncBody = appJs.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  assert.match(syncBody, /requiresManualDisposal\(request, \{ orphaned: unboundRecovery \}\)/);
+  assert.match(syncBody, /manualDisposal/);
+});
+
+test('composer shows and sends the same effective settings', () => {
+  // 必须真的从模块导入——只断言「文中出现过这个名字」会漏掉忘记 import 的情况，
+  // 那样运行时才会炸。
+  const importBlock = appJs.slice(0, appJs.indexOf("from '/js/cli-settings.js'"));
+  assert.match(importBlock, /^\s*effectiveComposerSettings,$/m);
+
+  // 有效设置必须集中在一处算出来，供显示与发送共用。
+  assert.match(appJs, /function effectiveTurnSettings\(\)/);
+  assert.match(appJs, /effectiveComposerSettings\(currentTurnSettings\(\), \{[\s\S]{0,120}\}\)/);
+
+  // 发送路径：不能再用裸的 currentTurnSettings()，否则用户没选过模型时
+  // turn/start 不带 model，app-server 会回落到自己的默认模型并报 400。
+  const sendStart = appJs.indexOf('async function sendMessage(');
+  const sendBody = appJs.slice(sendStart, sendStart + 6000);
+  assert.ok(sendStart >= 0);
+  assert.match(sendBody, /const turn = effectiveTurnSettings\(\)/);
+  assert.doesNotMatch(sendBody, /const turn = currentTurnSettings\(\)/);
+
+  // 列表选中态必须走同一份有效设置，否则审批/沙箱列表会一项 .selected 都没有，
+  // 而胶囊却已经显示了服务端默认值。
+  const renderStart = appJs.indexOf('function renderCliSettingsPopovers()');
+  const renderEnd = appJs.indexOf('function ', renderStart + 40);
+  const renderBody = appJs.slice(renderStart, renderEnd);
+  assert.ok(renderStart >= 0 && renderEnd > renderStart);
+  assert.match(renderBody, /effectiveTurnSettings\(\)/);
+  assert.doesNotMatch(renderBody, /'approval', selectedApproval\)/);
+  assert.doesNotMatch(renderBody, /'sandbox', selectedSandbox\)/);
+  // 五组必须一视同仁。当初只接了 approval/sandbox，漏掉思考强度与服务档位，
+  // 结果面板里前三组有勾、后两组一个选中都没有。
+  assert.doesNotMatch(renderBody, /'reasoning',\s*selectedReasoning,/);
+  assert.doesNotMatch(renderBody, /'speed',\s*selectedServiceTier,/);
+  assert.match(renderBody, /'reasoning',\s*effective\.effort,/);
+  assert.match(renderBody, /'speed',\s*effective\.serviceTier,/);
+  assert.doesNotMatch(renderBody, /option\.id === selectedReasoning/);
+
+  // 持久化仍然只存用户显式选过的值——把服务端默认固化进 localStorage 会让
+  // 之后服务端改了默认也跟不上。
+  assert.match(appJs, /saveCliSettings\(localStorage, currentTurnSettings\(\)\)/);
+});
+
+test('the speed group is a plain single-choice list, like every other group', () => {
+  // speed 曾是整个设置面板里唯一的 toggle：选了「快速」之后想回默认，只能再点一次
+  // 同一行——不可发现，而且「标准」这一行当时根本不存在。对齐 Codex 桌面端后
+  // 它就是一组普通单选，默认档是列表里看得见、能点回去的一项。
+  const speedStart = appJs.indexOf("$('speed-list')?.addEventListener('click'");
+  assert.ok(speedStart >= 0);
+  const speedBody = appJs.slice(speedStart, speedStart + 400);
+  assert.doesNotMatch(speedBody, /selectedServiceTier === next \? '' : next/);
+  assert.match(speedBody, /selectedServiceTier = next;/);
+
+  // 标准档的 id 是空串（表示不下发 serviceTier），选中判定不能把空 id 一律当没选。
+  const renderStart = appJs.indexOf('function renderPopoverItems(');
+  assert.ok(renderStart >= 0);
+  const renderBody = appJs.slice(renderStart, renderStart + 700);
+  assert.doesNotMatch(renderBody, /item\.id && item\.id === selectedId/);
+  assert.match(renderBody, /item\.id === selectedId/);
+
+  // 分组标题跟桌面端一致叫「速度」，比协议字段名「服务档位」更接近用户心智。
+  assert.match(html, /id="speed-section-label"[^>]*>速度</);
+
+  // 模型不支持档位时整组要真的消失。.popover-list 的 display:flex 会压过 [hidden]
+  // 自带的 display:none，只藏标题、留一个带 padding 的空容器。
+  assert.match(css, /\.popover-list\[hidden\]\s*\{[^}]*display:\s*none/);
+});
+
+test('an outbox bubble is redrawn when its state changes', () => {
+  const start = appJs.indexOf('async function syncOutboxViewOnce()');
+  const end = appJs.indexOf('syncVisualViewport();', start);
+  const body = appJs.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+
+  // 旧写法只按 id 去重，记录从 pending 变成 needs_reconcile / rejected 后气泡不会重绘：
+  // 文案停在「弱网等待同步」，重试与丢弃按钮也长不出来，用户只能靠刷新才看得到真实状态。
+  assert.doesNotMatch(body, /if \(renderedOutboxStates\.has\(request\.clientRequestId\)\) continue;/);
+  // 去重键必须带上状态，状态变了就重画。
+  assert.match(appJs, /renderedOutboxStates/);
+  assert.match(body, /renderedOutboxStates\.get\(/);
+  assert.match(body, /dropRenderedOutboxBubble\(/);
+
+  // 光有状态比对不够：状态是在 drain 内部变的，得有人触发重新渲染。
+  const sendStart = appJs.indexOf('async function sendMessage(');
+  const sendBody = appJs.slice(sendStart, sendStart + 6000);
+  assert.match(sendBody, /drainMessageOutbox\([\s\S]{0,80}\)\.then\(\(\) => syncOutboxView\(\)\)/);
+});
+
+test('reconnect attempts do not spam the transcript with error rows', () => {
+  const start = appJs.indexOf("socket.on('connect_error'");
+  const end = appJs.indexOf("window.addEventListener('offline'", start);
+  const body = appJs.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+
+  // Socket.IO 断线后会持续重连，每次失败都触发一次 connect_error。逐条往消息区堆红条
+  // 会把真实对话挤出视野（实测断线 53 秒堆了 9 条），而横幅已经在显示「自动重连中」并计时。
+  assert.match(body, /lastConnectErrorNotice/);
+  assert.match(body, /if \(message === lastConnectErrorNotice\) return;/);
+  // unauthorized 仍要立刻打断并要求重新登录，不能被去重逻辑吞掉。
+  assert.ok(body.indexOf("unauthorized") < body.indexOf('lastConnectErrorNotice'),
+    'unauthorized 分支必须排在去重之前');
+
+  // 重连成功后要复位，否则下次断线就再也不提示了。
+  assert.match(appJs, /lastConnectErrorNotice = ''/);
+});
+
+test('a failed outbox record is never hidden just because the view moved on', () => {
+  assert.match(appJs, /shouldSurfaceInOutboxView/);
+  const start = appJs.indexOf('async function syncOutboxViewOnce()');
+  const end = appJs.indexOf('syncVisualViewport();', start);
+  const body = appJs.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  // 旧的两条件过滤会把「带 threadId 但 thread 已消失」的失败记录整个藏起来，
+  // 用户既看不到消息没发出去，也没有入口清掉它。
+  assert.doesNotMatch(body, /outboxRequestMatchesView\(request\) \|\| orphanedRequestIds\.has\(request\.clientRequestId\)\s*\)\);/);
+  assert.match(body, /shouldSurfaceInOutboxView\(request, \{/);
+  // 浮出来的外来记录必须标明它不属于当前会话，否则用户会以为是本会话发的。
+  assert.match(body, /foreignThread/);
+});
+
+test('a stale approval card states the real reason it went away', () => {
+  assert.match(appJs, /needResolutionLabel/);
+  const start = appJs.indexOf('function handleNeedsYouChanged(');
+  const end = appJs.indexOf('function openPendingNeedsYouDeepLink(', start);
+  const body = appJs.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  // 不能再对所有非 pending 状态一律写死「已在其他设备处理」：超时和撤销时那是假话。
+  assert.doesNotMatch(body, /已在其他设备处理/);
+  assert.match(body, /needResolutionLabel\(need\.state\)/);
+});
+
+test('attachment tray clears its DOM when the last chip is removed', () => {
+  const start = appJs.indexOf('function renderAttachTray()');
+  const end = appJs.indexOf('function ', start + 40);
+  const body = appJs.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  // 空态分支早返回前必须清空容器，否则移除最后一个附件后 .attach-chip 仍留在 DOM 里，
+  // 且残留 chip 的 onclick 闭包还指着旧的数组下标。
+  const emptyBranch = body.slice(0, body.indexOf('attachTray.hidden = false'));
+  assert.match(emptyBranch, /attachTray\.innerHTML = ''/);
+});
+
+test('dark-mode hard-coded washes and on-fill colours live in theme tokens', () => {
+  // 组件层禁止再开 prefers-color-scheme:深浅差异全部收敛到 :root token。
+  // 这些 token 修的是已知在深色下发亮/不可读的硬编码残留。
+  const supportsAt = css.indexOf('@supports (color: color-mix(');
+  const darkStart = css.indexOf('@media (prefers-color-scheme: dark)');
+  assert.ok(darkStart >= 0 && supportsAt > darkStart);
+  const lightRoot = css.slice(0, darkStart);
+  const darkRoot = css.slice(darkStart, supportsAt);
+  const componentCss = css.slice(css.indexOf('* { box-sizing'));
+
+  for (const [token, light, dark] of [
+    ['--on-accent', /#fff(?:fff)?/i, /#0d0d0d/i],
+    ['--on-accent-text', /#fff(?:fff)?/i, /#fff(?:fff)?/i],
+    ['--on-error', /#fff(?:fff)?/i, /#fff(?:fff)?/i],
+    ['--glass', /rgba\(\s*255\s*,\s*255\s*,\s*255/i, /rgba\(\s*(?:28|255)/i],
+    ['--glass-soft', /rgba\(\s*255\s*,\s*255\s*,\s*255/i, /rgba\(\s*(?:28|255)/i],
+    ['--scrollbar-thumb', /rgba\(\s*0\s*,\s*0\s*,\s*0/i, /rgba\(\s*255\s*,\s*255\s*,\s*255/i],
+    ['--spinner-track', /rgba\(\s*0\s*,\s*0\s*,\s*0/i, /rgba\(\s*255\s*,\s*255\s*,\s*255/i],
+    ['--error-surface', /#fdf0f0/i, /#[0-9a-f]{3,8}/i],
+    ['--error-border', /#f[0-9a-f]{5}/i, /#[0-9a-f]{3,8}/i],
+    // 深色文字档必须比基色 #df1c1c 更亮:后者 on --error-surface #3a1a1a 只有 3.22:1。
+    ['--error-text', /#df1c1c/i, /#ff8888/i],
+    ['--hover-wash', /rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\.02\s*\)/i, /rgba\(\s*255\s*,\s*255\s*,\s*255/i],
+    ['--hover-wash-hover', /rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\.03\s*\)/i, /rgba\(\s*255\s*,\s*255\s*,\s*255/i],
+    ['--hover-wash-strong', /rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\.06\s*\)/i, /rgba\(\s*255\s*,\s*255\s*,\s*255/i],
+  ]) {
+    assert.match(lightRoot, new RegExp(`${token}:\\s*${light.source}`, 'i'), `${token} 浅色档`);
+    assert.match(darkRoot, new RegExp(`${token}:\\s*${dark.source}`, 'i'), `${token} 深色档`);
+  }
+
+  // 组件只引用 token,不再写死白玻璃 / 白字 / 浅粉面 / 黑拇指。
+  assert.match(componentCss, /\.slash-popup\s*\{[^}]*background:\s*var\(--glass\)/s);
+  assert.match(componentCss, /#attach-tray\s*\{[^}]*background:\s*var\(--glass-soft\)/s);
+  assert.match(componentCss, /#confirm-ok\s*\{[^}]*color:\s*var\(--on-accent\)/s);
+  assert.match(componentCss, /#confirm-ok\[data-danger="true"\]\s*\{[^}]*color:\s*var\(--on-error\)/s);
+  assert.match(componentCss, /\.approve-btn\s*\{[^}]*color:\s*var\(--on-accent-text\)/s);
+  assert.match(componentCss, /\.mini-spinner\s*\{[^}]*border:\s*2px\s+solid\s+var\(--spinner-track\)/s);
+  assert.match(componentCss, /\.error-msg \.bubble\s*\{[^}]*background:\s*var\(--error-surface\)/s);
+  assert.match(componentCss, /\.error-msg \.bubble\s*\{[^}]*color:\s*var\(--error-text\)/s);
+  assert.match(componentCss, /\.error-msg \.bubble\s*\{[^}]*border:\s*1px\s+solid\s+var\(--error-border\)/s);
+  assert.match(componentCss, /\.deny-btn\s*\{[^}]*color:\s*var\(--error-text\)/s);
+  assert.match(componentCss, /\.deny-btn\s*\{[^}]*border-color:\s*var\(--error-border\)/s);
+  assert.match(componentCss, /\.deny-btn:active\s*\{[^}]*background:\s*var\(--error-surface\)/s);
+  assert.match(componentCss, /\.native-danger\s*\{[^}]*border-color:\s*var\(--error-border\)/s);
+  assert.match(componentCss, /\.command-card\[data-ok="true"\]\s*\{[^}]*border-color:\s*var\(--success-border\)/s);
+  assert.match(componentCss, /\.command-card\[data-ok="false"\]\s*\{[^}]*border-color:\s*var\(--error-border\)/s);
+
+  // 滚动条拇指提到 :root,组件只消费变量(局部再声明会盖掉深色档)。
+  assert.match(lightRoot, /--scrollbar-thumb:/);
+  assert.doesNotMatch(
+    componentCss,
+    /#messages,\s*\.tool-output\s*\{[^}]*--scrollbar-thumb:\s*rgba\(\s*0/s,
+    'scrollbar-thumb 不应在组件规则里写死浅色 rgba',
+  );
+
+  // 防回潮:这些字面量曾是深色事故源。
+  for (const literal of [
+    'rgba(255, 255, 255, 0.9)',
+    'rgba(255,255,255,0.6)',
+    'rgba(0, 0, 0, 0.1)', // mini-spinner 旧轨道
+  ]) {
+    assert.ok(!componentCss.includes(literal), `组件规则不应再含 ${literal}`);
+  }
+  assert.doesNotMatch(componentCss, /\.slash-popup\s*\{[^}]*background:\s*rgba\(255/s);
+  assert.doesNotMatch(componentCss, /#confirm-ok\s*\{[^}]*color:\s*#fff/s);
+});
+
+
+test('type and space scales live in :root tokens and chrome prefers them', () => {
+  const rootBlock = css.slice(0, css.indexOf('@media (prefers-color-scheme: dark)'));
+  for (const [token, px] of [
+    ['--font-2xs', '10px'],
+    ['--font-xs', '11px'],
+    ['--font-sm', '12px'],
+    ['--font-md', '13px'],
+    ['--font-body', '14px'],
+    ['--font-user', '15px'],
+    ['--font-lg', '16px'],
+    ['--space-1', '4px'],
+    ['--space-2', '6px'],
+    ['--space-3', '8px'],
+    ['--space-4', '10px'],
+    ['--space-5', '12px'],
+    ['--space-6', '14px'],
+    ['--space-7', '16px'],
+    ['--space-8', '20px'],
+    ['--space-9', '24px'],
+  ]) {
+    assert.match(rootBlock, new RegExp(`${token}:\\s*${px}`), `${token} 应声明为 ${px}`);
+  }
+
+  // 等价值迁移后,10–16px 字号应几乎全部走 token;白名单留给极少数装饰/几何例外。
+  const bare = [...css.matchAll(/font-size:\s*(10|11|12|13|14|15|16)px/g)];
+  assert.ok(
+    bare.length <= 3,
+    `10–16px 裸 font-size 应 ≤3(实际 ${bare.length})——请改用 var(--font-*)`,
+  );
+  assert.match(css, /font-size:\s*var\(--font-user\)/);
+  assert.match(css, /font-size:\s*var\(--font-sm\)/);
+  assert.match(css, /font-size:\s*var\(--font-xs\)/);
+});
+
+test('ui-icon is an inline 1em glyph so mixed text does not wrap or blow up', () => {
+  // display:block 会让非 flex 宿主(error bubble / plan step / attach chip / push 钮)
+  // 把 SVG 单独占一行;没有默认宽高时,未进白名单的宿主(设备授权标题)会落到 UA 的 300×150。
+  const componentCss = css.slice(css.indexOf('* { box-sizing'));
+  const uiIcon = componentCss.match(/^\.ui-icon\s*\{[^}]*\}/m)?.[0] || '';
+  assert.match(uiIcon, /display:\s*inline-block/, '.ui-icon 默认必须是 inline-block');
+  assert.match(uiIcon, /width:\s*1em/, '.ui-icon 默认宽 1em,跟随宿主字号');
+  assert.match(uiIcon, /height:\s*1em/, '.ui-icon 默认高 1em');
+  assert.doesNotMatch(uiIcon, /display:\s*block/, '.ui-icon 不得默认 display:block');
+});
+
+test('a sheet raised from the drawer covers the drawer instead of hiding behind it', () => {
+  // 抽屉里的 Rename / Delete 会拉起 .sheet-overlay。抽屉是靠左停靠的 300px 侧栏,
+  // sheet 是铺满宽度的底部卡片——两者同一坐标系,z-index 谁大谁在上。sheet 排在下面时
+  // 它并没有消失,只从抽屉右边缘露出一截,看起来就像弹窗错开到了主页面上。
+  const zIndexOf = selector => {
+    const block = css.match(new RegExp(`${selector}\\s*\\{[^}]*\\}`))?.[0] || '';
+    const value = block.match(/z-index:\s*(\d+)/)?.[1];
+    assert.ok(value, `${selector} 应显式声明 z-index`);
+    return Number(value);
+  };
+  const sheet = zIndexOf('\\.sheet-overlay');
+  const drawer = zIndexOf('#drawer');
+  const drawerOverlay = zIndexOf('#drawer-overlay');
+  const authGate = zIndexOf('#auth-gate');
+
+  assert.ok(sheet > drawer, `.sheet-overlay(${sheet}) 必须盖住 #drawer(${drawer})`);
+  assert.ok(sheet > drawerOverlay, `.sheet-overlay(${sheet}) 必须盖住 #drawer-overlay(${drawerOverlay})`);
+  // 认证闸门是最后一道墙,任何业务弹窗都不该越过它。
+  assert.ok(sheet < authGate, `.sheet-overlay(${sheet}) 不得盖过 #auth-gate(${authGate})`);
+});
+
+test('the drawer offers a way back to archived threads', () => {
+  // 会话列表默认只拉未归档,所以列表里永远不会出现 archived 的行,
+  // 行内那颗 Unarchive 按钮也就永远渲染不出来。没有这个开关,归档就是单程票。
+  assert.match(html, /id="drawer-archived-toggle"/, '抽屉需要「显示已归档」入口');
+  assert.match(appJs, /drawer-archived-toggle/, 'app.js 必须绑定该入口');
+  // 数赋值语句,不要写成 /=\s*(?!false)/ 这类否定前瞻——\s* 会回溯到 0 字符,
+  // 让 `let showArchivedThreads = false;` 这行自己就匹配上,断言恒真。
+  const writes = [...appJs.matchAll(/showArchivedThreads\s*=(?!=)/g)];
+  assert.ok(
+    writes.length >= 2,
+    `showArchivedThreads 除初始化外必须有写入点(实际 ${writes.length} 处赋值)`,
+  );
+  assert.match(appJs, /data-action="unarchive"|'unarchive'/, '取消归档动作必须仍然可达');
+
+  // 归档/未归档是两份列表,来回切会同时挂起两个 thread:list。响应无顺序保证,晚到的那份
+  // 若不认领自己属于哪个视图,就会盖掉用户已切回去的列表(实测在慢响应下必现)。
+  // 这条只能靠源码契约守护:复现它需要给 mock 注入不对称延迟,不适合进常规回归。
+  const listFn = appJs.match(/function refreshThreadsForCwd[\s\S]*?\n {2}\}/)?.[0] || '';
+  assert.ok(listFn, '未找到 refreshThreadsForCwd');
+  assert.match(listFn, /const requestedArchived = showArchivedThreads/, '必须捕获请求时的视图');
+  assert.match(
+    listFn,
+    /requestedArchived !== showArchivedThreads\)\s*return/,
+    'thread:list 的回调必须丢弃已切走视图的过期响应',
+  );
+});
 test('client exposes P3 experimental labs controls and isolated event renderers', () => {
   for (const id of [
     'native-p3-btn',
