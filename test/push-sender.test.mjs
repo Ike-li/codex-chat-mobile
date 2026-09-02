@@ -104,3 +104,97 @@ test('push sender rejects an oversized response body', async () => {
     /response exceeded/,
   );
 });
+
+// endpoint 校验是 SSRF 的第一道闸：Push 订阅的 endpoint 由浏览器提供，而浏览器
+// 是我们信任边界之外的东西。一个被诱导的订阅可以让服务端去连内网地址、或者把
+// 凭证塞进 URL 带出去。下面每一条都要在**开 socket 之前**拒绝。
+function neverRequests() {
+  return () => { throw new Error('request() 不该被调用 —— endpoint 校验应当先拒绝'); };
+}
+
+test('endpoint 不是合法 URL 时在开 socket 前拒绝', async () => {
+  const send = createPushSender({
+    generateRequestDetails: requestDetails,
+    resolveHostname: async () => { throw new Error('DNS 不该被调用'); },
+    request: neverRequests(),
+  });
+  await assert.rejects(send({ endpoint: 'not a url', keys: {} }, 'p'), /endpoint is invalid/);
+});
+
+test('非 HTTPS 的 endpoint 一律拒绝', async () => {
+  const send = createPushSender({
+    generateRequestDetails: requestDetails,
+    resolveHostname: async () => { throw new Error('DNS 不该被调用'); },
+    request: neverRequests(),
+  });
+  for (const endpoint of ['http://push.example/send', 'ftp://push.example/send']) {
+    await assert.rejects(send({ endpoint, keys: {} }, 'p'), /public HTTPS hostname/);
+  }
+});
+
+test('endpoint 里带用户名或密码时拒绝', async () => {
+  const send = createPushSender({
+    generateRequestDetails: requestDetails,
+    resolveHostname: async () => { throw new Error('DNS 不该被调用'); },
+    request: neverRequests(),
+  });
+  for (const endpoint of [
+    'https://user@push.example/send',
+    'https://user:secret@push.example/send',
+  ]) {
+    await assert.rejects(send({ endpoint, keys: {} }, 'p'), /public HTTPS hostname/);
+  }
+});
+
+test('endpoint 直接写成私网/环回地址时拒绝，且不开 socket', async () => {
+  // 拒绝可能来自两处：主机名闸（parsePushEndpoint）或地址闸
+  // （resolvePublicAddresses，IP 字面量走这条）。要紧的性质不是文案而是
+  // 「没有连出去」，所以断言 request() 一次都没被调用。
+  let requestCalls = 0;
+  const send = createPushSender({
+    generateRequestDetails: requestDetails,
+    // localhost 这类名字会真的走一次解析，生产环境解到 127.0.0.1 后被地址闸拒；
+    // 这里照实模拟，而不是让桩抛错 —— 抛错会掩盖「解析后仍被正确拦下」这件事。
+    resolveHostname: async () => [{ address: '127.0.0.1', family: 4 }],
+    request() { requestCalls += 1; },
+  });
+  for (const host of ['localhost', '127.0.0.1', '[::1]', '10.0.0.5', '169.254.169.254']) {
+    await assert.rejects(
+      send({ endpoint: `https://${host}/send`, keys: {} }, 'p'),
+      /public HTTPS hostname|non-public address/,
+      `${host} 必须被拒`,
+    );
+  }
+  assert.equal(requestCalls, 0, '任何一条都不该走到开连接这一步');
+});
+
+test('DNS 返回空结果时拒绝，而不是当作「没有限制」放行', async () => {
+  const send = createPushSender({
+    generateRequestDetails: requestDetails,
+    resolveHostname: async () => [],
+    request: neverRequests(),
+  });
+  await assert.rejects(send({ endpoint: 'https://push.example/send', keys: {} }, 'p'), /non-public address/);
+});
+
+test('DNS 返回字符串数组这种旧形态也要逐个校验', async () => {
+  const send = createPushSender({
+    generateRequestDetails: requestDetails,
+    resolveHostname: async () => ['93.184.216.34', '192.168.1.1'],
+    request: neverRequests(),
+  });
+  await assert.rejects(send({ endpoint: 'https://push.example/send', keys: {} }, 'p'), /non-public address/);
+});
+
+test('endpoint 本身就是公网 IP 时跳过 DNS 但仍然校验', async () => {
+  let resolved = 0;
+  const capture = {};
+  const send = createPushSender({
+    generateRequestDetails: requestDetails,
+    resolveHostname: async () => { resolved += 1; return []; },
+    request: successfulRequest(capture),
+  });
+  const result = await send({ endpoint: 'https://93.184.216.34/send', keys: {} }, 'p');
+  assert.equal(resolved, 0, 'IP 字面量不需要再过 DNS');
+  assert.equal(result.statusCode, 201);
+});

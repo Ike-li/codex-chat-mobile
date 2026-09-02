@@ -1,0 +1,8 @@
+{
+  "exclude": [
+    "test/**",
+    "e2e/**",
+    "coverage/**",
+    "public/vendor/**"
+  ]
+}
