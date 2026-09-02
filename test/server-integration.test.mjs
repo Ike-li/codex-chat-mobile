@@ -3901,7 +3901,12 @@ async function startIsolatedServer({ codexBin, rpcLog, spawnLog, p3Experimental 
   } else {
     delete process.env.CODEX_AGENT_IDLE_TTL_MS;
   }
-  if (codexBin) process.env.CODEX_BIN = codexBin;
+  // 调用方没给 codexBin 时不能落回宿主机 PATH 上的真 codex：server.js 的 preflight
+  // 找不到 codex 就 process.exit(1)，而这个文件把 server.js import 进测试子进程，
+  // 于是整棵进程树被静默带走 —— 没有 TAP 输出、没有 not ok，只剩一份没有汇总行的日志。
+  // CI 的 Node 22 腿正是这样死的（它跳过了 Install pinned Codex），而开发机因为装了
+  // codex 所以从来看不见。同时这也是「日常回归不依赖真实 Codex CLI」的兜底。
+  process.env.CODEX_BIN = codexBin || createFakeCodexBin(root);
   if (rpcLog) process.env.CODEX_FAKE_RPC_LOG = rpcLog;
   if (spawnLog) process.env.CODEX_FAKE_SPAWN_LOG = spawnLog;
   if (p3Experimental) process.env.CODEX_P3_EXPERIMENTAL = '1';

@@ -15,7 +15,8 @@ function makeSession(overrides = {}) {
     instanceId: 'inst_branch',
     resumeId: null,
     cwd: '/tmp/work',
-    codexBin: 'codex',
+    // 见 agent-appserver.test.mjs：字面量 'codex' 会引入对宿主机 PATH 的隐式依赖。
+    codexBin: process.execPath,
     idleTimeoutMs: 600000,
     onEvent: env => events.push(env),
     onSessionId: () => {},
