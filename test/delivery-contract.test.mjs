@@ -132,26 +132,74 @@ test('契约：回执不能倒退，已提交不会被迟到的「排队中」�
 
 const TARGET = { instanceId: 'inst-1', threadId: 'thr-1', turnId: 'turn-1', itemId: 'item-1', requestId: 'rq-1' };
 
-test('契约：待办出现在快照里，处理后消失', async () => {
+// responder 的契约是「返回字面量 true 表示决定已下发给 runtime」，真实调用点回的是
+// ai.respondApproval(...) 的布尔值。这里的桩曾经返回 { ok: true } —— truthy 但不是
+// true，于是记录被判成 revoked，下面两条测试整个跑在失败分支上：「处理后消失」之所以
+// 绿是因为 revoked 也会从快照消失，「只执行一次」之所以绿是因为第二次撞到 stale 而
+// 不是 duplicate。成功路径一次都没被验证过，坏了也不会红。所以除了返回值，还要断言
+// outcome.kind —— 它能区分「走对了分支」和「碰巧结果一样」。
+const acceptResponder = async () => true;
+
+test('契约：待办出现在快照里，成功处理后消失且记为 resolved', async () => {
   const registry = new NeedsYouRegistry();
   registry.open({ kind: 'approval', target: TARGET, payload: { command: 'rm -rf /' } });
   assert.equal(registry.snapshot().needs.length, 1, '重连的手机要能看到待办');
   assert.equal(registry.snapshot().needs[0].payload.command, 'rm -rf /',
     '卡片内容必须能重建——协议侧的 server request 是一次性的，重连后取不回来');
 
-  await registry.resolve(TARGET, { decision: 'approved' }, async () => ({ ok: true }));
+  const outcome = await registry.resolve(TARGET, { decision: 'approved' }, acceptResponder);
+  assert.equal(outcome.kind, 'resolved', '决定成功下发要记成 resolved，而不是 stale/revoked');
   assert.equal(registry.snapshot().needs.length, 0, '处理完不该继续出现在待办里');
 });
 
-test('契约：同一审批被处理两次，只执行一次决定', async () => {
+test('契约：同一审批被处理两次，只执行一次决定并报 duplicate', async () => {
   const registry = new NeedsYouRegistry();
   registry.open({ kind: 'approval', target: TARGET, payload: {} });
   let responderCalls = 0;
-  const responder = async () => { responderCalls += 1; return { ok: true }; };
+  const responder = async () => { responderCalls += 1; return true; };
+
+  const first = await registry.resolve(TARGET, { decision: 'approved' }, responder);
+  const second = await registry.resolve(TARGET, { decision: 'approved' }, responder);
+  assert.equal(first.kind, 'resolved');
+  assert.equal(second.kind, 'duplicate', '重复处理要能被认出是同一个决定，而不是当成过期');
+  assert.equal(responderCalls, 1, '第二次不得再次下发决定');
+});
+
+test('契约：同一审批换了不同决定要报 conflict，不能静默覆盖', async () => {
+  const registry = new NeedsYouRegistry();
+  registry.open({ kind: 'approval', target: TARGET, payload: {} });
+  let responderCalls = 0;
+  const responder = async () => { responderCalls += 1; return true; };
 
   await registry.resolve(TARGET, { decision: 'approved' }, responder);
-  await registry.resolve(TARGET, { decision: 'approved' }, responder);
-  assert.equal(responderCalls, 1, '第二次不得再次下发决定');
+  const conflicting = await registry.resolve(TARGET, { decision: 'denied' }, responder);
+  assert.equal(conflicting.kind, 'conflict',
+    '两台设备对同一条审批点了不同的按钮，后一台必须被明确告知，而不是以为自己生效了');
+  assert.equal(responderCalls, 1, '相反的决定绝不能也下发一次');
+});
+
+test('契约：runtime 拒收决定时待办不留在待处理里，也不算成功', async () => {
+  const registry = new NeedsYouRegistry();
+  registry.open({ kind: 'approval', target: TARGET, payload: {} });
+
+  // runtime 已经不在了（实例被回收、turn 结束），respondApproval 返回 false。
+  const outcome = await registry.resolve(TARGET, { decision: 'approved' }, async () => false);
+  assert.equal(outcome.kind, 'stale', '下发失败不能报成 resolved');
+  assert.equal(registry.snapshot().needs.length, 0,
+    '也不能继续挂在待办里让用户反复点一个永远不会生效的按钮');
+});
+
+test('契约：下发过程抛错时标成 unknown 并留在快照里等人处理', async () => {
+  const registry = new NeedsYouRegistry();
+  registry.open({ kind: 'approval', target: TARGET, payload: {} });
+
+  const outcome = await registry.resolve(TARGET, { decision: 'approved' }, async () => {
+    throw new Error('transport died');
+  });
+  assert.equal(outcome.kind, 'unknown',
+    '结果未知与「确定失败」必须分开：前者可能已经生效了，不能当成没发生');
+  assert.equal(registry.snapshot().needs.length, 1,
+    'unknown 要继续出现在待办里 —— 用户需要看到「这条还没定论」，而不是它悄悄消失');
 });
 
 test('契约：处理一个不存在的审批是 stale，不是崩溃', async () => {
@@ -169,4 +217,44 @@ test('契约：撤销后的待办不再可处理', async () => {
   let called = false;
   await registry.resolve(TARGET, { decision: 'approved' }, async () => { called = true; return { ok: true }; });
   assert.equal(called, false, '已撤销的审批不得再下发决定');
+});
+
+test('契约：被遗弃的排队消息不会永久占住账本', async () => {
+  let clock = 1000;
+  const ledger = new MessageReceiptLedger({ maxEntries: 3, ttlMs: 60_000, now: () => clock });
+
+  // 三条消息进了 runtime 队列，随后 turn 被放弃 —— 实例空闲被回收、codex 退出、
+  // 或者 thread 被关掉。终态回执由 agent 的事件驱动，这些情况下它永远不会到来。
+  for (const requestId of ['a', 'b', 'c']) {
+    const claim = ledger.claim({ identity: IDENTITY, requestId, fingerprint: 'fp' });
+    ledger.bindRuntime(claim.handle, { instanceId: 'inst-1', clientRequestId: requestId });
+    ledger.settle(claim.handle, { ok: true, receipt: { state: 'queued' } });
+  }
+
+  clock += 10 * 24 * 60 * 60 * 1000; // 十天以后
+
+  const fresh = ledger.claim({ identity: IDENTITY, requestId: 'today', fingerprint: 'fp' });
+  assert.equal(
+    fresh.kind,
+    'owner',
+    '十天前被遗弃的排队消息不该让今天的新消息发不出去。账本满时服务端回 '
+    + 'receipt_ledger_full 并告诉用户「请稍后重试」，但如果这些条目永远不回收，'
+    + '「稍后」永远不会到来 —— 所有带 clientRequestId 的消息会一直失败到进程重启。',
+  );
+});
+
+test('契约：还在排队的近期消息不会被回收，重连仍查得到', async () => {
+  let clock = 1000;
+  const ledger = new MessageReceiptLedger({ maxEntries: 10, ttlMs: 60_000, now: () => clock });
+  const claim = ledger.claim({ identity: IDENTITY, requestId: 'queued-now', fingerprint: 'fp' });
+  ledger.bindRuntime(claim.handle, { instanceId: 'inst-1', clientRequestId: 'queued-now' });
+  ledger.settle(claim.handle, { ok: true, receipt: { state: 'queued' } });
+
+  // 超过普通 ttl，但远没到「被遗弃」的宽限期。消息可能还真排在队列里。
+  clock += 60_000 * 5;
+  ledger.prune();
+
+  const seen = await ledger.replayByRequest({ identity: IDENTITY, requestId: 'queued-now' });
+  assert.equal(seen?.receipt?.state, 'queued',
+    '排队中的消息被过早回收会让重连的客户端查不到回执，进而重复发送同一条消息');
 });

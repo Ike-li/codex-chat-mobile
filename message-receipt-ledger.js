@@ -8,6 +8,11 @@ export class MessageReceiptLedger {
     this.ttlMs = Number.isFinite(options.ttlMs) && options.ttlMs >= 0
       ? options.ttlMs
       : 24 * 60 * 60 * 1000;
+    // 停在 queued 的条目的宽限期。默认取 ttl 的 7 倍（一周）：远长于任何真实 turn，
+    // 所以不会误删还在排队的消息；又是有限的，不会让被遗弃的条目把账本占死。
+    this.abandonedTtlMs = Number.isFinite(options.abandonedTtlMs) && options.abandonedTtlMs >= 0
+      ? options.abandonedTtlMs
+      : this.ttlMs * 7;
     this.now = options.now || (() => Date.now());
   }
 
@@ -112,14 +117,30 @@ export class MessageReceiptLedger {
 
   prune() {
     const cutoff = this.now() - this.ttlMs;
+    const abandonedCutoff = this.now() - this.abandonedTtlMs;
     for (const entry of this.entries.values()) {
+      // pending 的 ready promise 还有人等着，删了会把 replay 永久挂住。服务端的
+      // dispatch 包在 try/catch 里且必定 settle，所以 pending 不会长期堆积；进程
+      // 死掉时整张表一起没了，也不需要回收。
+      if (entry.phase === 'pending') continue;
+
+      // waiting 是还排在 runtime 队列里、尚未执行的消息。近期的必须留着：删掉它的
+      // 回执会让 reconcile 查不到而重复发送。但终态回执由 agent 的事件驱动，实例被
+      // 空闲回收、codex 退出或 thread 被关掉时它永远不会到来，条目就此卡死。
+      //
+      // 原先的实现无条件跳过 waiting，于是这些条目**永不回收**：攒够 maxEntries 之后
+      // 所有带 clientRequestId 的消息一律收到 receipt_ledger_full，而服务端给的文案是
+      // 「请稍后重试」—— 一句永远不会兑现的话，只有重启进程才能恢复。给它一个远长于
+      // 正常 turn、但有限的宽限期：过了这个点，消息确定不在队列里了，让 reconcile
+      // 重发才是用户要的结果。
+      if (entry.phase === 'waiting') {
+        if (entry.updatedAt > abandonedCutoff) continue;
+        this.removeEntry(entry);
+        continue;
+      }
+
       // 回收依据是「已结算」而不是「已终态」。settledPhase 对 dispatch_failed 的形状
-      // （retryable + resultUnknown）返回 'settled'，对停在队列里的返回 'waiting'——
-      // 两者的 terminalAt 都是 null，原先永远回收不掉，最终把 maxEntries 占满，
-      // 之后所有带 clientRequestId 的消息都会收到 receipt_ledger_full。
-      // pending 的 ready promise 还有人等着，删了会挂住 replay；waiting 是还排在
-      // 队列里、尚未执行的消息，删掉它的回执会让 reconcile 查不到而重复发送。
-      if (entry.phase === 'pending' || entry.phase === 'waiting') continue;
+      // （retryable + resultUnknown）返回 'settled'，它的 terminalAt 是 null。
       if (entry.settledAt === null || entry.settledAt > cutoff) continue;
       this.removeEntry(entry);
     }
