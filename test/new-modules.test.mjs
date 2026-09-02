@@ -342,3 +342,43 @@ test('decodeAttachments 的错误与 validateAttachments 保持一致', () => {
   assert.equal(validateAttachments([]), null);
   assert.equal(validateAttachments(undefined), null);
 });
+
+// 长文件名此前会一路走到 open() 才炸，用户拿到的是一句裸 ENAMETOOLONG 加一段宿主机
+// 绝对路径。长名字不是攻击，是很平常的情况——不少导出工具会拼日期、查询串、标题生成
+// 200 字符以上的名字。文件名收敛本来就该管长度，而不是把 NAME_MAX 的失败推给内核。
+test('saveAttachments: 超长文件名被截短而不是让 open 抛 ENAMETOOLONG', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ccm-longname-'));
+  try {
+    const longName = `${'a'.repeat(400)}.png`;
+    const saved = await saveAttachments(dir, [{
+      name: longName,
+      mimeType: 'image/png',
+      data: Buffer.from('x').toString('base64'),
+    }]);
+
+    assert.equal(saved.length, 1);
+    assert.ok(existsSync(saved[0].absPath), '文件必须真的落盘');
+    const onDisk = saved[0].absPath.split('/').pop();
+    assert.ok(onDisk.length <= 255, `落盘文件名 ${onDisk.length} 字符，超过 NAME_MAX`);
+    assert.ok(onDisk.endsWith('.png'), '截短必须保住扩展名——agent 看到的是这个名字');
+    assert.equal(saved[0].name, longName, '回给前端的仍是用户原本的名字，只有磁盘上的被收敛');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('saveAttachments: 没有扩展名的超长文件名也能落盘', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ccm-longname-noext-'));
+  try {
+    const saved = await saveAttachments(dir, [{
+      name: 'b'.repeat(400),
+      mimeType: 'text/plain',
+      data: Buffer.from('x').toString('base64'),
+    }]);
+    const onDisk = saved[0].absPath.split('/').pop();
+    assert.ok(existsSync(saved[0].absPath));
+    assert.ok(onDisk.length <= 255);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
