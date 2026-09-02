@@ -61,6 +61,13 @@ export function renderMarkdown(raw, deps = globalThis) {
   const text = String(raw ?? '');
   if (!marked?.parse || !DOMPurify?.sanitize) return escapeHtml(text);
   ensureLinkHook(DOMPurify);
+  // enhanceCodeBlocks 有意跑在 sanitize **之后**。这看着像危险形态（消毒完了又拼 HTML），
+  // 但顺序是被设计逼出来的：它注入的包装层里有一个 <button class="code-copy-btn">，而
+  // button 在 SANITIZE_CONFIG.FORBID_TAGS 里 —— 先拼后消毒会把复制按钮自己消掉。
+  //
+  // 安全性因此不能靠顺序，只能靠 enhanceCodeBlocks 自己只拼固定结构、且不把任何已转义的
+  // 内容还原成 HTML。这条性质由 e2e/markdown-sanitization.spec.js 在真浏览器里守着，
+  // 判据是「脚本执行了没有」；把这两行对调会让那个文件变红。
   const sanitized = DOMPurify.sanitize(marked.parse(text, { breaks: true, gfm: true }), SANITIZE_CONFIG);
   return enhanceCodeBlocks(sanitized, deps.hljs || globalThis.hljs);
 }
