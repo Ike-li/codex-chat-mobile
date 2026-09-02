@@ -1389,7 +1389,7 @@ function on(socket, event, handler) {
       console.error(`[handler:${event}]`, err);
       socket.emit('agent:event', {
         seq: 0, epoch: 'server', sessionId: null, ts: Date.now(),
-        type: 'error', payload: { message: `服务端处理 ${event} 出错：${err.message}`, recoverable: true }
+        type: 'error', payload: { message: `服务端处理 ${event} 出错：${sanitize(String(err?.message || err))}`, recoverable: true }
       });
     }
   });
@@ -1406,8 +1406,22 @@ function ackOk(ack, payload = {}) {
   if (typeof ack === 'function') ack({ ok: true, ...payload });
 }
 
-function ackError(ack, error) {
-  if (typeof ack === 'function') ack({ ok: false, error: error?.message || String(error || 'unknown error') });
+// 26 个 socket 处理器共用的失败出口（thread:*、models:read、files:search、account:read、
+// mcp:read、externalAgentConfig:import、p3:* 等）。这里给出的字符串会被客户端的
+// appendSystem(ack?.error, true) 直接渲染进手机上的消息列表，所以必须过 sanitize —— 全仓
+// 其他用户可见的错误（agent-appserver 的 turn/start、turn/steer、启动失败）都是这么做的，
+// 唯独这条路曾经把原始 error.message 直送浏览器。
+//
+// 后果不是理论上的：externalAgentConfig:import 解析带 API key 的外部配置、mcp:read 读带
+// 凭证的 MCP 配置、account:* 走认证流程，报错都可能把密钥带在 message 里，最后显示在屏幕上
+// 并进入用户的截图。控制字符同理 —— 客户端的 escHtml 挡 HTML，不挡 ANSI 转义序列。
+//
+// 不加 errorCode：客户端目前没有任何一处对这批 ack 分支判断，加了是没被证明必要的设计。
+// 也不套 sanitizePath：持有设备凭证的就是宿主机主人，把自己机器的路径打码只会让排查变难。
+export function ackError(ack, error) {
+  if (typeof ack !== 'function') return;
+  const raw = error?.message || String(error ?? '') || 'unknown error';
+  ack({ ok: false, error: sanitize(raw) || 'unknown error' });
 }
 
 function ackFeatureDisabled(ack, feature) {
@@ -1819,7 +1833,7 @@ io.on('connection', socket => {
         ack({
           ok: false,
           errorCode: 'reconcile_failed',
-          error: error?.message || '消息核对失败',
+          error: sanitize(String(error?.message || '')) || '消息核对失败',
           retryable: true,
           resultUnknown: true,
           gatewayEpoch: GATEWAY_EPOCH,
@@ -2027,7 +2041,7 @@ io.on('connection', socket => {
         try {
           savedAttachments = await saveAttachments(ai.cwd || WORK_DIR, attachments, decodedAttachments.decoded);
         } catch (err) {
-          const error = `附件保存失败：${err.message}`;
+          const error = `附件保存失败：${sanitize(String(err?.message || err))}`;
           sysTo(socket, error, true);
           return { ok: false, errorCode: 'attachment_save_failed', error };
         }
@@ -2049,7 +2063,7 @@ io.on('connection', socket => {
           return {
             ok: false,
             errorCode: 'invalid_input_parts',
-            error: err?.message || '结构化输入格式无效',
+            error: sanitize(String(err?.message || '')) || '结构化输入格式无效',
             retryable: false,
           };
         }
@@ -2104,7 +2118,7 @@ io.on('connection', socket => {
       result = {
         ok: false,
         errorCode: 'dispatch_failed',
-        error: error?.message || '消息派发失败',
+        error: sanitize(String(error?.message || '')) || '消息派发失败',
         retryable: true,
         resultUnknown: true,
       };
@@ -2232,7 +2246,7 @@ io.on('connection', socket => {
         });
       }
     } catch (err) {
-      const message = `登录启动失败：${err.message}`;
+      const message = `登录启动失败：${sanitize(String(err?.message || err))}`;
       if (typeof ack === 'function') ack({ ok: false, error: message });
       socket.emit('agent:event', {
         seq: 0, epoch: 'server', sessionId: ai.sessionId ?? null, ts: Date.now(),
@@ -2253,7 +2267,7 @@ io.on('connection', socket => {
       const response = await ai.cancelLogin(loginId);
       if (typeof ack === 'function') ack({ ok: true, status: response?.status || null });
     } catch (err) {
-      const message = `登录取消失败：${err.message}`;
+      const message = `登录取消失败：${sanitize(String(err?.message || err))}`;
       if (typeof ack === 'function') ack({ ok: false, error: message });
       socket.emit('agent:event', {
         seq: 0, epoch: 'server', sessionId: ai.sessionId ?? null, ts: Date.now(),
@@ -2773,7 +2787,7 @@ io.on('connection', socket => {
       broadcastInstances();
       sendActiveStatus(socket, 'session_fork');
     } catch (err) {
-      const message = `会话分叉失败：${err.message}`;
+      const message = `会话分叉失败：${sanitize(String(err?.message || err))}`;
       if (typeof ack === 'function') ack({ ok: false, error: message });
       socket.emit('agent:event', {
         seq: 0, epoch: 'server', sessionId: ai.sessionId ?? null, ts: Date.now(),
