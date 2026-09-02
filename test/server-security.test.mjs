@@ -327,3 +327,43 @@ test('送往浏览器的错误文案一律经过 sanitize', () => {
     + '用 sanitize(...) 包一层；如果这条确实只进宿主机的 console，改用 console.*。',
   );
 });
+
+test('任何向全部 socket 广播的循环都必须过 deviceApproved 过滤', () => {
+  // pending 设备是「凭证对了、但人还没点同意」的设备。服务端有五处广播循环
+  // 各自写着一行 `if (socket.deviceApproved !== true) continue;`——同一个不变量
+  // 复制了五遍，从其中一处漏掉不会有任何东西报警。
+  //
+  // 漏了会泄什么，按严重程度：needs-you 广播带审批 payload（agent 要执行的命令原文）、
+  // instances 广播带 cwd（宿主机目录路径）、thread 状态带会话名、状态栏带其内容。
+  //
+  // 判据只看会不会发数据：遍历 socket 去 disconnect、去收集列表、去清字段的循环
+  // 不需要这道闸，所以规则是「循环体里出现 socket.emit 就必须出现 deviceApproved」。
+  const source = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
+  const lines = source.split('\n');
+  const offenders = [];
+
+  lines.forEach((line, index) => {
+    if (!/for \(const socket of io\.sockets\.sockets\.values\(\)\) \{/.test(line)) return;
+    // 从循环起始行做花括号配平，取出循环体。
+    let depth = 0;
+    let body = '';
+    for (let i = index; i < lines.length; i += 1) {
+      body += `${lines[i]}\n`;
+      for (const char of lines[i]) {
+        if (char === '{') depth += 1;
+        else if (char === '}') depth -= 1;
+      }
+      if (depth === 0 && i > index) break;
+    }
+    if (!/socket\.emit\(/.test(body)) return; // 不发数据的循环不需要这道闸
+    if (/deviceApproved/.test(body)) return;
+    offenders.push(`${index + 1}: ${line.trim()}`);
+  });
+
+  assert.deepEqual(
+    offenders,
+    [],
+    '这些广播循环没有过滤未批准设备。pending 设备持有有效会话但人还没点同意，'
+    + '它不该看到审批命令、宿主机路径或会话名。加上 `if (socket.deviceApproved !== true) continue;`。',
+  );
+});

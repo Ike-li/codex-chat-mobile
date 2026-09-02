@@ -4934,3 +4934,82 @@ test('轮换注册凭证只阻断新设备，已注册设备不受影响', async
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// pending 设备是「凭证对了、但人还没点同意」的设备。它既不该动手，也不该看见东西。
+// 服务端有五处实现这道闸——broadcastNeedsYouChange、broadcastHostThreadStatus、
+// broadcastInstances、refreshStatusLine 各一处 `deviceApproved !== true` 过滤，
+// 加上 on() 里对入站事件的 fail-closed 丢弃。这五处此前一条测试都没有，
+// 全仓 grep `deviceApproved` 在 test/ 下零结果。
+//
+// 坏了的后果按泄露内容排：needs-you 广播带审批 payload（agent 要跑的命令原文）、
+// 实例广播带 cwd（宿主机目录路径）、thread 状态带会话名。入站那处更直接——
+// pending 设备能发号施令。
+test('pending 设备收不到任何广播，也发不出任何指令', async () => {
+  const fixture = await startIsolatedServer({
+    allowedOrigins: ['https://codex.example.com'],
+    trustedProxyIps: ['127.0.0.1'],
+  });
+  const pendingDevice = 'device-pending-isolation-target';
+  const approvedDevice = 'device-pending-isolation-controller';
+  const pendingCookie = await createAuthSessionCookie(fixture, pendingDevice, { forwardedProto: 'https' });
+  const approvedCookie = await createAuthSessionCookie(fixture, approvedDevice, { forwardedProto: 'https' });
+  writeFileSync(
+    join(fixture.dataDir, 'trusted-devices.json'),
+    JSON.stringify([approvedDevice]),
+    { mode: 0o600 },
+  );
+
+  const connect = (deviceToken, cookie) => {
+    const socket = socketClient(fixture.url, {
+      transports: ['websocket'],
+      forceNew: true,
+      reconnection: false,
+      auth: { deviceToken },
+      extraHeaders: {
+        Cookie: cookie,
+        Origin: 'https://codex.example.com',
+        'x-forwarded-proto': 'https',
+      },
+    });
+    socket.__agentEvents = [];
+    socket.on('agent:event', event => socket.__agentEvents.push(event));
+    return socket;
+  };
+
+  const pendingSocket = connect(pendingDevice, pendingCookie);
+  let approvedSocket;
+  try {
+    await once(pendingSocket, 'connect');
+    const status = await waitForAgentEvent(pendingSocket, 'device_status');
+    assert.equal(status.payload.status, 'pending', '前提：这台确实处于未批准状态');
+
+    approvedSocket = connect(approvedDevice, approvedCookie);
+    await once(approvedSocket, 'connect');
+    await waitForAgentEvent(approvedSocket, 'init');
+
+    // 已批准的设备做一件会触发广播的事，pending 那台必须一点都收不到。
+    const before = pendingSocket.__agentEvents.length;
+    approvedSocket.emit('session:new', { cwd: fixture.workDir });
+    await waitForAgentEvent(approvedSocket, 'instances');
+
+    // 入站方向：pending 设备发指令必须被丢弃，不能有任何回应。
+    let acked = false;
+    pendingSocket.emit('session:new', { cwd: fixture.workDir }, () => { acked = true; });
+    await new Promise(resolve => setTimeout(resolve, 250));
+
+    assert.equal(acked, false, 'pending 设备的事件必须被静默丢弃，不能回 ack');
+    const leaked = pendingSocket.__agentEvents.slice(before)
+      .filter(event => event.type !== 'device_status' && event.type !== 'pending_devices');
+    assert.deepEqual(
+      leaked.map(event => event.type),
+      [],
+      'pending 设备只应看到自己的配对状态；收到 instances 会连 cwd 一起泄露宿主机路径，'
+      + `收到 needs_you 会连审批 payload 一起泄露 agent 要执行的命令。实际收到：${
+        JSON.stringify(leaked.map(e => e.type))}`,
+    );
+  } finally {
+    pendingSocket.disconnect();
+    approvedSocket?.disconnect();
+    await fixture.close();
+  }
+});
