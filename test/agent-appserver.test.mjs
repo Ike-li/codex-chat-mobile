@@ -19,7 +19,11 @@ function makeSession(overrides = {}) {
     instanceId: 'inst_test',
     resumeId: null,
     cwd: '/tmp/work',
-    codexBin: 'codex',
+    // 不能写字面量 'codex'：那要靠宿主机 PATH 解析，缺失时进程会静默消失（没有 TAP
+    // 输出、没有 not ok，只剩一份没有汇总行的日志）。CI 的 Node 22 腿正是这样死的——
+    // 它跳过了 Install pinned Codex。用 process.execPath：绝对路径、必然存在、不走 PATH。
+    // 这些用例本来也不执行它，只是需要它可解析。
+    codexBin: process.execPath,
     idleTimeoutMs: 600000,
     onEvent: env => events.push(env),
     onSessionId: () => {},

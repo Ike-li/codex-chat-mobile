@@ -260,7 +260,8 @@ import { CodexAppServerSession } from '../agent-appserver.js';
 test('CodexAppServerSession.send queues and drains with attachments', async () => {
   const events = [];
   const session = new CodexAppServerSession({
-    instanceId: 'inst_test', resumeId: null, cwd: '/tmp', codexBin: 'codex',
+    // codexBin 见 agent-appserver.test.mjs：字面量 'codex' 会引入对宿主机 PATH 的隐式依赖。
+    instanceId: 'inst_test', resumeId: null, cwd: '/tmp', codexBin: process.execPath,
     idleTimeoutMs: 600000,
     onEvent: env => events.push(env),
     onSessionId: () => {}, onExit: () => {},

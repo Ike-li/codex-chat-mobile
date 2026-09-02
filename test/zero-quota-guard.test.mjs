@@ -6,7 +6,7 @@
 // E2E webServer 必须指向 mock 脚本、mock 脚本必须真的把 CODEX_BIN 指向假二进制。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -28,6 +28,24 @@ test('E2E 的 webServer 起的是 mock 脚本', () => {
     config,
     /command:\s*'node scripts\/mock-server\.js'/,
     'webServer.command 必须是 mock 入口，直接起 server.js 会接上宿主机真实的 CODEX_BIN',
+  );
+});
+
+// 这一条守的是「单测不依赖宿主机装了 codex」。字面量 'codex' 要靠 PATH 解析，
+// 缺失时进程会**静默消失** —— 没有 TAP 输出、没有 not ok、没有错误，只剩一份没有
+// 汇总行的日志。CI 的 Node 22 腿因此连续失败五次以上：它跳过 Install pinned Codex，
+// 而开发机装了 codex 所以永远复现不出来。用绝对路径（process.execPath）就没有这层依赖。
+test('测试不靠宿主机 PATH 解析 codex 二进制', () => {
+  const offenders = [];
+  for (const file of readdirSync(join(ROOT, 'test')).sort()) {
+    if (!file.endsWith('.test.mjs')) continue;
+    if (/codexBin:\s*['"]codex['"]/.test(read(join('test', file)))) offenders.push(file);
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    '这些文件把 codexBin 写成了字面量 "codex"，会引入对宿主机 PATH 的隐式依赖：'
+    + '没装 codex 的机器上进程会静默死掉，而不是给出一条失败的用例。改用 process.execPath。',
   );
 });
 
