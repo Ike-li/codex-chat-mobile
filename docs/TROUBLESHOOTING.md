@@ -104,7 +104,7 @@ Labs 是默认行为：设置 `CODEX_P3_EXPERIMENTAL=1` 并重启网关，关闭
 
 ### Admin 返回 `admin_locked`
 
-不再需要解锁。每个动作仍需独立确认——缺 `adminConfirm` 会被拒绝并记入审计。
+不再需要解锁。每个动作仍需独立确认——缺 `confirmAction` 会被拒绝并记入审计。
 
 ### 模型列表为空或模型不能使用
 

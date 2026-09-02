@@ -3735,22 +3735,22 @@ test('宿主配置操作无需解锁，但必须带逐动作确认并留审计',
       await waitForAgentEvent(socket, 'init');
 
       // 少了确认字段就不执行：防的是手机上误触，不是防攻击者。
-      const unconfirmed = await emitWithAck(socket, 'admin:configWrite', {
+      const unconfirmed = await emitWithAck(socket, 'host:configWrite', {
         keyPath: 'model', value: 'gpt-5.5', mergeStrategy: 'replace',
       });
       assert.equal(unconfirmed.ok, false);
       assert.match(unconfirmed.error, /confirm/i);
 
       // 带上确认就直接执行，不需要先解锁。
-      const written = await emitWithAck(socket, 'admin:configWrite', {
+      const written = await emitWithAck(socket, 'host:configWrite', {
         keyPath: 'model', value: 'gpt-5.5', mergeStrategy: 'replace',
-        adminConfirm: 'admin:configWrite',
+        confirmAction: 'host:configWrite',
       });
       assert.equal(written.ok, true, '带确认的宿主配置写入应当直接生效');
 
-      const audit = readFileSync(join(fixture.dataDir, 'admin-audit.jsonl'), 'utf8')
+      const audit = readFileSync(join(fixture.dataDir, 'host-config-audit.jsonl'), 'utf8')
         .trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
-      const success = audit.find(entry => entry.action === 'admin:configWrite' && entry.event === 'success');
+      const success = audit.find(entry => entry.action === 'host:configWrite' && entry.event === 'success');
       assert.ok(success, '成功的宿主配置变更必须留痕');
       assert.ok(!JSON.stringify(audit).includes('ENABLE ADMIN'), '不应再有解锁口令');
     } finally {
@@ -3847,7 +3847,7 @@ test('server exposes P3 experimental controls only behind feature flag', async (
   }
 });
 
-async function startIsolatedServer({ codexBin, rpcLog, spawnLog, adminEnabled = false, adminUnlockTtlMs, adminUnlockMaxFailures, adminUnlockWindowMs, p3Experimental = false, eventBufferCap, vapid, initialPushSubscriptions, initialTrustedDevices, pushMaxSubscriptions, allowedOrigins = [], trustedProxyIps = [], allowInsecureRemote = false, authMaxFailures, authWindowMs, pendingDeviceLimit, agentIdleTtlMs } = {}) {
+async function startIsolatedServer({ codexBin, rpcLog, spawnLog, hostConfigEnabled = false, adminUnlockTtlMs, adminUnlockMaxFailures, adminUnlockWindowMs, p3Experimental = false, eventBufferCap, vapid, initialPushSubscriptions, initialTrustedDevices, pushMaxSubscriptions, allowedOrigins = [], trustedProxyIps = [], allowInsecureRemote = false, authMaxFailures, authWindowMs, pendingDeviceLimit, agentIdleTtlMs } = {}) {
   const previous = snapshotEnv();
   const root = mkdtempSync(join(tmpdir(), 'ccm-server-test-'));
   let workDir = join(root, 'work');
@@ -3901,7 +3901,7 @@ async function startIsolatedServer({ codexBin, rpcLog, spawnLog, adminEnabled = 
   if (codexBin) process.env.CODEX_BIN = codexBin;
   if (rpcLog) process.env.CODEX_FAKE_RPC_LOG = rpcLog;
   if (spawnLog) process.env.CODEX_FAKE_SPAWN_LOG = spawnLog;
-  if (adminEnabled) process.env.CODEX_ADMIN_ENABLED = '1';
+  if (hostConfigEnabled) process.env.CODEX_ADMIN_ENABLED = '1';
   else delete process.env.CODEX_ADMIN_ENABLED;
   if (Number.isInteger(adminUnlockTtlMs) && adminUnlockTtlMs > 0) {
     process.env.CODEX_ADMIN_UNLOCK_TTL_MS = String(adminUnlockTtlMs);

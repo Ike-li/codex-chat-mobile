@@ -9,5 +9,5 @@ test('disabled experimental features are absent from the mobile controls', async
   await page.locator('#menu-btn').click();
   await expect(page.locator('#drawer')).toHaveClass(/open/);
   await expect(page.locator('#native-p3-btn')).toBeHidden();
-  await expect(page.locator('#native-admin-btn')).toBeVisible();
+  await expect(page.locator('#native-host-config-btn')).toBeVisible();
 });
