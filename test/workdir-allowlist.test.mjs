@@ -105,3 +105,117 @@ test('异大小写的区内路径被拒绝而不是被放行', () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// 配置写错时必须说清楚是哪一条、错在哪。这些告警会出现在启动日志和 doctor 输出里，
+// 是用户唯一能看到的线索 —— 静默忽略一条坏路径的后果是「工作区少了一个但没人知道」，
+// 排查时会一路怀疑到权限和软链接上去。
+test('WORK_DIRS 的坏条目逐条告警而不是整体静默失败', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'ccm-workdirs-bad-')));
+  try {
+    const primary = join(root, 'primary');
+    const good = join(root, 'good');
+    const aFile = join(root, 'a-file.txt');
+    mkdirSync(primary);
+    mkdirSync(good);
+    writeFileSync(aFile, 'not a directory');
+
+    const resolved = resolveWorkdirAllowlist({
+      workDir: primary,
+      extra: [good, aFile, join(root, 'does-not-exist')].join(','),
+      baseDir: root,
+    });
+
+    assert.deepEqual(resolved.workDirs, [primary, good], '好的条目照常生效，坏的不能连累它们');
+    assert.equal(resolved.warnings.length, 2);
+    assert.ok(resolved.warnings.some(w => w.includes('不是目录') && w.includes('a-file.txt')));
+    assert.ok(resolved.warnings.some(w => w.includes('不存在/不可达') && w.includes('does-not-exist')));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('WORK_DIRS 指向的 JSON 读不动时报出文件名和原因', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'ccm-workdirs-json-')));
+  try {
+    const primary = join(root, 'primary');
+    mkdirSync(primary);
+    writeFileSync(join(root, 'broken.json'), '{ this is not json');
+
+    const resolved = resolveWorkdirAllowlist({ workDir: primary, extra: 'broken.json', baseDir: root });
+    assert.deepEqual(resolved.workDirs, [primary]);
+    assert.equal(resolved.warnings.length, 1);
+    assert.match(resolved.warnings[0], /WORK_DIRS 无法读取 broken\.json/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('WORK_DIRS 的 JSON 不是数组时明说，而不是当成逗号分隔的路径', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'ccm-workdirs-obj-')));
+  try {
+    const primary = join(root, 'primary');
+    mkdirSync(primary);
+    writeFileSync(join(root, 'obj.json'), JSON.stringify({ path: '/tmp' }));
+
+    const resolved = resolveWorkdirAllowlist({ workDir: primary, extra: 'obj.json', baseDir: root });
+    assert.deepEqual(resolved.workDirs, [primary]);
+    assert.match(resolved.warnings[0], /WORK_DIRS JSON 不是数组/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('WORK_DIRS 的 JSON 数组里，无效条目单独告警且不影响有效条目', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'ccm-workdirs-mixed-')));
+  try {
+    const primary = join(root, 'primary');
+    const alpha = join(root, 'alpha');
+    mkdirSync(primary);
+    mkdirSync(alpha);
+    // 支持两种条目写法：裸字符串和 { path }。数字和空串都是无效条目。
+    writeFileSync(join(root, 'mixed.json'), JSON.stringify([{ path: alpha }, 42, '   ', null]));
+
+    const resolved = resolveWorkdirAllowlist({ workDir: primary, extra: 'mixed.json', baseDir: root });
+    assert.deepEqual(resolved.workDirs, [primary, alpha], '{ path } 形式要被接受');
+    assert.equal(resolved.warnings.length, 3, '42、空白串、null 各报一条');
+    for (const warning of resolved.warnings) assert.match(warning, /WORK_DIRS 忽略无效条目/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('WORK_DIR 本身无效时直接抛错，而不是退化成一个空的允许列表', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'ccm-workdir-invalid-')));
+  try {
+    const aFile = join(root, 'file.txt');
+    writeFileSync(aFile, 'x');
+
+    assert.throws(
+      () => resolveWorkdirAllowlist({ workDir: join(root, 'missing'), baseDir: root }),
+      /WORK_DIR 不存在/,
+      '不存在时要提示去 .env 设置有效路径',
+    );
+    assert.throws(
+      () => resolveWorkdirAllowlist({ workDir: aFile, baseDir: root }),
+      /WORK_DIR 不是目录/,
+      '指到文件上也要拦住 —— 空的允许列表等于所有 fs 操作全被拒，症状会指向别处',
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('空的 WORK_DIRS 不产生条目也不产生告警', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'ccm-workdirs-empty-')));
+  try {
+    const primary = join(root, 'primary');
+    mkdirSync(primary);
+    for (const extra of ['', '   ', undefined]) {
+      const resolved = resolveWorkdirAllowlist({ workDir: primary, extra, baseDir: root });
+      assert.deepEqual(resolved.workDirs, [primary]);
+      assert.deepEqual(resolved.warnings, []);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
