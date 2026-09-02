@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   isLocalAccess,
   isLoopbackAddress,
@@ -228,4 +229,101 @@ test('gateway security policy canonicalizes and deduplicates exact origins and p
     trustedProxyIps: ['127.0.0.1', '::1'],
     allowInsecureRemote: false,
   });
+});
+
+// ackError 是 26 个 socket 处理器共用的失败出口（thread:*、models:read、files:search、
+// account:read、mcp:read、externalAgentConfig:import、p3:* 等），它给出的字符串会被
+// appendSystem(ack?.error, true) 直接渲染进手机上的消息列表。
+//
+// 全仓其他用户可见的错误都过 sanitize()——agent-appserver 的 turn/start、turn/steer、
+// 启动失败都是。ackError 曾是唯一一条绕过去的：原始 error.message 直送浏览器。后果很具体：
+// externalAgentConfig:import 解析带 API key 的外部配置、mcp:read 读带凭证的 MCP 配置、
+// account:* 走认证流程，这些地方的报错都可能把密钥带在 message 里，最后显示在屏幕上并
+// 进入用户的截图。控制字符同理——escHtml 挡 HTML，不挡 ANSI 转义。
+async function importServerHelpers() {
+  const prev = process.env.CODEX_SERVER_NO_START;
+  process.env.CODEX_SERVER_NO_START = '1';
+  try {
+    return await import(`../server.js?ackError=${Date.now()}-${Math.random()}`);
+  } finally {
+    if (prev === undefined) delete process.env.CODEX_SERVER_NO_START;
+    else process.env.CODEX_SERVER_NO_START = prev;
+  }
+}
+
+test('ackError 抹掉错误信息里的密钥，不把它送到手机屏幕上', async () => {
+  const { ackError } = await importServerHelpers();
+  const acks = [];
+
+  ackError(payload => acks.push(payload), new Error(
+    'failed to parse config: OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz012345',
+  ));
+
+  assert.equal(acks[0].ok, false);
+  assert.doesNotMatch(
+    acks[0].error,
+    /sk-proj-abcdefghijklmnopqrstuvwxyz012345/,
+    '密钥不能出现在返回给浏览器的错误里',
+  );
+  assert.match(acks[0].error, /failed to parse config/, '有用的部分要留着，否则没法排查');
+});
+
+test('ackError 剥掉控制字符，避免 ANSI 转义污染消息列表', async () => {
+  const { ackError } = await importServerHelpers();
+  const acks = [];
+  const ansi = '\u001b[31mfatal\u001b[0m bad state';
+
+  ackError(payload => acks.push(payload), new Error(ansi));
+
+  assert.ok(!acks[0].error.includes('\u001b'), 'escHtml 只挡 HTML，不挡终端控制序列');
+  assert.match(acks[0].error, /fatal/);
+});
+
+test('ackError 对非 Error 的抛出物也给得出可读的字符串', async () => {
+  const { ackError } = await importServerHelpers();
+  const acks = [];
+
+  ackError(payload => acks.push(payload), 'plain string failure');
+  ackError(payload => acks.push(payload), null);
+
+  assert.equal(acks[0].error, 'plain string failure');
+  assert.equal(acks[1].ok, false);
+  assert.ok(acks[1].error, '兜底也要有话说，不能是空串让页面显示一片空白');
+});
+
+test('ackError 没有 ack 回调时不抛异常', async () => {
+  const { ackError } = await importServerHelpers();
+  assert.doesNotThrow(() => ackError(undefined, new Error('no ack')));
+});
+
+test('送往浏览器的错误文案一律经过 sanitize', () => {
+  // 这是一条绊线，守的是一整类问题而不是某一处：只要有人再写一处
+  // `${err.message}` 直插用户可见文案，这里就会红。
+  //
+  // 判据是「会不会到浏览器」：console.* 是宿主机自己的终端，主人看自己的完整报错
+  // 天经地义，不脱敏；emit / ack / payload.message 会跨网络到手机上，必须脱敏。
+  const source = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
+  const lines = source.split('\n');
+  const offenders = [];
+  lines.forEach((line, index) => {
+    // 两种写法都要管：模板插值 `…${err.message}…`，以及 { error: err.message }。
+    // 第一版只查了前者，于是 message:reconcile、结构化输入校验和 dispatch_failed
+    // 三处漏网 —— 一条只覆盖一半形态的绊线，比没有绊线更危险，因为它会让人以为查过了。
+    const interpolated = /\$\{(?:err|error)\??\.message/.test(line);
+    const assigned = /^\s*error:\s*(?:err|error)\??\.message/.test(line);
+    if (!interpolated && !assigned) return;
+    if (/sanitize\(/.test(line)) return;
+    if (/console\.(error|warn|log)/.test(line)) return;
+    // 审计文件那条路整条 entry 都会过 sanitizeAdminAuditValue 递归脱敏，不必在写入点重复。
+    const window = lines.slice(Math.max(0, index - 8), index).join('\n');
+    if (/append(?:SecurityAudit|HostConfigAudit)\(/.test(window)) return;
+    offenders.push(`${index + 1}: ${line.trim()}`);
+  });
+  assert.deepEqual(
+    offenders,
+    [],
+    '这些行把原始 err.message 插进了会发到浏览器的文案里。上游报错可能带 API key、'
+    + 'Bearer token 或 ANSI 转义 —— 前两者会显示在手机屏幕上并进入截图，后者会污染消息列表。'
+    + '用 sanitize(...) 包一层；如果这条确实只进宿主机的 console，改用 console.*。',
+  );
 });
