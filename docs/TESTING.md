@@ -12,7 +12,7 @@ npm run test:e2e
 ```
 
 - `npm test` 以 `--test-concurrency=1` 运行 `node:test`，覆盖单元、集成、协议、安全、UI 和文档契约。
-- `npm run protocol:check` 要求本机 Codex 版本等于 `.codex-version`，并检查 `.protocol/stable/` 的覆盖与漂移；版本不匹配就是失败，不能跳过后宣称门禁通过。
+- `npm run protocol:check` 要求本机 Codex 版本等于 `.codex-version`，版本不匹配就是失败，不能跳过后宣称门禁通过。它查三层：**上游漂移**（`.protocol/stable/` 与现场生成的输出全文比对，字段增删改都会报）、**方法覆盖**（我们调用的方法必须存在于协议）、**通知字段用法**（`handleNotification` 读的每个 `params.X` 必须在该通知的 params 类型里声明）。第三层补的是这样一个洞：方法名对得上不代表字段对得上，上游把字段改个名，我们读到的是 `undefined` —— 不抛异常、没有失败用例，功能静默失效，而单元测试用的是我们自己写的、同样假设错误的 fixture，两层一起说谎。有意保留的兼容回退写进 `LEGACY_FIELD_ALLOWLIST` 并注明理由，而不是只留在源码的 `??` 里让人猜。
 - `npm run test:e2e` 用 Playwright mobile Chrome 连接 mock gateway，不启动真实 Codex。
 - `npm run test:ci` 串联 lint、协议门禁、单测、覆盖率退化门禁和 E2E，四道门都在里面。协议门禁必须在门禁内，否则枚举值一类的漂移能直接合入——`on-failure` 审批档就是这么进来的。
 - `.coverage-baseline.json` 在 2026-09-01 从 95.79/87.88/97.84/95.79 重置为 90.54/76.89/89.08/90.54。旧值陈旧了 80 个提交：退化门禁（相对基线 ≤2pp）设计是对的，但它只挂在 `pull_request` 上，而 CI 矩阵默认的 fail-fast 又让 Node 22 的抖动连坐取消 Node 20 那条腿——这道门结构上从来没跑成过，于是分支覆盖在 80 个提交里从 87.88 掉到 76.89 而没有任何东西变红。重置只是让门禁重新可用；**丢掉的 11pp 分支覆盖没有补回来**，缺口集中在错误路径（catch、超时、断连），正是这个项目最依赖的可靠性路径。补回来是一项独立工作。

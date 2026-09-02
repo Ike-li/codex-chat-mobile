@@ -35,6 +35,101 @@ export const EXPERIMENTAL_METHOD_ALLOWLIST = new Set([
   'thread/settings/update',
 ]);
 
+// 允许读取的「协议里已经没有」的通知字段，按 method 分组。
+// 这些是上游改名后保留的兼容回退：运行时的 codex 版本并不受 .codex-version 约束
+// （那只是 CI 门禁），用户机器上可能装着更老的一版，所以旧字段名要继续兜住。
+// 写在这里而不是只留在源码的 `??` 里，是为了让「这是有意的」可被读到 —— 否则
+// 下一个人看到就只能猜，要么当成手滑删掉，要么当成协议还有这个字段。
+export const LEGACY_FIELD_ALLOWLIST = new Map([
+  // processHandle 的旧名。现协议只有 processHandle。
+  ['process/exited', new Set(['processId'])],
+  // threadName 的旧名。现协议只有 threadName。
+  ['thread/name/updated', new Set(['name'])],
+]);
+
+/** ServerNotification 的判别联合 → Map<method, params 类型名>。 */
+export function parseNotificationParamsTypes(source) {
+  const map = new Map();
+  const alias = source.match(/export type ServerNotification\s*=([\s\S]*?);\s*$/m);
+  if (!alias) throw new Error('ServerNotification type alias not found in protocol source.');
+  for (const [, method, typeName] of alias[1].matchAll(/\{\s*"method":\s*"([^"]+)",\s*"params":\s*(\w+)\s*\}/g)) {
+    map.set(method, typeName);
+  }
+  return map;
+}
+
+/** 读出某个 params 类型声明的顶层字段名；类型不存在或不是对象类型时返回 null。 */
+export function readTypeFields(protocolDir, typeName) {
+  for (const relPath of [`${typeName}.ts`, join('v2', `${typeName}.ts`)]) {
+    const path = join(protocolDir, relPath);
+    if (!existsSync(path)) continue;
+    const body = readFileSync(path, 'utf8').match(/export type \w+\s*=\s*\{([\s\S]*)\}\s*;/);
+    // 联合类型和别名（如 `= string`）没有顶层字段可比，交给调用方跳过。
+    if (!body) return null;
+    const fields = new Set();
+    for (const [, name] of body[1].matchAll(/(?:^|[{,;])\s*"?([A-Za-z_]\w*)"?\s*\??\s*:/gm)) fields.add(name);
+    return fields;
+  }
+  return null;
+}
+
+/** 把 ServerNotification 里每个 method 的 params 类型字段一次读齐。 */
+export function readAllNotificationParamsFields(protocolDir) {
+  const source = readFileSync(join(protocolDir, 'ServerNotification.ts'), 'utf8');
+  const declared = new Map();
+  for (const typeName of new Set(parseNotificationParamsTypes(source).values())) {
+    const fields = readTypeFields(protocolDir, typeName);
+    if (fields) declared.set(typeName, fields);
+  }
+  return declared;
+}
+
+/** handleNotification 的 switch → Map<method, 读到的 params.X 字段集合>。 */
+export function collectNotificationFieldUsage(agentAppserverSource) {
+  const start = agentAppserverSource.indexOf('handleNotification(method, params) {');
+  if (start < 0) throw new Error('handleNotification(method, params) definition not found.');
+  const body = extractFunctionBody(agentAppserverSource.slice(start), 'handleNotification');
+  const usage = new Map();
+  for (const branch of body.split(/case '/).slice(1)) {
+    const method = branch.slice(0, branch.indexOf("'"));
+    const fields = usage.get(method) || new Set();
+    for (const [, field] of branch.matchAll(/\bparams\.([A-Za-z_]\w*)/g)) fields.add(field);
+    usage.set(method, fields);
+  }
+  return usage;
+}
+
+/** 返回读了但协议里没有的字段；白名单里的兼容回退不算。 */
+export function findUnknownNotificationFields({ usage, paramsTypes, declared, allowlist = new Map() }) {
+  const problems = [];
+  for (const method of [...usage.keys()].sort()) {
+    const paramsType = paramsTypes.get(method);
+    // 方法本身缺失由 findMissingProtocolCoverage 负责，这里不重复报。
+    if (!paramsType) continue;
+    const declaredFields = declared.get(paramsType);
+    if (!declaredFields) continue;
+    const allowed = allowlist.get(method) || new Set();
+    const fields = [...usage.get(method)]
+      .filter(field => !declaredFields.has(field) && !allowed.has(field))
+      .sort();
+    if (fields.length) problems.push({ method, paramsType, fields });
+  }
+  return problems;
+}
+
+export function formatUnknownNotificationFields(problems) {
+  if (problems.length === 0) return 'Notification field usage: OK';
+  const lines = [
+    'Notification field drift: handleNotification reads params fields the protocol does not declare.',
+    'A renamed upstream field reads as undefined at runtime — no throw, no failing test.',
+    'Fix the read, or add a documented entry to LEGACY_FIELD_ALLOWLIST if it is a deliberate fallback.',
+  ];
+  for (const { method, paramsType, fields } of problems) {
+    lines.push(`  ${method} (${paramsType}): ${fields.join(', ')}`);
+  }
+  return lines.join('\n');
+}
+
 export function readProtocolMethodSets(protocolDir) {
   const out = {};
   for (const [kind, typeName] of Object.entries(PROTOCOL_KINDS)) {
@@ -425,16 +520,29 @@ function runProtocolCheck() {
       approvalBrokerSource: readFileSync(join(ROOT, 'approval-broker.js'), 'utf8'),
     });
     const missing = findMissingProtocolCoverage({ usage, protocol: baselineMethods });
+    // 方法名对得上不代表字段对得上：上游把字段改个名，我们读到 undefined，
+    // 不抛异常也没有失败用例，功能静默失效。对着生成出来的协议比，而不是基线，
+    // 这样字段漂移在升级那一刻就报出来。
+    const unknownFields = findUnknownNotificationFields({
+      usage: collectNotificationFieldUsage(readFileSync(join(ROOT, 'agent-appserver.js'), 'utf8')),
+      paramsTypes: parseNotificationParamsTypes(readFileSync(join(generatedDir, 'ServerNotification.ts'), 'utf8')),
+      declared: readAllNotificationParamsFields(generatedDir),
+      allowlist: LEGACY_FIELD_ALLOWLIST,
+    });
     const driftReport = formatProtocolDrift({ methodDiff, typeDiff, fileDiff });
     const coverageReport = formatMissingProtocolCoverage(missing);
 
     console.log(`Codex protocol pin: ${pin}`);
     console.log(driftReport);
     console.log(coverageReport);
+    console.log(formatUnknownNotificationFields(unknownFields));
     console.log(`Legacy allowlist: ${sortSet(LEGACY_METHOD_ALLOWLIST).join(', ') || '(empty)'}`);
     console.log(`Experimental allowlist: ${sortSet(EXPERIMENTAL_METHOD_ALLOWLIST).join(', ') || '(empty)'}`);
 
-    return hasProtocolDrift({ methodDiff, typeDiff, fileDiff }) || missing.length > 0 ? 1 : 0;
+    const failed = hasProtocolDrift({ methodDiff, typeDiff, fileDiff })
+      || missing.length > 0
+      || unknownFields.length > 0;
+    return failed ? 1 : 0;
   } finally {
     rmSync(generatedDir, { recursive: true, force: true });
   }
