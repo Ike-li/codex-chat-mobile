@@ -38,12 +38,28 @@ function decodeBase64Strict(data) {
   return decoded;
 }
 
-// 文件名收敛：只取 basename，去路径分隔/控制/危险字符，去前导点
+// 落盘名的长度预算。绝大多数文件系统的 NAME_MAX 是 255 字节，而实际写入的名字是
+// `${Date.now()}-${8 位 hex}-${sanitizeName(...)}`，前缀占 23 个字符。留 32 的余量
+// 给未来的前缀改动，仍远大于任何正常文件名。
+const MAX_SAVED_NAME_LEN = 200;
+
+// 文件名收敛：只取 basename，去路径分隔/控制/危险字符，去前导点，并限制长度。
+//
+// 长度必须在这里管：超长名字不是攻击，是很平常的情况（导出工具常把日期、查询串、
+// 标题拼进文件名）。不收敛的话会一路走到 open() 才炸成 ENAMETOOLONG，用户拿到的是
+// 一句裸 errno 加一段宿主机绝对路径，而不是「文件已上传」。
 function sanitizeName(name) {
   // eslint-disable-next-line no-control-regex -- 过滤文件名中的控制字符属安全收敛
   const base = basename(String(name ?? '')).replace(/[\x00-\x1f\x7f]/g, '');
   const safe = base.replace(/[/\\:*?"<>|]/g, '_').replace(/^\.+/, '').trim();
-  return safe || 'file';
+  if (!safe) return 'file';
+  if (safe.length <= MAX_SAVED_NAME_LEN) return safe;
+
+  // 保住扩展名：agent 拿到的是这个名字，`.png` 被截掉会改变它对文件的判断。
+  // 只认最后一个点之后的短后缀，避免把 "a.very.long.thing" 的中段当成扩展名。
+  const dot = safe.lastIndexOf('.');
+  const ext = dot > 0 && safe.length - dot <= 12 ? safe.slice(dot) : '';
+  return safe.slice(0, MAX_SAVED_NAME_LEN - ext.length) + ext;
 }
 
 // 校验（零 IO）并交出解码后的 buffer 供复用。同一份 base64 此前会被解码三次——
