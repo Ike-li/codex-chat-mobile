@@ -181,7 +181,6 @@ import { icon, hydrateIcons } from '/js/icons.js';
   let expandedDirs = new Set();
   let showArchivedThreads = false;
   let features = { admin: false, labs: false };
-  let adminUnlocked = false;
   let pendingToolCards = {}; // toolUseId -> element
   let pendingApprovalCards = {}; // approvalId -> element
   let needsYouRevision = 0;
@@ -612,7 +611,6 @@ import { icon, hydrateIcons } from '/js/icons.js';
   });
 
   socket.on('disconnect', () => {
-    adminUnlocked = false;
     setConnectionPhase('offline');
     renderConnectionState();
     clearRtt();
@@ -1592,10 +1590,9 @@ import { icon, hydrateIcons } from '/js/icons.js';
       admin: manifest?.admin === true,
       labs: manifest?.labs === true,
     };
-    if (!features.admin) adminUnlocked = false;
     const adminButton = $('native-admin-btn');
     const labsButton = $('native-p3-btn');
-    if (adminButton) adminButton.hidden = !features.admin;
+    if (adminButton) adminButton.hidden = false;
     if (labsButton) labsButton.hidden = !features.labs;
   }
 
@@ -2509,14 +2506,9 @@ import { icon, hydrateIcons } from '/js/icons.js';
   }
 
   function openAdminPanel() {
-    if (!features.admin) return;
-    renderNativePanel('Admin', `
+    renderNativePanel('宿主配置', `
       <div class="native-list-row">
-        <div class="native-row-title">${adminUnlocked ? 'Unlocked' : 'Locked'}</div>
-        <div class="native-row-actions">
-          <button id="admin-unlock-btn" class="native-mini-btn" type="button"${adminUnlocked ? ' hidden' : ''}>Unlock</button>
-          <button id="admin-lock-btn" class="native-mini-btn" type="button"${adminUnlocked ? '' : ' hidden'}>Lock</button>
-        </div>
+        <div class="native-row-meta">这些操作直接改动宿主机的 Codex 配置、插件与账号。每一项都会单独要求确认并写审计。</div>
       </div>
       <div class="native-list-row">
         <div class="native-row-title">Config</div>
@@ -2543,8 +2535,6 @@ import { icon, hydrateIcons } from '/js/icons.js';
         </div>
       </div>
     `);
-    $('admin-unlock-btn').onclick = unlockAdminMode;
-    $('admin-lock-btn').onclick = lockAdminMode;
     $('admin-config-write-btn').onclick = adminConfigWrite;
     $('admin-config-batch-btn').onclick = adminConfigBatchWrite;
     $('admin-plugin-install-btn').onclick = adminPluginInstall;
@@ -2554,33 +2544,6 @@ import { icon, hydrateIcons } from '/js/icons.js';
     $('admin-marketplace-upgrade-btn').onclick = adminMarketplaceUpgrade;
     $('admin-mcp-call-btn').onclick = adminMcpCall;
     $('admin-logout-btn').onclick = adminAccountLogout;
-  }
-
-  function unlockAdminMode() {
-    let confirmText;
-    try {
-      confirmText = promptRequired('Unlock phrase', 'ENABLE ADMIN');
-    } catch (err) {
-      appendSystem(err.message, true);
-      return;
-    }
-    if (confirmText === null) return;
-    if (confirmText !== 'ENABLE ADMIN') return appendSystem('Admin unlock phrase mismatch', true);
-    socket.emit('admin:unlock', { confirmText }, ack => {
-      if (!ack?.ok) return appendSystem(ack?.error || 'Admin unlock failed', true);
-      adminUnlocked = true;
-      appendSystem('Admin mode enabled', false);
-      openAdminPanel();
-    });
-  }
-
-  function lockAdminMode() {
-    socket.emit('admin:lock', {}, ack => {
-      if (!ack?.ok) return appendSystem(ack?.error || 'Admin lock failed', true);
-      adminUnlocked = false;
-      appendSystem('Admin mode locked', false);
-      openAdminPanel();
-    });
   }
 
   const adminEmitters = {
@@ -2596,7 +2559,6 @@ import { icon, hydrateIcons } from '/js/icons.js';
   };
 
   function runAdminAction(eventName, buildPayload) {
-    if (!adminUnlocked) return appendSystem('Admin mode is locked', true);
     let confirmation;
     try {
       confirmation = promptRequired('Confirm action', eventName);

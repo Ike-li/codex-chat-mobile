@@ -81,22 +81,8 @@ const GATEWAY_EPOCH = randomBytes(16).toString('hex');
 const gatewaySecurityPolicy = parseGatewaySecurityPolicy(process.env);
 const HERE = import.meta.dirname;
 const DATA_DIR = process.env.CODEX_DATA_DIR || join(HERE, 'data');
-const ADMIN_UNLOCK_PHRASE = 'ENABLE ADMIN';
 const ADMIN_AUDIT_FILE = join(DATA_DIR, 'admin-audit.jsonl');
 const SECURITY_AUDIT_FILE = join(DATA_DIR, 'security-audit.jsonl');
-const ADMIN_ENABLED = process.env.CODEX_ADMIN_ENABLED === '1';
-const rawAdminUnlockTtlMs = Number(process.env.CODEX_ADMIN_UNLOCK_TTL_MS);
-const ADMIN_UNLOCK_TTL_MS = Number.isInteger(rawAdminUnlockTtlMs) && rawAdminUnlockTtlMs > 0
-  ? rawAdminUnlockTtlMs
-  : 5 * 60 * 1000;
-const rawAdminUnlockMaxFailures = Number(process.env.CODEX_ADMIN_UNLOCK_MAX_FAILURES);
-const ADMIN_UNLOCK_MAX_FAILURES = Number.isInteger(rawAdminUnlockMaxFailures) && rawAdminUnlockMaxFailures > 0
-  ? rawAdminUnlockMaxFailures
-  : 5;
-const rawAdminUnlockWindowMs = Number(process.env.CODEX_ADMIN_UNLOCK_WINDOW_MS);
-const ADMIN_UNLOCK_WINDOW_MS = Number.isInteger(rawAdminUnlockWindowMs) && rawAdminUnlockWindowMs > 0
-  ? rawAdminUnlockWindowMs
-  : 60_000;
 const P3_EXPERIMENTAL_ENABLED = process.env.CODEX_P3_EXPERIMENTAL === '1';
 const REMOTE_IMAGE_INPUTS_ENABLED = process.env.CODEX_ALLOW_REMOTE_IMAGES === '1';
 const rawPushMaxSubscriptions = Number(process.env.CODEX_PUSH_MAX_SUBSCRIPTIONS);
@@ -315,7 +301,6 @@ function buildInitPayload({ sessionId = null, instanceId = null, cwd = WORK_DIR 
     workDirs,
     versions,
     features: {
-      admin: ADMIN_ENABLED,
       labs: P3_EXPERIMENTAL_ENABLED,
     },
   };
@@ -410,14 +395,10 @@ app.use((_req, res, next) => {
 
 const clientIp = v => normalizeAddress(v);
 const authFailureWindows = new Map();
-const adminUnlockFailureWindows = new Map();
 
 function pruneExpiredFailureWindows(now = Date.now()) {
   for (const [key, value] of authFailureWindows) {
     if (value.resetAt <= now) authFailureWindows.delete(key);
-  }
-  for (const [key, value] of adminUnlockFailureWindows) {
-    if (value.resetAt <= now) adminUnlockFailureWindows.delete(key);
   }
 }
 
@@ -437,34 +418,6 @@ function recordAuthFailure(address, now = Date.now()) {
     count: window.count,
     resetAt: window.resetAt,
   };
-}
-
-function adminUnlockFailureKey(socket) {
-  const deviceToken = socket.handshake.auth?.deviceToken;
-  if (typeof deviceToken === 'string' && deviceToken) return `device:${securityRef(deviceToken)}`;
-  return `ip:${clientIp(socket.handshake.address) || 'unknown'}`;
-}
-
-function readAdminUnlockFailureWindow(socket, now = Date.now()) {
-  const key = adminUnlockFailureKey(socket);
-  let window = adminUnlockFailureWindows.get(key);
-  if (!window || window.resetAt <= now) {
-    window = { count: 0, resetAt: now + ADMIN_UNLOCK_WINDOW_MS };
-    adminUnlockFailureWindows.set(key, window);
-  }
-  return { key, window };
-}
-
-function recordAdminUnlockFailure(socket, now = Date.now()) {
-  const state = readAdminUnlockFailureWindow(socket, now);
-  state.window.count += 1;
-  return state;
-}
-
-function adminUnlockRateLimit(socket, now = Date.now()) {
-  const state = readAdminUnlockFailureWindow(socket, now);
-  if (state.window.count < ADMIN_UNLOCK_MAX_FAILURES) return null;
-  return { retryAfterMs: Math.max(1, state.window.resetAt - now) };
 }
 
 function appendSecurityAudit(entry) {
@@ -1592,23 +1545,6 @@ function adminSummary(action, payload = {}) {
   if (action === 'admin:marketplaceRemove' || action === 'admin:marketplaceUpgrade') {
     return { marketplaceName: payload.marketplaceName || null };
   }
-  if (action === 'admin:fsWriteFile') {
-    return {
-      path: payload.path ? sanitizePath(payload.path) : null,
-      dataBase64: '<redacted>',
-      approxBytes: typeof payload.dataBase64 === 'string' ? Math.floor(payload.dataBase64.length * 0.75) : 0,
-    };
-  }
-  if (action === 'admin:fsRemove') {
-    return { path: payload.path ? sanitizePath(payload.path) : null, recursive: payload.recursive, force: payload.force };
-  }
-  if (action === 'admin:fsCopy') {
-    return {
-      sourcePath: payload.sourcePath ? sanitizePath(payload.sourcePath) : null,
-      destinationPath: payload.destinationPath ? sanitizePath(payload.destinationPath) : null,
-      recursive: payload.recursive,
-    };
-  }
   if (action === 'admin:mcpToolCall') {
     return { server: payload.server || null, tool: payload.tool || null, arguments: '<redacted>' };
   }
@@ -1616,60 +1552,22 @@ function adminSummary(action, payload = {}) {
   return {};
 }
 
-function denyAdmin(socket, ack, action, payload, error) {
+// admin 解锁曾是安全剧场：口令是源码常量，任何能打开页面的设备都能解锁，而且至少有三条
+// 绕行路径（让 agent 去做、改 config.toml、走 fs 写入）。功能层设限挡不住攻击者，只会让人
+// 误以为有保护——安全边界是设备 token，见 SECURITY.md。
+//
+// 保留下来的是逐动作确认：它防的是手机上误触高危操作，与攻击者无关，那是真实价值。
+function requireActionConfirm(socket, ack, action, payload = {}) {
+  if (payload.adminConfirm === action) return true;
   appendAdminAudit({
     event: 'denied',
     action,
     socketId: socket.id,
-    error,
+    error: `Missing per-action confirm: ${action}`,
     summary: adminSummary(action, payload),
   });
-  ackError(ack, new Error(error));
-}
-
-function requireAdmin(socket, ack, action, payload = {}) {
-  if (!ADMIN_ENABLED) {
-    appendAdminAudit({
-      event: 'denied',
-      action,
-      socketId: socket.id,
-      error: 'Admin controls are disabled',
-      summary: adminSummary(action, payload),
-    });
-    ackFeatureDisabled(ack, 'Admin');
-    return false;
-  }
-  if (
-    socket.adminMode === true
-    && (!Number.isFinite(socket.data.adminExpiresAt) || socket.data.adminExpiresAt <= Date.now())
-  ) {
-    socket.adminMode = false;
-    socket.data.adminExpiresAt = null;
-    appendAdminAudit({
-      event: 'expired',
-      action,
-      socketId: socket.id,
-      summary: adminSummary(action, payload),
-    });
-    if (typeof ack === 'function') {
-      ack({
-        ok: false,
-        errorCode: 'admin_locked',
-        error: 'Admin mode expired',
-        retryable: false,
-      });
-    }
-    return false;
-  }
-  if (socket.adminMode !== true) {
-    denyAdmin(socket, ack, action, payload, 'Admin mode is locked');
-    return false;
-  }
-  if (payload.adminConfirm !== action) {
-    denyAdmin(socket, ack, action, payload, `Missing per-action confirm: ${action}`);
-    return false;
-  }
-  return true;
+  ackError(ack, new Error(`Missing per-action confirm: ${action}`));
+  return false;
 }
 
 // 宿主机的每一次文件变更都要留痕（R-SEC-2）。只记「谁在何时动了什么」——路径、字节数、
@@ -1702,7 +1600,7 @@ async function runFsMutation(socket, ack, action, resolveTarget, operation) {
 }
 
 async function runAdminAction(socket, ack, action, payload, operation) {
-  if (!requireAdmin(socket, ack, action, payload)) return;
+  if (!requireActionConfirm(socket, ack, action, payload)) return;
   try {
     const result = await operation();
     appendAdminAudit({
@@ -2732,54 +2630,6 @@ io.on('connection', socket => {
     }
   });
 
-  on(socket, 'admin:unlock', async (payload = {}, ack) => {
-    if (!ADMIN_ENABLED) {
-      requireAdmin(socket, ack, 'admin:unlock', payload);
-      return;
-    }
-    const rateLimit = adminUnlockRateLimit(socket);
-    if (rateLimit) {
-      appendAdminAudit({
-        event: 'denied',
-        action: 'admin:unlock',
-        socketId: socket.id,
-        error: 'Admin unlock rate limited',
-        summary: {},
-      });
-      if (typeof ack === 'function') {
-        ack({
-          ok: false,
-          errorCode: 'rate_limited',
-          error: 'Admin unlock rate limited',
-          retryable: true,
-          retryAfterMs: rateLimit.retryAfterMs,
-        });
-      }
-      return;
-    }
-    if (payload?.confirmText !== ADMIN_UNLOCK_PHRASE) {
-      recordAdminUnlockFailure(socket);
-      denyAdmin(socket, ack, 'admin:unlock', payload, 'Invalid admin unlock phrase');
-      return;
-    }
-    adminUnlockFailureWindows.delete(adminUnlockFailureKey(socket));
-    socket.adminMode = true;
-    socket.data.adminExpiresAt = Date.now() + ADMIN_UNLOCK_TTL_MS;
-    appendAdminAudit({ event: 'unlock', action: 'admin:unlock', socketId: socket.id, summary: {} });
-    ackOk(ack, { adminMode: true, expiresAt: socket.data.adminExpiresAt });
-  });
-
-  on(socket, 'admin:lock', async (_payload = {}, ack) => {
-    if (!ADMIN_ENABLED) {
-      requireAdmin(socket, ack, 'admin:lock');
-      return;
-    }
-    socket.adminMode = false;
-    socket.data.adminExpiresAt = null;
-    appendAdminAudit({ event: 'lock', action: 'admin:lock', socketId: socket.id, summary: {} });
-    ackOk(ack, { adminMode: false });
-  });
-
   on(socket, 'admin:configWrite', async (payload = {}, ack) => {
     await runAdminAction(socket, ack, 'admin:configWrite', payload, () =>
       ensureControlAgent(payload?.cwd, socket).writeConfigValue(payload));
@@ -3170,7 +3020,6 @@ export function stopServer(callback) {
   messageReceiptLedger.clear();
   needsYouRegistry.clear();
   authFailureWindows.clear();
-  adminUnlockFailureWindows.clear();
   authSessions.clear();
   appServerHost?.dispose();
   appServerHost = null;

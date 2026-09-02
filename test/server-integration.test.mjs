@@ -3707,11 +3707,9 @@ test('server advertises privileged surfaces as disabled and rejects them by defa
     const socket = await connectSocket(fixture.url, fixture.authToken);
     try {
       const init = await waitForAgentEvent(socket, 'init');
-      assert.deepEqual(init.payload.features, { admin: false, labs: false });
-
-      const admin = await emitWithAck(socket, 'admin:unlock', { confirmText: 'ENABLE ADMIN' });
-      assert.equal(admin.ok, false);
-      assert.equal(admin.errorCode, 'feature_disabled');
+      // admin 特性开关随解锁机制一并拆除：宿主配置操作不再是「需要开启的特权面」，
+      // 而是直达但逐动作确认的普通操作。Labs 仍是实验开关。
+      assert.deepEqual(init.payload.features, { labs: false });
 
       const labs = await emitWithAck(socket, 'p3:capabilities', { cwd: fixture.workDir });
       assert.equal(labs.ok, false);
@@ -3724,169 +3722,43 @@ test('server advertises privileged surfaces as disabled and rejects them by defa
   }
 });
 
-test('server gates P2 admin app-server controls with unlock, per-action confirmation, and audit log', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'ccm-p2-admin-test-'));
-  const rpcLog = join(root, 'rpc.jsonl');
+// admin 门是安全剧场：解锁口令是源码常量 ENABLE ADMIN，任何能打开页面的设备都能解锁，
+// 而且绕行路径至少三条（让 agent 去做、改 config.toml、走 fs 写入）。按「唯一的安全边界是
+// 设备 token，功能层不设防」拆掉解锁机制，保留逐动作确认——那防的是误触，不是攻击者。
+test('宿主配置操作无需解锁，但必须带逐动作确认并留审计', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ccm-hostcfg-test-'));
   const codexBin = createFakeCodexBin(root);
-  const fixture = await startIsolatedServer({ codexBin, rpcLog, adminEnabled: true });
+  const fixture = await startIsolatedServer({ codexBin });
   try {
     const socket = await connectSocket(fixture.url, fixture.authToken);
     try {
       await waitForAgentEvent(socket, 'init');
 
-      const denied = await emitWithAck(socket, 'admin:configWrite', {
-        keyPath: 'model',
-        value: 'gpt-5.5',
-        mergeStrategy: 'replace',
+      // 少了确认字段就不执行：防的是手机上误触，不是防攻击者。
+      const unconfirmed = await emitWithAck(socket, 'admin:configWrite', {
+        keyPath: 'model', value: 'gpt-5.5', mergeStrategy: 'replace',
+      });
+      assert.equal(unconfirmed.ok, false);
+      assert.match(unconfirmed.error, /confirm/i);
+
+      // 带上确认就直接执行，不需要先解锁。
+      const written = await emitWithAck(socket, 'admin:configWrite', {
+        keyPath: 'model', value: 'gpt-5.5', mergeStrategy: 'replace',
         adminConfirm: 'admin:configWrite',
       });
-      assert.equal(denied.ok, false);
-      assert.match(denied.error, /Admin/);
+      assert.equal(written.ok, true, '带确认的宿主配置写入应当直接生效');
 
-      const deniedMarketplaceSecret = 'denied-marketplace-password-123';
-      const deniedMarketplace = await emitWithAck(socket, 'admin:marketplaceAdd', {
-        source: `https://user:${deniedMarketplaceSecret}@example.com/denied.git`,
-        refName: 'main',
-        adminConfirm: 'admin:marketplaceAdd',
-      });
-      assert.equal(deniedMarketplace.ok, false);
-
-      const badUnlock = await emitWithAck(socket, 'admin:unlock', { confirmText: 'yes' });
-      assert.equal(badUnlock.ok, false);
-
-      const unlock = await emitWithAck(socket, 'admin:unlock', { confirmText: 'ENABLE ADMIN' });
-      assert.equal(unlock.ok, true);
-      assert.equal(unlock.adminMode, true);
-
-      const missingActionConfirm = await emitWithAck(socket, 'admin:configWrite', {
-        keyPath: 'model',
-        value: 'gpt-5.5',
-        mergeStrategy: 'replace',
-      });
-      assert.equal(missingActionConfirm.ok, false);
-      assert.match(missingActionConfirm.error, /confirm/i);
-
-      const actions = [
-        ['admin:configWrite', { keyPath: 'model', value: 'gpt-5.5', mergeStrategy: 'replace' }],
-        ['admin:configBatchWrite', { edits: [{ keyPath: 'approval_policy', value: 'on-request', mergeStrategy: 'upsert' }], reloadUserConfig: true }],
-        ['admin:pluginInstall', { pluginName: 'gh', remoteMarketplaceName: 'official' }],
-        ['admin:pluginUninstall', { pluginId: 'plugin_gh' }],
-        ['admin:marketplaceAdd', { source: 'https://example.com/market.git', refName: 'main' }],
-        ['admin:marketplaceRemove', { marketplaceName: 'community' }],
-        ['admin:marketplaceUpgrade', { marketplaceName: 'community' }],
-        ['admin:mcpToolCall', { threadId: 'thr_fake', server: 'github', tool: 'search', arguments: { secret: 'should-not-log' } }],
-        ['admin:accountLogout', {}],
-      ];
-      for (const [event, payload] of actions) {
-        const ack = await emitWithAck(socket, event, { ...payload, adminConfirm: event });
-        assert.equal(ack.ok, true, `${event}: ${ack.error || ''}`);
-      }
-
-      const errorMarketplaceSecret = 'error-marketplace-password-456';
-      const failedMarketplace = await emitWithAck(socket, 'admin:marketplaceAdd', {
-        source: `https://user:${errorMarketplaceSecret}@example.com/audit-error.git`,
-        refName: 'main',
-        adminConfirm: 'admin:marketplaceAdd',
-      });
-      assert.equal(failedMarketplace.ok, false);
-
-      const calls = readFileSync(rpcLog, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-      const methods = calls.map(call => call.method).filter(Boolean);
-      for (const method of [
-        'config/value/write',
-        'config/batchWrite',
-        'plugin/install',
-        'plugin/uninstall',
-        'marketplace/add',
-        'marketplace/remove',
-        'marketplace/upgrade',
-        'mcpServer/tool/call',
-        'account/logout',
-      ]) {
-        assert.ok(methods.includes(method), `expected ${method}`);
-      }
-
-      const auditPath = join(fixture.dataDir, 'admin-audit.jsonl');
-      assert.equal(statSync(auditPath).mode & 0o777, 0o600);
-      const audit = readFileSync(auditPath, 'utf8');
-      assert.match(audit, /"event":"unlock"/);
-      assert.match(audit, /"event":"success"/);
-      assert.match(audit, /"event":"denied"/);
-      assert.match(audit, /"action":"admin:mcpToolCall"/);
-      assert.doesNotMatch(audit, /secret file body/);
-      assert.doesNotMatch(audit, /should-not-log/);
-      assert.doesNotMatch(audit, new RegExp(deniedMarketplaceSecret));
-      assert.doesNotMatch(audit, new RegExp(errorMarketplaceSecret));
-      assert.match(audit, /https:\/\/user:\*\*\*@example\.com/);
+      const audit = readFileSync(join(fixture.dataDir, 'admin-audit.jsonl'), 'utf8')
+        .trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+      const success = audit.find(entry => entry.action === 'admin:configWrite' && entry.event === 'success');
+      assert.ok(success, '成功的宿主配置变更必须留痕');
+      assert.ok(!JSON.stringify(audit).includes('ENABLE ADMIN'), '不应再有解锁口令');
     } finally {
-      socket.disconnect();
+      socket.close();
     }
   } finally {
     await fixture.close();
     rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('admin unlock expires before a privileged action reaches app-server', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'ccm-admin-expiry-test-'));
-  const rpcLog = join(root, 'rpc.jsonl');
-  const codexBin = createFakeCodexBin(root);
-  const fixture = await startIsolatedServer({
-    codexBin,
-    rpcLog,
-    adminEnabled: true,
-    adminUnlockTtlMs: 25,
-  });
-  const socket = await connectSocket(fixture.url, fixture.authToken, 'device-admin-expiry');
-  try {
-    await waitForAgentEvent(socket, 'init');
-    const unlock = await emitWithAck(socket, 'admin:unlock', { confirmText: 'ENABLE ADMIN' });
-    assert.equal(unlock.ok, true);
-    assert.ok(unlock.expiresAt > Date.now());
-    await new Promise(resolve => setTimeout(resolve, 40));
-
-    const expired = await emitWithAck(socket, 'admin:configWrite', {
-      keyPath: 'model',
-      value: 'must-not-write',
-      mergeStrategy: 'replace',
-      adminConfirm: 'admin:configWrite',
-    });
-    assert.equal(expired.ok, false);
-    assert.equal(expired.errorCode, 'admin_locked');
-    assert.match(expired.error, /expired/i);
-    assert.equal(existsSync(rpcLog), false);
-  } finally {
-    socket.disconnect();
-    await fixture.close();
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('admin unlock rate-limits repeated phrase failures by device', async () => {
-  const fixture = await startIsolatedServer({
-    adminEnabled: true,
-    adminUnlockMaxFailures: 2,
-    adminUnlockWindowMs: 60_000,
-  });
-  const socket = await connectSocket(fixture.url, fixture.authToken, 'device-admin-unlock-rate-limit');
-  try {
-    await waitForAgentEvent(socket, 'init');
-    for (const confirmText of ['wrong-one', 'wrong-two']) {
-      const denied = await emitWithAck(socket, 'admin:unlock', { confirmText });
-      assert.equal(denied.ok, false);
-    }
-
-    const limited = await emitWithAck(socket, 'admin:unlock', { confirmText: 'wrong-three' });
-    assert.equal(limited.ok, false);
-    assert.equal(limited.errorCode, 'rate_limited');
-    assert.equal(limited.retryable, true);
-
-    const correctButLimited = await emitWithAck(socket, 'admin:unlock', { confirmText: 'ENABLE ADMIN' });
-    assert.equal(correctButLimited.ok, false);
-    assert.equal(correctButLimited.errorCode, 'rate_limited');
-  } finally {
-    socket.disconnect();
-    await fixture.close();
   }
 });
 

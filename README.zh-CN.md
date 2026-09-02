@@ -49,7 +49,6 @@ CODEX_SANDBOX=workspace-write
 CODEX_INPUT_QUEUE_LIMIT=20
 CODEX_ALLOWED_ORIGINS=
 CODEX_TRUSTED_PROXY_IPS=
-CODEX_ADMIN_ENABLED=0
 CODEX_P3_EXPERIMENTAL=0
 ```
 
@@ -73,7 +72,7 @@ CODEX_P3_EXPERIMENTAL=0
 | `CODEX_SESSION_TTL_MS` | `604800000` | 绑定设备的内存 HttpOnly session 有效期 |
 | `CODEX_SECURITY_AUDIT_MAX_BYTES` | `1048576` | security audit 活跃文件达到该字节数后保留一份 owner-only 轮转 |
 | `CODEX_ALLOW_REMOTE_IMAGES` | `0` | 显式启用经 HTTPS/DNS/SSRF 校验的图片 URL 输入 |
-| `CODEX_ADMIN_ENABLED` / `CODEX_P3_EXPERIMENTAL` | `0` | 显式启用 Admin / Labs；默认不进入核心聊天面 |
+| `CODEX_P3_EXPERIMENTAL` | `0` | 显式启用 Labs；默认不进入核心聊天面 |
 | `VAPID_SUBJECT` / `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | 空 | 启用设备绑定 Web Push（三项齐全才生效） |
 
 本机打开 `http://127.0.0.1:3001`。

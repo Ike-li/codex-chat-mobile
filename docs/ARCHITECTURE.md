@@ -60,7 +60,7 @@ server.js（鉴权、设备、可靠投递、视图路由、恢复、Push）
 
 审批和用户输入 server request 必须显式应答。共享 host 只有在完整 target 唯一定位 owner 后才下发；未知定向请求返回 `-32602`，不支持的未知请求返回 `-32601`。已路由到正确 runtime 后，未知 notification 可宽容忽略；未知 item type 则降级为可见 `raw_item`。
 
-Admin 和 experimental 方法必须同时受服务端 flag 与前端 feature manifest 门控。`CODEX_ADMIN_ENABLED=0`、`CODEX_P3_EXPERIMENTAL=0` 时核心聊天不依赖这些接口。
+experimental 方法受服务端 flag 与前端 feature manifest 门控，`CODEX_P3_EXPERIMENTAL=0` 时核心聊天不依赖它们。宿主配置操作不再有特性开关：解锁机制是安全剧场（口令为源码常量、绕行路径至少三条），已拆除；保留的是逐动作确认与审计，那防的是误触。
 
 ## 安全模型
 

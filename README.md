@@ -86,7 +86,7 @@ Set `AUTH_TOKEN` to at least 32 characters, `CODEX_ALLOWED_ORIGINS` to the exact
 | `CODEX_SESSION_TTL_MS` | `604800000` | In-memory, device-bound HttpOnly session lifetime |
 | `CODEX_SECURITY_AUDIT_MAX_BYTES` | `1048576` | Active security audit size before one owner-only rotation is retained |
 | `CODEX_ALLOW_REMOTE_IMAGES` | `0` | Explicitly enable guarded HTTPS image URL inputs |
-| `CODEX_ADMIN_ENABLED` / `CODEX_P3_EXPERIMENTAL` | `0` | Keep Admin and Labs out of the core surface unless explicitly enabled |
+| `CODEX_P3_EXPERIMENTAL` | `0` | Keep Labs out of the core surface unless explicitly enabled |
 | `VAPID_SUBJECT` / `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | empty | Enable device-bound Web Push (all three required) |
 
 ## Commands
