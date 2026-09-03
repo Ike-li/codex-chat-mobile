@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -1772,4 +1772,36 @@ test('the drawer offers a way back to archived threads', () => {
     /requestedArchived !== showArchivedThreads\)\s*return/,
     'thread:list 的回调必须丢弃已切走视图的过期响应',
   );
+});
+
+// crypto.randomUUID 只在 secure context 里存在（http://<主机名> 拿不到，http://127.0.0.1
+// 和 https:// 才有）。裸调它的后果不是报错而是**静默失败**：明文远程接入下发消息会抛
+// TypeError，文字留在输入框，状态还显示 idle，界面上没有任何提示。
+//
+// 这个 bug 之所以能存在，是因为防御只加在三个调用点里的一个 —— 而加了的那个恰好是能走到
+// 配对画面的那条路，所以症状是「连得上、进得去、就是发不出」。修法是 public/js/random-id.js
+// 统一兜底。这条绊线守的是**不再出现第四个没兜底的调用点**：新写的模块要么 import
+// randomId，要么自己在同一行上做 typeof 检查。
+test('客户端不得裸调 crypto.randomUUID —— 非 secure context 里它不存在', () => {
+  const dir = new URL('../public/js/', import.meta.url);
+  const offenders = [];
+
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith('.js')) continue;
+    const source = readFileSync(new URL(name, dir), 'utf8');
+    source.split('\n').forEach((line, index) => {
+      const trimmed = line.trim();
+      // 注释里提这个名字是在解释为什么不能裸调它，不是调用。
+      if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return;
+      if (!/\brandomUUID\b/.test(line)) return;
+      // 同一行上做了存在性检查就算有兜底：typeof x.randomUUID === 'function'、x?.randomUUID
+      if (/typeof\s+[\w.?]*\.?randomUUID/.test(line) || /\?\.randomUUID/.test(line)) return;
+      offenders.push(`${name}:${index + 1}  ${line.trim()}`);
+    });
+  }
+
+  assert.deepEqual(offenders, [],
+    '这些地方裸调了 crypto.randomUUID，在非 secure context（明文远程接入）下会抛 TypeError '
+    + '并静默失败。改成 import { randomId } from \'./random-id.js\'，或在同一行上加 typeof 检查：\n'
+    + offenders.join('\n'));
 });
