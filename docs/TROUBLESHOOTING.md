@@ -30,9 +30,20 @@ npm test
 
 远程请求仍被识别为明文 HTTP。使用可信 HTTPS；如果经过反向代理，只有 `CODEX_TRUSTED_PROXY_IPS` 中的直接对端可以提供 `X-Forwarded-Proto`。
 
-### 返回 `origin_required` 或 `origin_not_allowed`
+### 返回 `origin_not_allowed`
 
-把手机地址的完整 scheme、host 和 port 精确加入 `CODEX_ALLOWED_ORIGINS`。不支持 `*`，也不要只填 hostname。
+请求带了 `Origin`，但它不在白名单里。把手机地址的完整 scheme、host 和 port 精确加入 `CODEX_ALLOWED_ORIGINS`。不支持 `*`，也不要只填 hostname。
+
+### 返回 `origin_required`
+
+请求**根本没带** `Origin` 头。白名单只在这个头存在时才被查，所以**改 `CODEX_ALLOWED_ORIGINS` 修不好这个错**——这两条看着像一对，处方却完全不同。
+
+正常的浏览器不该走到这里：客户端固定用 WebSocket 传输，而 WebSocket 握手按 RFC 6455 一律带 `Origin`（同源也带）。走到这里通常意味着：
+
+- **客户端退回了 polling 传输**。浏览器对**同源** XHR 不发 `Origin`（只有跨源才发），而远程部署里页面和 socket 永远同源，于是握手必然被拒。若 `public/js/app.js` 里的 `transports: ['websocket']` 被改动过，先恢复它。
+- **不是浏览器**（脚本、curl、代理自己发起的探测）。这类客户端要自己带上被允许的 `Origin`。
+
+> 这条曾经被误诊成配置问题。远程浏览器一律连不上时，症状是页面停在「连接失败：xhr poll error」的断线横幅，而不是任何配置相关的提示。回归由 `e2e/remote-origin-handshake.spec.js` 守着。
 
 ### 登录反复失败或被限流
 

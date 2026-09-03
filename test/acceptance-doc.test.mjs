@@ -362,6 +362,33 @@ test('the visual acceptance doc treats a leaked host path as a visible failure',
     '横切判据里没有「界面不得出现宿主机绝对路径」这一条');
 });
 
+// origin_required 和 origin_not_allowed 是两个不同的失败，此前两份文档都把它们并成一条，
+// 给的处方是「把完整 Origin 精确加进 CODEX_ALLOWED_ORIGINS」——那对 origin_required 在
+// 结构上不可能有效：白名单只在 Origin 头**存在**时才被查，而这个错说的正是头不存在。
+//
+// 这不是措辞问题。它让一个 P0 被当成配置错误：远程浏览器一律连不上（socket.io 先试
+// polling，浏览器对同源 XHR 不发 Origin），照着这条排查怎么试都不会好。修在
+// public/js/app.js（只走 websocket，RFC 6455 要求 WS 握手一律带 Origin），
+// 行为由 e2e/remote-origin-handshake.spec.js 守着；这里守的是**排查建议不再合并这两者**。
+test('origin_required and origin_not_allowed are documented as separate failures', () => {
+  for (const name of ['TROUBLESHOOTING.md', 'REMOTE_ACCESS.md']) {
+    const doc = readDoc(`../docs/${name}`);
+    for (const code of ['origin_required', 'origin_not_allowed']) {
+      assert.ok(doc.includes(code), `${name} 没有提到 ${code}`);
+    }
+
+    const conflated = doc.split('\n')
+      .filter(line => line.includes('origin_required') && line.includes('origin_not_allowed'));
+    assert.deepEqual(conflated, [],
+      `${name} 把 origin_required 和 origin_not_allowed 写在同一条里；`
+      + '它们成因不同，只有后者能靠改白名单修好');
+
+    // origin_required 的解释必须落到「哪个传输不带这个头」，否则读者无从判断该查什么。
+    assert.match(doc, /polling/,
+      `${name} 解释 origin_required 时没提 polling —— 那正是不带 Origin 的那个传输`);
+  }
+});
+
 // R-ENG-3：无头 Linux 上跑通是本产品唯一一条官方结构上给不出的承诺——官方 Remote 要求
 // host 运行 ChatGPT 桌面 app（仅 macOS/Windows）并「Keep your computer awake and online」，
 // 而服务器不会休眠。既然把它当卖点，验收路径就必须写下来并可复核。
