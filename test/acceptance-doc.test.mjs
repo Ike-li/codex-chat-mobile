@@ -312,8 +312,10 @@ test('the visual acceptance doc stays executable by both a person and a browser 
   }
 
   // 覆盖矩阵必须把全部测试点逐一映射到用例号，否则无从追溯漏了什么。
-  // 实跑发现沙箱是 4 档而非 3 档（多一档「绕过批准和沙箱」），组合数因此从 12 升到 16，
-  // 总点数 131 → 135。
+  //
+  // 实跑时一度以为沙箱是 4 档（面板上「绕过批准和沙箱」就排在沙箱三项下面），把参数表
+  // 从 12 行改成了 16 行；读代码才发现它是个快捷方式——点一下等于同时设「从不询问」+
+  // 「完全访问」，也就是原表的第 12 格。已改回 12 行，下面两行 pin 的就是订正后的数。
   assert.match(doc, /131 个测试点/);
   assert.match(doc, /审批 4 档 × 沙箱 3 档/);
   assert.match(doc, /^\| 接口层/m);
@@ -322,6 +324,42 @@ test('the visual acceptance doc stays executable by both a person and a browser 
     assert.match(readDoc(readmePath), /docs\/SMOKE_MATRIX\.md/,
       `${readmePath} missing link to docs/SMOKE_MATRIX.md`);
   }
+});
+
+// 上一版这三条的前置写的是「需要第二台设备」「服务端配置允许远程接入」，于是它们连着两轮
+// 被整条跳过 —— 而 VC-A02 恰恰是唯一一条用肉眼守设备闸的用例（未批准的设备不该看到任何
+// 会话内容）。更糟的是那个前置是错的：真搬第二台设备来、走明文 HTTP，照样是 426
+// https_required，压根到不了配对画面。所以前置必须落到**可照抄的配置项名**上。
+// 配方本身由 test/server-security.test.mjs 的两条测试守着，加了新闸会先在那边红。
+test('remote-access cases name the exact knobs instead of hand-waving at server configuration', () => {
+  const doc = readDoc('../docs/SMOKE_MATRIX.md');
+  const blocks = new Map(doc.split(/^#### (?=VC-)/m).slice(1).map(b => [b.slice(0, 6), b]));
+
+  for (const id of ['VC-A02', 'VC-H05']) {
+    const block = blocks.get(id);
+    assert.ok(block, `${id} 不见了`);
+    for (const knob of ['HOST', 'AUTH_TOKEN', 'CODEX_ALLOW_INSECURE_REMOTE', 'CODEX_ALLOWED_ORIGINS']) {
+      assert.ok(block.includes(knob), `${id} 的前置没写 ${knob}，照着它配不出能跑的环境`);
+    }
+    assert.ok(!/仅限手工/.test(block) || /第二台/.test(block) === false,
+      `${id} 仍把「需要第二台设备」当成硬前置，但那不是真正的障碍`);
+  }
+
+  // J01 卡在真 HTTPS 上，ALLOW_INSECURE 对它无效——Push API 要的是浏览器侧的 secure
+  // context，不是服务端放行。不写清楚，下一个人会拿 ALLOW_INSECURE 再试一次。
+  const j01 = blocks.get('VC-J01');
+  assert.match(j01, /secure context|CODEX_ALLOW_INSECURE_REMOTE/,
+    'VC-J01 没说明为什么服务端放行开关对它不管用');
+});
+
+// 这轮把 11 处送往浏览器的错误插值统一做了脱敏，但 71 条用例里一条判据都没盯着它 ——
+// 而「错误条里出现 /Users/xxx」是纯肉眼可见的，正是这份文档该管的形态。
+test('the visual acceptance doc treats a leaked host path as a visible failure', () => {
+  const doc = readDoc('../docs/SMOKE_MATRIX.md');
+  assert.match(doc, /^## 贯穿所有用例的判据$/m, 'SMOKE_MATRIX.md 缺少横切判据一节');
+  const section = doc.slice(doc.indexOf('## 贯穿所有用例的判据'));
+  assert.match(section.slice(0, 1200), /宿主机绝对路径|\/Users\//,
+    '横切判据里没有「界面不得出现宿主机绝对路径」这一条');
 });
 
 // R-ENG-3：无头 Linux 上跑通是本产品唯一一条官方结构上给不出的承诺——官方 Remote 要求

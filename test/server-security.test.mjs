@@ -219,6 +219,50 @@ test('socket handshake security rejects a remote origin outside the exact allowl
   assert.equal(result.normalizedOrigin, 'https://evil.example');
 });
 
+// docs/SMOKE_MATRIX.md 的 VC-A02 / VC-H05 要在本机复现「远程设备接入」，靠的是一份
+// 四项配置的配方。这条测试守的不是某一道闸，而是**那份配方仍然是完整的**：四项配齐就放行，
+// 拿掉任何一项就被挡在对应的那道闸上。将来若新增第五道闸，「配齐即放行」这半边会先红，
+// 提醒同步改文档 —— 否则文档会静默过期，而过期的前置比没有前置更贵：上一版写的是
+// 「需要第二台真机」，照做的人会撞在 https_required 上，然后得出「这条跑不了」的结论。
+const REMOTE_RECIPE = Object.freeze({
+  env: { CODEX_ALLOW_INSECURE_REMOTE: '1', CODEX_ALLOWED_ORIGINS: 'http://192.168.1.10:3001' },
+  request: {
+    remoteAddress: '192.168.1.10',
+    hostHeader: '192.168.1.10:3001',
+    socketEncrypted: false,
+    originHeader: 'http://192.168.1.10:3001',
+  },
+});
+
+test('the documented single-machine remote-access recipe still lets a remote device reach the pairing gate', () => {
+  const policy = parseGatewaySecurityPolicy(REMOTE_RECIPE.env);
+  const result = evaluateSocketHandshakeSecurity(REMOTE_RECIPE.request, policy);
+
+  assert.equal(result.ok, true, `远程握手被 ${result.reason} 挡住了；文档里的配方已经不完整`);
+  // remote 必须为真：整条用例的意义就在于这台设备走的是非本地路径，会落进待批队列。
+  // 若哪天它被判成 local，A02 会「通过」得毫无意义 —— 设备闸根本没参与。
+  assert.equal(result.remote, true, '这台设备被判成了本地，设备配对流程不会触发');
+});
+
+test('dropping any single knob from the remote-access recipe blocks it at a nameable gate', () => {
+  const cases = [
+    ['CODEX_ALLOW_INSECURE_REMOTE', { CODEX_ALLOWED_ORIGINS: REMOTE_RECIPE.env.CODEX_ALLOWED_ORIGINS }, 'https_required'],
+    ['CODEX_ALLOWED_ORIGINS', { CODEX_ALLOW_INSECURE_REMOTE: '1' }, 'origin_not_allowed'],
+  ];
+  for (const [dropped, env, expected] of cases) {
+    const result = evaluateSocketHandshakeSecurity(REMOTE_RECIPE.request, parseGatewaySecurityPolicy(env));
+    assert.equal(result.ok, false, `少了 ${dropped} 却仍然放行`);
+    assert.equal(result.reason, expected, `少了 ${dropped} 应当被 ${expected} 挡住`);
+  }
+
+  // 第三项：浏览器不发 Origin。远程接入必须自报来源，否则无从判断同源。
+  const noOrigin = evaluateSocketHandshakeSecurity(
+    { ...REMOTE_RECIPE.request, originHeader: '' },
+    parseGatewaySecurityPolicy(REMOTE_RECIPE.env),
+  );
+  assert.equal(noOrigin.reason, 'origin_required');
+});
+
 test('gateway security policy canonicalizes and deduplicates exact origins and proxy IPs', () => {
   assert.deepEqual(parseGatewaySecurityPolicy({
     CODEX_ALLOWED_ORIGINS: ' https://codex.example.com/,https://codex.example.com:443,https://two.example ',
