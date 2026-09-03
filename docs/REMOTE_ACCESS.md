@@ -87,7 +87,8 @@ Web Push 还要求 VAPID 三项、公网 HTTPS endpoint、有效 `p256dh/auth` k
 
 - **HTTP 426 `forwarded_proto_required`**：直接 peer 已列为 trusted proxy，但代理没有覆盖 `X-Forwarded-Proto`。
 - **HTTP 426 `https_required`**：请求仍被判定为远程 HTTP，或代理明确转发了 `http`；不要用 insecure override 掩盖生产配置错误。
-- **Socket `origin_required` / `origin_not_allowed`**：手机的完整 Origin 未精确列入 `CODEX_ALLOWED_ORIGINS`，或 scheme/host/port 不一致。
+- **Socket `origin_not_allowed`**：请求带了 Origin 但不在白名单里。手机的完整 Origin 未精确列入 `CODEX_ALLOWED_ORIGINS`，或 scheme/host/port 不一致。
+- **Socket `origin_required`**：请求**根本没带** Origin 头。白名单只在该头存在时才被查，所以**改 `CODEX_ALLOWED_ORIGINS` 修不好它**。客户端固定走 WebSocket（RFC 6455 要求 WS 握手一律带 Origin，同源也带），正常浏览器不该出现；若出现，多半是客户端退回了 polling 传输（浏览器对同源 XHR 不发 Origin，而远程部署里页面和 socket 永远同源），或者对端根本不是浏览器。
 - **启动时报 token 长度错误**：`HOST` 是非 loopback，而 `AUTH_TOKEN` 少于 32 字符；重新生成，或让同机代理访问 loopback。
 - **`unauthorized` / 反复登录**：session 不存在、过期、服务器重启、cookie 与 device token 不匹配，或设备已被撤销；从登录页重新 exchange，不要把 token 塞进 Socket/query。
 - **`pairing_capacity`**：pending 已达默认 32；在受信任设备或开发机清理/拒绝旧请求。
