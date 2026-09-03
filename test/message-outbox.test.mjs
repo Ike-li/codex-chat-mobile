@@ -1171,3 +1171,39 @@ test('reconcile 不处理 sending，交给 drain 靠 clientRequestId 幂等重�
     '这是有意的分工：核对只管 needs_reconcile 和 queued，sending 由 drain 重发，'
     + '服务端的回执账本按 clientRequestId 去重，重发不会变成发两次');
 });
+
+// 同 test/message-request.test.mjs 里那条的姐妹用例：outbox 是发消息的实际入口，
+// 它自己也有一个默认 createId。修 message-request 而漏掉这里，等于把三处调用点里的
+// 缺陷从两处减到一处 —— 而这轮反复出现的正是「防御只加在部分调用点上」这个形态。
+test('outbox 在没有 randomUUID 的环境里照样能发出消息', async () => {
+  const original = globalThis.crypto;
+  Object.defineProperty(globalThis, 'crypto', {
+    value: { getRandomValues: original.getRandomValues.bind(original) },
+    configurable: true,
+    writable: true,
+  });
+  try {
+    assert.equal(typeof globalThis.crypto.randomUUID, 'undefined', '前置：本测试要模拟没有 randomUUID');
+
+    let stored = [];
+    const sent = [];
+    const outbox = createMessageOutbox({
+      store: {
+        async put(record) { stored = [structuredClone(record)]; },
+        async list() { return structuredClone(stored); },
+      },
+      isConnected: () => true,
+      async transport(payload) {
+        sent.push(payload.clientRequestId);
+        return { ok: true, receipt: { state: 'submitted' } };
+      },
+    });
+
+    await outbox.enqueue(createMessageRequest({ text: '明文远程接入下发一条', target: { threadId: 'thr-x' } }));
+    await outbox.drain();
+    assert.equal(sent.length, 1, '消息没被送出去 —— 这正是非 secure context 下的静默失败');
+    assert.ok(sent[0] && sent[0].length >= 16, `clientRequestId 太短：${sent[0]}`);
+  } finally {
+    Object.defineProperty(globalThis, 'crypto', { value: original, configurable: true, writable: true });
+  }
+});

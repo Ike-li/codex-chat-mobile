@@ -1,5 +1,6 @@
 import { createMessageRequest, messageWirePayload } from './message-request.js';
 import { isDefinitelyUnattempted } from './outbox-recovery.js';
+import { randomId } from './random-id.js';
 
 export function createMessageOutbox({
   store,
@@ -7,7 +8,7 @@ export function createMessageOutbox({
   reconcileTransport,
   getGatewayEpoch = () => null,
   isConnected = () => true,
-  createId = () => globalThis.crypto.randomUUID(),
+  createId = randomId,
   now = () => Date.now(),
 }) {
   if (!store || typeof store.put !== 'function' || typeof store.list !== 'function') {

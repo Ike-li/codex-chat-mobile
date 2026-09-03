@@ -1,7 +1,8 @@
 import { sanitizeTurnOverrides } from './cli-settings.js';
+import { randomId } from './random-id.js';
 
 export function createMessageRequest(input = {}, options = {}) {
-  const createId = options.createId || (() => globalThis.crypto.randomUUID());
+  const createId = options.createId || randomId;
   const now = options.now || (() => Date.now());
   const clientRequestId = createId();
   if (typeof clientRequestId !== 'string' || !clientRequestId) {
