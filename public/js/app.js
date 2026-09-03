@@ -347,7 +347,17 @@ import { icon, hydrateIcons } from '/js/icons.js';
   }
 
   // Socket
-  const socket = io({ autoConnect: false, auth: { deviceToken } });
+  //
+  // transports 固定成 websocket，**不要**加回 polling 回退。socket.io 默认先试 polling，
+  // 而浏览器对**同源** XHR 不发 Origin 头（只有跨源才发）；服务端对远程连接强制要求 Origin
+  // （server-security.js 的 evaluateSocketHandshakeSecurity）。真实远程部署里页面和 socket
+  // 永远同源，于是握手必然 403 origin_required，手机永远连不上 —— CODEX_ALLOWED_ORIGINS
+  // 白名单也没机会被查，它匹配的那个头压根没送来。
+  //
+  // WebSocket 的握手不一样：RFC 6455 要求浏览器**一律**带 Origin，同源也带。所以只走
+  // websocket 既修好了远程接入，又让服务端那道严格的 Origin 闸真正生效，不用放松任何检查。
+  // 由 e2e/remote-origin-handshake.spec.js 守着。
+  const socket = io({ autoConnect: false, transports: ['websocket'], auth: { deviceToken } });
   const isTransportConnected = () => socket.connected && navigator.onLine !== false;
 
   function overlayBlocksBanner() {
